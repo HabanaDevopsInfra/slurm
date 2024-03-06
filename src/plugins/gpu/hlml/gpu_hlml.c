@@ -18,11 +18,10 @@
 #define CPU_SET_SIZE		((MAX_CPUS + (ULONG_BITS-1)) / ULONG_BITS)
 
 
-#define CHECK_HLML(x, error_return_value) do { \
+#define CHECK_HLML(x) do { \
   int retval = (x); \
   if (retval != HLML_SUCCESS) { \
     error("HLML error: %s returned %d at %s:%d", #x, retval, __FILE__, __LINE__); \
-	return error_return_value; \
   } \
 } while (0)
 
@@ -146,8 +145,8 @@ static List _get_system_hpu_list_hlml(node_config_load_t *node_config)
 
 	xassert(node_config->xcpuinfo_mac_to_abs);
 
-	CHECK_HLML(hlml_init(), gres_list_system);
-	CHECK_HLML(hlml_device_get_count(&device_count), gres_list_system);
+	CHECK_HLML(hlml_init());
+	CHECK_HLML(hlml_device_get_count(&device_count));
 
 	debug2("Device count: %d", device_count);
 
@@ -169,17 +168,17 @@ static List _get_system_hpu_list_hlml(node_config_load_t *node_config)
 
 		memset(cpu_affinity, 0, sizeof(unsigned long) * CPU_SET_SIZE);
 
-		CHECK_HLML(hlml_device_get_handle_by_index(i, &device), gres_list_system);
-		CHECK_HLML(hlml_device_get_name(device, device_name, HL_FIELD_MAX_SIZE), gres_list_system);
-		CHECK_HLML(hlml_device_get_minor_number(device, &minor_number), gres_list_system);
-		CHECK_HLML(hlml_device_get_pci_info(device, &pci_info), gres_list_system);
-		CHECK_HLML(hlml_device_get_uuid(device, uuid, HL_FIELD_MAX_SIZE), gres_list_system);
-		CHECK_HLML(hlml_device_get_cpu_affinity(device, CPU_SET_SIZE, &cpu_affinity), gres_list_system);
+		CHECK_HLML(hlml_device_get_handle_by_index(i, &device));
+		CHECK_HLML(hlml_device_get_name(device, device_name, HL_FIELD_MAX_SIZE));
+		CHECK_HLML(hlml_device_get_minor_number(device, &minor_number));
+		CHECK_HLML(hlml_device_get_pci_info(device, &pci_info));
+		CHECK_HLML(hlml_device_get_uuid(device, uuid, HL_FIELD_MAX_SIZE));
+		CHECK_HLML(hlml_device_get_cpu_affinity(device, CPU_SET_SIZE, cpu_affinity));
 
 		gres_slurmd_conf.type_name = device_name;
 		gres_slurmd_conf.unique_id = uuid;
 
-		xstrfmtcat(gres_slurmd_conf.file, "/dev/hl%u", minor_number);
+		xstrfmtcat(gres_slurmd_conf.file, "/dev/accel/accel%u", minor_number);
 
 		gres_slurmd_conf.cpus_bitmap = bit_alloc(MAX_CPUS);
 		_set_cpu_set_bitstr(gres_slurmd_conf.cpus_bitmap, cpu_affinity, CPU_SET_SIZE);
@@ -210,6 +209,10 @@ static List _get_system_hpu_list_hlml(node_config_load_t *node_config)
 		debug2("    CPU Affinity Range: %s", cpu_affinity_mac_range);
 		debug2("    CPU Affinity Range Abstract: %s", gres_slurmd_conf.cpus);
 
+		// Temporary solution until the runtime will know to run according
+		// to actual UUIDs.
+		sprintf(gres_slurmd_conf.unique_id, "%d", i);
+
 		add_gres_to_list(gres_list_system, &gres_slurmd_conf);
 
 		FREE_NULL_BITMAP(gres_slurmd_conf.cpus_bitmap);
@@ -218,7 +221,7 @@ static List _get_system_hpu_list_hlml(node_config_load_t *node_config)
 		xfree(gres_slurmd_conf.links);
 	}
 
-	CHECK_HLML(hlml_shutdown(), gres_list_system);
+	CHECK_HLML(hlml_shutdown());
 
 	info("%u HPU system device(s) detected", device_count);
 	return gres_list_system;
@@ -262,10 +265,9 @@ extern char *gpu_p_test_cpu_conv(char *cpu_range)
 
 extern void gpu_p_get_device_count(unsigned int *device_count)
 {
-	List gres_list_system = list_create(destroy_gres_slurmd_conf);
-	CHECK_HLML(hlml_init(), gres_list_system);
-	CHECK_HLML(hlml_device_get_count(device_count), gres_list_system);
-	CHECK_HLML(hlml_shutdown(), gres_list_system);
+	CHECK_HLML(hlml_init());
+	CHECK_HLML(hlml_device_get_count(device_count));
+	CHECK_HLML(hlml_shutdown());
 }
 
 extern int gpu_p_energy_read(uint32_t dv_ind, gpu_status_t *gpu)

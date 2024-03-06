@@ -1282,6 +1282,8 @@ extern uint32_t gres_flags_parse(char *input, bool *no_gpu_env,
 		flags |= GRES_CONF_ENV_OPENCL;
 	if (xstrcasestr(input, "one_sharing"))
 		flags |= GRES_CONF_ONE_SHARING;
+	if (xstrcasestr(input, "habanalabs_gpu_env"))
+		flags |= GRES_CONF_ENV_HLML;
 	if (xstrcasestr(input, "explicit"))
 		flags |= GRES_CONF_EXPLICIT;
 	/* String 'no_gpu_env' will clear all GPU env vars */
