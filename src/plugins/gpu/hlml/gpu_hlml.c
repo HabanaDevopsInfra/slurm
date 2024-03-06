@@ -1,5 +1,5 @@
 /*****************************************************************************\
- *  gpu_hlml.c - Support generic interface to a GPU.
+ *  gpu_hlml.c - Support Intel Gaudi accelerator cards.
  *****************************************************************************
 \*****************************************************************************/
 
@@ -50,7 +50,7 @@
  * plugin_version - an unsigned 32-bit integer containing the Slurm version
  * (major.minor.micro combined into a single number).
  */
-const char		plugin_name[]	= "GPU HLML plugin";
+const char		plugin_name[]	= "Gaudi HLML plugin";
 const char		plugin_type[]	= "gpu/hlml";
 const uint32_t	plugin_version	= SLURM_VERSION_NUMBER;
 
@@ -132,7 +132,7 @@ static void _set_cpu_set_bitstr(bitstr_t *cpu_set_bitstr,
  * If an error occurs, return NULL
  * Caller is responsible for freeing the list.
  *
- * If the HLML API exists, then query HPU info,
+ * If the HLML API exists, then query Gaudi info,
  * so the user doesn't need to specify manually in gres.conf.
  *
  * node_config (IN/OUT) pointer of node_config_load_t passed down
@@ -150,7 +150,7 @@ static List _get_system_hpu_list_hlml(node_config_load_t *node_config)
 
 	debug2("Device count: %d", device_count);
 
-	// Loop through all the GPUs on the system and add to gres_list_system
+	// Loop through all the Gaudi accelerators on the system and add to gres_list_system
 	for (i = 0; i < device_count; ++i) {
 		unsigned int minor_number = 0;
 		char device_name[HL_FIELD_MAX_SIZE] = {0};
@@ -197,14 +197,14 @@ static List _get_system_hpu_list_hlml(node_config_load_t *node_config)
 
 		gres_slurmd_conf.links = gres_links_create_empty(i, device_count);
 
-		debug2("HPU index %u:", i);
+		debug2("Gaudi index %u:", i);
 		debug2("    Name: %s", gres_slurmd_conf.type_name);
 		debug2("    UUID: %s", gres_slurmd_conf.unique_id);
 		debug2("    PCI Domain/Bus/Device: %u:%u:%u", pci_info.domain,
 		       pci_info.bus, pci_info.device);
 		debug2("    Device File (minor number): %s", gres_slurmd_conf.file);
 		if (minor_number != i)
-			debug("Note: HPU index %u is different from minor # %u",
+			debug("Note: Gaudi index %u is different from minor # %u",
 			      i, minor_number);
 		debug2("    CPU Affinity Range: %s", cpu_affinity_mac_range);
 		debug2("    CPU Affinity Range Abstract: %s", gres_slurmd_conf.cpus);
@@ -223,7 +223,7 @@ static List _get_system_hpu_list_hlml(node_config_load_t *node_config)
 
 	CHECK_HLML(hlml_shutdown());
 
-	info("%u HPU system device(s) detected", device_count);
+	info("%u Gaudi system device(s) detected", device_count);
 	return gres_list_system;
 }
 
@@ -232,7 +232,7 @@ extern List gpu_p_get_system_gpu_list(node_config_load_t *node_config)
 	List gres_list_system = _get_system_hpu_list_hlml(node_config);
 
 	if (!gres_list_system)
-		error("System GPU detection failed");
+		error("System Gaudi accelerators detection failed");
 
 	return gres_list_system;
 }
@@ -243,12 +243,12 @@ extern void gpu_p_step_hardware_init(bitstr_t *usable_gpus, char *tres_freq)
 	xassert(usable_gpus);
 
 	if (!usable_gpus)
-		return;		/* Job allocated no GPUs */
+		return;		/* Job allocated no Gaudi's */
 	if (!tres_freq)
 		return;		/* No TRES frequency spec */
 
 	if (!strstr(tres_freq, "gpu:"))
-		return;		/* No GPU frequency spec */
+		return;		/* No Gaudi frequency spec */
 
 	fprintf(stderr, "GpuFreq=control_disabled\n");
 }
