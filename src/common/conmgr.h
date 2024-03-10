@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  conmgr.h - declarations for connection manager
  *****************************************************************************
- *  Copyright (C) 2019-2020 SchedMD LLC.
- *  Written by Nathan Rini <nate@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

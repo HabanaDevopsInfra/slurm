@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  oci_config.c - parse oci.conf configuration file.
  *****************************************************************************
- *  Copyright (C) 2021 SchedMD LLC.
- *  Written by Nathan Rini <nate@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *  All rights reserved.
  *
  *  This file is part of Slurm, a resource management program.

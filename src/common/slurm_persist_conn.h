@@ -2,8 +2,7 @@
  *  slurm_persist_conn.h - Definitions for communicating over a persistent
  *                         connection within Slurm.
  ******************************************************************************
- *  Copyright (C) 2016 SchedMD LLC
- *  Written by Danny Auble da@schedmd.com, et. al.
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

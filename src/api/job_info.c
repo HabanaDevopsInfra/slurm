@@ -1,7 +1,7 @@
 /*****************************************************************************\
  *  job_info.c - get/print the job state information of slurm
  *****************************************************************************
- *  Portions Copyright (C) 2010-2017 SchedMD LLC <https://www.schedmd.com>.
+ *  Copyright (C) SchedMD LLC.
  *  Copyright (C) 2002-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2010 Lawrence Livermore National Security.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
@@ -56,6 +56,7 @@
 
 #include "src/common/cpu_frequency.h"
 #include "src/common/forward.h"
+#include "src/common/job_state_reason.h"
 #include "src/common/macros.h"
 #include "src/common/parse_time.h"
 #include "src/common/proc_args.h"
@@ -492,7 +493,8 @@ slurm_sprint_job_info ( job_info_t * job_ptr, int one_liner )
 		}
 		xstrfmtcat(out, "Reason=%s ", job_ptr->state_desc);
 	} else
-		xstrfmtcat(out, "Reason=%s ", job_reason_string(job_ptr->state_reason));
+		xstrfmtcat(out, "Reason=%s ",
+			   job_state_reason_string(job_ptr->state_reason));
 
 	if (job_ptr->failed_node)
 		xstrfmtcat(out, "FailedNode=%s ", job_ptr->failed_node);

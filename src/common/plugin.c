@@ -6,8 +6,7 @@
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Jay Windley <jwindley@lnxi.com>.
  *  CODE-OCEC-09-009. All rights reserved.
- *  Portions Copyright (C) 2012 SchedMD LLC.
- *  Written by Danny Auble <da@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

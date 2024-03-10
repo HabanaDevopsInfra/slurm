@@ -4,7 +4,7 @@
  *  Copyright (C) 2002-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2010 Lawrence Livermore National Security.
  *  Portions Copyright (C) 2008 Vijay Ramasubramanian.
- *  Portions Copyright (C) 2010-2016 SchedMD <https://www.schedmd.com>.
+ *  Copyright (C) SchedMD LLC.
  *  Portions (boards) copyright (C) 2012 Bull, <rod.schultz@bull.com>
  *  Portions (route) copyright (C) 2014 Bull, <rod.schultz@bull.com>
  *  Copyright (C) 2012-2013 Los Alamos National Security, LLC.
@@ -4944,15 +4944,12 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 				     "proctrack/linuxproc"))
 				fatal("Invalid combination: PrologFlags=X11 cannot be combined with proctrack/linuxproc");
 			/*
-			 * proctrack/cray_aries or proctrack/cgroup are
-			 * required for pam_slurm_adopt, but don't fatal if
-			 * using a different proctrack plugin.
+			 * proctrack/cgroup is required for pam_slurm_adopt,
+			 * but don't fatal if using a different plugin.
 			 */
 			if (running_in_slurmctld() &&
-			    xstrcmp(conf->proctrack_type, "proctrack/cgroup") &&
-			    xstrcmp(conf->proctrack_type,
-				    "proctrack/cray_aries"))
-				error("If using PrologFlags=Contain for pam_slurm_adopt, either proctrack/cgroup or proctrack/cray_aries is required.  If not using pam_slurm_adopt, please ignore error.");
+			    xstrcmp(conf->proctrack_type, "proctrack/cgroup"))
+				error("If using PrologFlags=Contain for pam_slurm_adopt, proctrack/cgroup is required. If not using pam_slurm_adopt, please ignore error.");
 		}
 		if (conf->prolog_flags & PROLOG_FLAG_NOHOLD) {
 			conf->prolog_flags |= PROLOG_FLAG_ALLOC;

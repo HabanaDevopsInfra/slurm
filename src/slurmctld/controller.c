@@ -3,7 +3,7 @@
  *****************************************************************************
  *  Copyright (C) 2002-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2010 Lawrence Livermore National Security.
- *  Portions Copyright (C) 2010-2016 SchedMD LLC.
+ *  Copyright (C) SchedMD LLC.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Morris Jette <jette1@llnl.gov>, Kevin Tew <tew1@llnl.gov>
  *  CODE-OCEC-09-009. All rights reserved.
@@ -1733,8 +1733,6 @@ static int _init_tres(void)
 				fatal("Burst Buffer type tres need to have a "
 				      "name, (i.e. bb/datawarp).  You gave %s",
 				      temp_char);
-			else if (!xstrcmp(tres_rec->name, "cray"))
-				fatal("The Burst Buffer tres 'bb/cray' changed to 'bb/datawarp'.  Please alter AccountingStorageTRES in your slurm.conf and restart.");
 		} else if (!xstrncasecmp(temp_char, "gres/", 5)) {
 			tres_rec->type[4] = '\0';
 			tres_rec->name = xstrdup(temp_char+5);
@@ -2729,9 +2727,6 @@ static void _parse_commandline(int argc, char **argv)
 		case 'c':
 			recover = 0;
 			break;
-		case 'd':
-			daemonize = true;
-			break;
 		case 'D':
 			daemonize = false;
 			break;
@@ -2782,6 +2777,9 @@ static void _parse_commandline(int argc, char **argv)
 			exit(1);
 		}
 	}
+
+	if (under_systemd && !daemonize)
+		fatal("--systemd and -D options are mutually exclusive");
 
 	/*
 	 * Reconfiguration has historically been equivalent to recover = 1.

@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  jobcomp_kafka_message.h - Kafka message helper header for jobcomp/kafka.
  *****************************************************************************
- *  Copyright (C) 2022 SchedMD LLC.
- *  Written by Alejandro Sanchez <alex@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

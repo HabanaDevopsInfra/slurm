@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  gpu_nvml.c - Support nvml interface to an Nvidia GPU.
  *****************************************************************************
- *  Copyright (C) 2019 SchedMD LLC
- *  Written by Danny Auble <da@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

@@ -2704,7 +2704,8 @@ next_task:
 			sched_debug3("%pJ. State=%s. Reason=%s. Priority=%u.",
 				     job_ptr,
 				     job_state_string(job_ptr->job_state),
-				     job_reason_string(job_ptr->state_reason),
+				     job_state_reason_string(
+					     job_ptr->state_reason),
 				     job_ptr->priority);
 			last_job_update = now;
 			_set_job_time_limit(job_ptr, orig_time_limit);
@@ -2849,8 +2850,9 @@ skip_start:
 				else
 					job_ptr->start_time = now + 500;
 				if (job_ptr->qos_blocking_ptr &&
-				    job_state_qos_grp_limit(
-					    job_ptr->state_reason)) {
+				    job_state_reason_check(
+					    job_ptr->state_reason,
+					    JSR_QOS_GRP)) {
 					assoc_mgr_lock(&qos_read_lock);
 					qos_ptr = job_ptr->qos_blocking_ptr;
 					if (qos_ptr->blocked_until <

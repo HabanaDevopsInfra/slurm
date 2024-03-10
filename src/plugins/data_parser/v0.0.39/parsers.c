@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  parsers.c - Slurm data parsers
  *****************************************************************************
- *  Copyright (C) 2022 SchedMD LLC.
- *  Written by Nathan Rini <nate@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.
@@ -1549,7 +1548,7 @@ static int DUMP_FUNC(JOB_REASON)(const parser_t *const parser, void *obj,
 	xassert(args->magic == MAGIC_ARGS);
 	xassert(data_get_type(dst) == DATA_TYPE_NULL);
 
-	data_set_string(dst, job_reason_string(*state));
+	data_set_string(dst, job_state_reason_string(*state));
 
 	return SLURM_SUCCESS;
 }

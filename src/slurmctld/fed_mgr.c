@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  fed_mgr.c - functions for federations
  *****************************************************************************
- *  Copyright (C) 2016 SchedMD LLC.
- *  Written by Brian Christiansen <brian@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

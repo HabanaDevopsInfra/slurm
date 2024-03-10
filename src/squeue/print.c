@@ -3,7 +3,7 @@
  *****************************************************************************
  *  Copyright (C) 2002-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2010 Lawrence Livermore National Security.
- *  Copyright (C) 2010-2013 SchedMD LLC.
+ *  Copyright (C) SchedMD LLC.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Joey Ekstrom <ekstrom1@llnl.gov>, et. al.
  *  CODE-OCEC-09-009. All rights reserved.
@@ -169,16 +169,16 @@ extern void print_steps_array(job_step_info_t *steps, int size, list_t *format)
  * reason as needed */
 static void _merge_job_reason(job_info_t *job_ptr, job_info_t *task_ptr)
 {
-	char *task_desc;
+	const char *task_desc;
 
 	if (job_ptr->state_reason == task_ptr->state_reason)
 		return;
 
 	if (!job_ptr->state_desc) {
 		job_ptr->state_desc =
-			xstrdup(job_reason_string(job_ptr->state_reason));
+			xstrdup(job_state_reason_string(job_ptr->state_reason));
 	}
-	task_desc = job_reason_string(task_ptr->state_reason);
+	task_desc = job_state_reason_string(task_ptr->state_reason);
 	if (strstr(job_ptr->state_desc, task_desc))
 		return;
 	xstrfmtcat(job_ptr->state_desc, ",%s", task_desc);
@@ -696,12 +696,12 @@ int _print_job_reason(job_info_t * job, int width, bool right, char* suffix)
 	if (job == NULL)        /* Print the Header instead */
 		_print_str("REASON", width, right, true);
 	else {
-		char *reason;
+		const char *reason;
 		if (job->state_desc)
 			reason = job->state_desc;
 		else
-			reason = job_reason_string(job->state_reason);
-		_print_str(reason, width, right, true);
+			reason = job_state_reason_string(job->state_reason);
+		_print_str((char *)reason, width, right, true);
 	}
 	if (suffix)
 		printf("%s", suffix);
@@ -1082,11 +1082,12 @@ int _print_job_reason_list(job_info_t * job, int width, bool right,
 		       || IS_JOB_OOM(job)
 		       || IS_JOB_DEADLINE(job)
 		       || IS_JOB_FAILED(job))) {
-		char *reason_fmt = NULL, *reason = NULL;
+		char *reason_fmt = NULL;
+		const char *reason = NULL;
 		if (job->state_desc)
 			reason = job->state_desc;
 		else
-			reason = job_reason_string(job->state_reason);
+			reason = job_state_reason_string(job->state_reason);
 		xstrfmtcat(reason_fmt, "(%s)", reason);
 		_print_str(reason_fmt, width, right, true);
 		xfree(reason_fmt);

@@ -1,7 +1,7 @@
 /*****************************************************************************\
  *  job_info.c - Functions related to job display mode of sview.
  *****************************************************************************
- *  Portions Copyright (C) 2011-2014 SchedMD LLC
+ *  Copyright (C) SchedMD LLC.
  *  Copyright (C) 2008-2011 Lawrence Livermore National Security.
  *  Copyright (C) 2004-2007 The Regents of the University of California.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
@@ -1207,7 +1207,8 @@ static void _layout_job_record(GtkTreeView *treeview,
 			       sview_job_info_t *sview_job_info_ptr,
 			       int update)
 {
-	char *nodes = NULL, *reason = NULL, *uname = NULL;
+	char *nodes = NULL, *uname = NULL;
+	const char *reason = NULL;
 	char *group;
 	char tmp_char[256];
 	char time_buf[32];
@@ -1667,7 +1668,7 @@ static void _layout_job_record(GtkTreeView *treeview,
 	if (job_ptr->state_desc)
 		reason = job_ptr->state_desc;
 	else
-		reason = job_reason_string(job_ptr->state_reason);
+		reason = job_state_reason_string(job_ptr->state_reason);
 	add_display_treestore_line(update, treestore, &iter,
 				   find_col_name(display_data_job,
 						 SORTID_REASON), reason);
@@ -1886,7 +1887,8 @@ static void _update_job_record(sview_job_info_t *sview_job_info_ptr,
 	char tmp_het_job_id_set[40], tmp_het_job_offset[40];
 	char tmp_time_accrue[256];
 	char *tmp_batch,  *tmp_cont, *tmp_requeue, *tmp_uname, *tmp_gname;
-	char *tmp_reboot, *tmp_reason, *tmp_nodes;
+	char *tmp_reboot,*tmp_nodes;
+	const char *tmp_reason;
 	char time_buf[32];
 	time_t now_time = time(NULL);
 	int suspend_secs = 0;
@@ -2104,7 +2106,7 @@ static void _update_job_record(sview_job_info_t *sview_job_info_ptr,
 	if (job_ptr->state_desc)
 		tmp_reason = job_ptr->state_desc;
 	else
-		tmp_reason = job_reason_string(job_ptr->state_reason);
+		tmp_reason = job_state_reason_string(job_ptr->state_reason);
 
 	if (job_ptr->reboot)
 		tmp_reboot = "yes";

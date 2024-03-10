@@ -3,7 +3,7 @@
  *****************************************************************************
  *  Copyright (C) 2002-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2010 Lawrence Livermore National Security.
- *  Portions Copyright (C) 2010-2017 SchedMD <https://www.schedmd.com>.
+ *  Copyright (C) SchedMD LLC.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Joey Ekstrom <ekstrom1@llnl.gov>, Morris Jette <jette1@llnl.gov>
  *  CODE-OCEC-09-009. All rights reserved.
@@ -171,11 +171,8 @@ extern void parse_command_line(int argc, char **argv)
 	if ( ( env_val = getenv("SINFO_SORT") ) )
 		params.sort = xstrdup(env_val);
 	if ( ( env_val = getenv("SLURM_CLUSTERS") ) ) {
-		if (!(params.clusters = slurmdb_get_info_cluster(env_val))) {
-			print_db_notok(env_val, 1);
-			exit(1);
-		}
-		working_cluster_rec = list_peek(params.clusters);
+		xfree(params.cluster_names);
+		params.cluster_names = xstrdup(env_val);
 		params.local = true;
 	}
 
@@ -218,13 +215,8 @@ extern void parse_command_line(int argc, char **argv)
 			params.long_output = true;
 			break;
 		case (int) 'M':
-			FREE_NULL_LIST(params.clusters);
-			if (!(params.clusters =
-			      slurmdb_get_info_cluster(optarg))) {
-				print_db_notok(optarg, 0);
-				exit(1);
-			}
-			working_cluster_rec = list_peek(params.clusters);
+			xfree(params.cluster_names);
+			params.cluster_names = xstrdup(optarg);
 			params.local = true;
 			break;
 		case OPT_LONG_NOCONVERT:
@@ -355,6 +347,20 @@ extern void parse_command_line(int argc, char **argv)
 		error("Conflicting options, -a and -p, specified. "
 		      "Please choose one or the other.");
 		exit(1);
+	}
+
+	FREE_NULL_LIST(params.clusters);
+	if (params.cluster_names) {
+		if (slurm_get_cluster_info(&(params.clusters),
+					   params.cluster_names,
+					   (params.federation_flag ?
+					    SHOW_FEDERATION : SHOW_LOCAL))) {
+
+			print_db_notok(params.cluster_names, 0);
+			fatal("Could not get cluster information");
+		}
+		working_cluster_rec = list_peek(params.clusters);
+		params.local = true;
 	}
 
 	params.cluster_flags = slurmdb_setup_cluster_flags();

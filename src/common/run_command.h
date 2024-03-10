@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  run_command.h - run a command asynchronously and return output
  *****************************************************************************
- *  Copyright (C) 2014-2017 SchedMD LLC.
- *  Written by Morris Jette <jette@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

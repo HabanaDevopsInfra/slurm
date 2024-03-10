@@ -3,7 +3,7 @@
  *****************************************************************************
  *  Copyright (C) 2006-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2009 Lawrence Livermore National Security.
- *  Portions Copyright (C) 2010-2017 SchedMD LLC
+ *  Copyright (C) SchedMD LLC.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Danny Auble <da@llnl.gov>.
  *  CODE-OCEC-09-009. All rights reserved.
@@ -133,7 +133,7 @@ static void _help_job_reason_msg(void)
 			printf(" ");
 		else if (idx)
 			printf("\n");
-		printf("%-39s", job_reason_string(idx));
+		printf("%-39s", job_state_reason_string(idx));
 	}
 	printf("\n");
 	return;
@@ -145,7 +145,7 @@ static int _addto_reason_char_list_internal(List char_list, char *name, void *x)
 	uint32_t c;
 	char *tmp_name = NULL;
 
-	c = job_reason_num(name);
+	c = job_state_reason_num(name);
 	if (c == NO_VAL)
 		fatal("unrecognized job reason value '%s'", name);
 	tmp_name = xstrdup_printf("%u", c);

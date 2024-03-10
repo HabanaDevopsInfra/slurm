@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  x11_forwarding.c - setup x11 port forwarding
  *****************************************************************************
- *  Copyright (C) 2017-2019 SchedMD LLC.
- *  Written by Tim Wickberg <tim@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

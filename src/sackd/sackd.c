@@ -2,7 +2,6 @@
  *  sackd.c
  *****************************************************************************
  *  Copyright (C) SchedMD LLC.
- *  Written by Tim Wickberg <tim@schedmd.com>
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.
@@ -129,6 +128,9 @@ static void _parse_args(int argc, char **argv)
 			break;
 		}
 	}
+
+	if (under_systemd && !daemonize)
+		fatal("--systemd and -D options are mutually exclusive");
 
 	if (under_systemd) {
 		if (!getenv("NOTIFY_SOCKET"))

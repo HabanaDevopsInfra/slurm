@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  gpu_common.c - GPU plugin common functions
  *****************************************************************************
- *  Copyright (C) 2021 SchedMD LLC
- *  Written by Michael Hinton <hinton@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

@@ -6,8 +6,7 @@
  *
  *  Written by Rod Schultz <rod.schultz@bull.com>
  *
- *  Portions Copyright (C) 2013 SchedMD LLC.
- *  Written by Danny Auble <da@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  Provide support for acct_gather_profile plugins based on HDF5 files.
  *

@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  pem_key.c - Build a PEM-formatted RSA public key from mod and exp
  *****************************************************************************
- *  Copyright (C) 2021 SchedMD LLC.
- *  Written by Tim Wickberg <tim@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

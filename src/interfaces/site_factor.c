@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  site_factor.c - site priority factor driver
  *****************************************************************************
- *  Copyright (C) 2019 SchedMD LLC
- *  Written by Tim Wickberg <tim@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

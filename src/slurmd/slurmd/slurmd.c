@@ -4,7 +4,7 @@
  *  Copyright (C) 2002-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2010 Lawrence Livermore National Security.
  *  Portions Copyright (C) 2008 Vijay Ramasubramanian.
- *  Portions Copyright (C) 2010-2013 SchedMD LLC.
+ *  Copyright (C) SchedMD LLC.
  *  Copyright (C) 2013      Intel, Inc.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Mark Grondona <mgrondona@llnl.gov>.
@@ -1735,6 +1735,9 @@ _process_cmdline(int ac, char **av)
 			break;
 		}
 	}
+
+	if (under_systemd && !conf->daemonize)
+		fatal("--systemd and -D options are mutually exclusive");
 
 	/*
 	 *  If slurmstepd path wasn't overridden by command line, set

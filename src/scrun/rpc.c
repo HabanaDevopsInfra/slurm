@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  rpc.c - rpc handlers
  *****************************************************************************
- *  Copyright (C) 2023 SchedMD LLC.
- *  Written by Nathan Rini <nate@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

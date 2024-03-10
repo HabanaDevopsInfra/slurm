@@ -3,7 +3,7 @@
  *****************************************************************************
  *  Copyright (C) 2002-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2010 Lawrence Livermore National Security.
- *  Copyright (C) 2010-2013 SchedMD LLC.
+ *  Copyright (C) SchedMD LLC.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Joey Ekstrom <ekstrom1@llnl.gov>, Morris Jette <jette1@llnl.gov>
  *  CODE-OCEC-09-009. All rights reserved.
@@ -172,11 +172,8 @@ extern void parse_command_line(int argc, char **argv)
 	if ( ( env_val = getenv("SQUEUE_SORT") ) )
 		params.sort = xstrdup(env_val);
 	if ( ( env_val = getenv("SLURM_CLUSTERS") ) ) {
-		if (!(params.clusters = slurmdb_get_info_cluster(env_val))) {
-			print_db_notok(env_val, 1);
-			exit(1);
-		}
-		working_cluster_rec = list_peek(params.clusters);
+		xfree(params.cluster_names);
+		params.cluster_names = xstrdup(env_val);
 		params.local_flag = true;
 	}
 	if (getenv("SQUEUE_FEDERATION"))
@@ -233,14 +230,8 @@ extern void parse_command_line(int argc, char **argv)
 			params.licenses_list = _build_str_list(params.licenses);
 			break;
 		case (int) 'M':
-			if (params.clusters)
-				FREE_NULL_LIST(params.clusters);
-			if (!(params.clusters =
-			      slurmdb_get_info_cluster(optarg))) {
-				print_db_notok(optarg, 0);
-				exit(1);
-			}
-			working_cluster_rec = list_peek(params.clusters);
+			xfree(params.cluster_names);
+			params.cluster_names = xstrdup(optarg);
 			params.local_flag = true;
 			break;
 		case (int) 'n':
@@ -409,6 +400,9 @@ extern void parse_command_line(int argc, char **argv)
 	if (params.long_list && params.format)
 		fatal("Options -o(--format) and -l(--long) are mutually exclusive. Please remove one and retry.");
 
+	if (params.only_state && params.step_flag)
+		fatal("Options --only-job-state and -s(--steps) are mutually exclusive. Please remove one and retry.");
+
 	if (!override_format_env) {
 		if ((env_val = getenv("SQUEUE_FORMAT")))
 			params.format = xstrdup(env_val);
@@ -430,6 +424,20 @@ extern void parse_command_line(int argc, char **argv)
 			_usage();
 			exit(1);
 		}
+	}
+
+	FREE_NULL_LIST(params.clusters);
+	if (params.cluster_names) {
+		if (slurm_get_cluster_info(&(params.clusters),
+					   params.cluster_names,
+					   (params.federation_flag ?
+					    SHOW_FEDERATION : SHOW_LOCAL))) {
+
+			print_db_notok(params.cluster_names, 0);
+			fatal("Could not get cluster information");
+		}
+		working_cluster_rec = list_peek(params.clusters);
+		params.local_flag = true;
 	}
 
 	if ( params.job_flag && params.step_flag) {

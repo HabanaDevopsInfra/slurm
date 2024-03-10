@@ -2,8 +2,7 @@
  *  node_features.h - Infrastructure for changing a node's features on user
  *	demand
  *****************************************************************************
- *  Copyright (C) 2016 SchedMD LLC.
- *  Written by Morris Jette <jette@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

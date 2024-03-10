@@ -3,7 +3,7 @@
  *****************************************************************************
  *  Copyright (C) 2002-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2010 Lawrence Livermore National Security.
- *  Portions Copyright (C) 2010-2014 SchedMD <https://www.schedmd.com>.
+ *  Copyright (C) SchedMD LLC.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Morris Jette <jette1@llnl.gov> et. al.
  *  CODE-OCEC-09-009. All rights reserved.
@@ -57,6 +57,7 @@
 #include "src/common/extra_constraints.h"
 #include "src/common/identity.h"
 #include "src/common/job_resources.h"
+#include "src/common/job_state_reason.h"
 #include "src/common/list.h"
 #include "src/common/log.h"
 #include "src/common/macros.h"
@@ -2018,13 +2019,6 @@ extern void make_node_comp(node_record_t *node_ptr, job_record_t *job_ptr,
  */
 extern void make_node_idle(node_record_t *node_ptr, job_record_t *job_ptr);
 
-/*
- * Determine of the specified job can execute right now or is currently
- * blocked by a partition state or limit. These job states should match the
- * reason values returned by job_limits_check().
- */
-extern bool misc_policy_job_runnable_state(job_record_t *job_ptr);
-
 /* msg_to_slurmd - send given msg_type every slurmd, no args */
 extern void msg_to_slurmd (slurm_msg_type_t msg_type);
 
@@ -2219,13 +2213,6 @@ extern void part_fini (void);
  * RET copy of part_list_src, must be freed by caller
  */
 extern List part_list_copy(List part_list_src);
-
-/*
- * Determine of the specified job can execute right now or is currently
- * blocked by a partition state or limit. Execute job_limits_check() to
- * re-validate job state.
- */
-extern bool part_policy_job_runnable_state(job_record_t *job_ptr);
 
 /*
  * Validate a job's account against the partition's AllowAccounts or

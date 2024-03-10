@@ -5,8 +5,7 @@
  *  buffer plugins at the same time, so the state information is largely in the
  *  individual plugin and passed as a pointer argument to these functions.
  *****************************************************************************
- *  Copyright (C) 2014-2015 SchedMD LLC.
- *  Written by Morris Jette <jette@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.
@@ -216,6 +215,7 @@ extern void bb_clear_config(bb_config_t *config_ptr, bool fini)
 	xfree(config_ptr->get_sys_state);
 	xfree(config_ptr->get_sys_status);
 	config_ptr->granularity = 1;
+	config_ptr->poll_interval = 0;
 	if (fini) {
 		for (i = 0; i < config_ptr->pool_cnt; i++)
 			xfree(config_ptr->pool_ptr[i].name);
@@ -497,8 +497,8 @@ extern void bb_set_tres_pos(bb_state_t *state_ptr)
 	inx = assoc_mgr_find_tres_pos(&tres_rec, false);
 	state_ptr->tres_pos = inx;
 	if (inx == -1) {
-		debug3("%s: Tres %s not found by assoc_mgr",
-		       __func__, state_ptr->name);
+		debug3("Tres %s not found by assoc_mgr",
+		       state_ptr->name);
 	} else {
 		state_ptr->tres_id  = assoc_mgr_tres_array[inx]->id;
 	}
@@ -524,6 +524,7 @@ extern void bb_load_config(bb_state_t *state_ptr, char *plugin_type)
 		{"GetSysStatus", S_P_STRING},
 		{"Granularity", S_P_STRING},
 		{"OtherTimeout", S_P_UINT32},
+		{"PollInterval", S_P_UINT32},
 		{"Pools", S_P_STRING},
 		{"StageInTimeout", S_P_UINT32},
 		{"StageOutTimeout", S_P_UINT32},
@@ -548,6 +549,7 @@ extern void bb_load_config(bb_state_t *state_ptr, char *plugin_type)
 	/* Set default configuration */
 	bb_clear_config(&state_ptr->bb_config, false);
 	state_ptr->bb_config.flags |= BB_FLAG_DISABLE_PERSISTENT;
+	state_ptr->bb_config.poll_interval = DEFAULT_BB_POLL_INTERVAL;
 	state_ptr->bb_config.other_timeout = DEFAULT_OTHER_TIMEOUT;
 	state_ptr->bb_config.stage_in_timeout = DEFAULT_STATE_IN_TIMEOUT;
 	state_ptr->bb_config.stage_out_timeout = DEFAULT_STATE_OUT_TIMEOUT;
@@ -566,8 +568,8 @@ extern void bb_load_config(bb_state_t *state_ptr, char *plugin_type)
 		bb_conf = get_extra_conf_path(new_path);
 		fd = open(bb_conf, 0);
 		if (fd < 0) {
-			info("%s: Unable to find configuration file %s or "
-			     "burst_buffer.conf", __func__, new_path);
+			info("Unable to find configuration file %s or "
+			     "burst_buffer.conf", new_path);
 			xfree(bb_conf);
 			xfree(new_path);
 			return;
@@ -652,6 +654,8 @@ extern void bb_load_config(bb_state_t *state_ptr, char *plugin_type)
 		xfree(tmp);
 	}
 
+	(void) s_p_get_uint32(&state_ptr->bb_config.poll_interval,
+			     "PollInterval", bb_hashtbl);
 	(void) s_p_get_uint32(&state_ptr->bb_config.other_timeout,
 			     "OtherTimeout", bb_hashtbl);
 	(void) s_p_get_uint32(&state_ptr->bb_config.stage_in_timeout,
@@ -674,47 +678,49 @@ extern void bb_load_config(bb_state_t *state_ptr, char *plugin_type)
 
 	if (slurm_conf.debug_flags & DEBUG_FLAG_BURST_BUF) {
 		value = _print_users(state_ptr->bb_config.allow_users);
-		info("%s: AllowUsers:%s",  __func__, value);
+		info("AllowUsers:%s",  value);
 		xfree(value);
-		info("%s: CreateBuffer:%s",  __func__,
+		info("CreateBuffer:%s",
 		     state_ptr->bb_config.create_buffer);
-		info("%s: DefaultPool:%s",  __func__,
+		info("DefaultPool:%s",
 		     state_ptr->bb_config.default_pool);
 		value = _print_users(state_ptr->bb_config.deny_users);
-		info("%s: DenyUsers:%s",  __func__, value);
+		info("DenyUsers:%s",  value);
 		xfree(value);
-		info("%s: DestroyBuffer:%s",  __func__,
+		info("DestroyBuffer:%s",
 		     state_ptr->bb_config.destroy_buffer);
-		info("%s: Directive:%s",
-		     __func__, state_ptr->bb_config.directive_str);
-		info("%s: Flags:%s",
-		     __func__, slurm_bb_flags2str(state_ptr->bb_config.flags));
-		info("%s: GetSysState:%s",  __func__,
+		info("Directive:%s",
+		     state_ptr->bb_config.directive_str);
+		info("Flags:%s",
+		     slurm_bb_flags2str(state_ptr->bb_config.flags));
+		info("GetSysState:%s",
 		     state_ptr->bb_config.get_sys_state);
-		info("%s: GetSysStatus:%s",  __func__,
+		info("GetSysStatus:%s",
 		     state_ptr->bb_config.get_sys_status);
-		info("%s: Granularity:%"PRIu64"",  __func__,
+		info("Granularity:%"PRIu64"",
 		     state_ptr->bb_config.granularity);
 		for (i = 0; i < state_ptr->bb_config.pool_cnt; i++) {
-			info("%s: Pool[%d]:%s:%"PRIu64"", __func__, i,
+			info("Pool[%d]:%s:%"PRIu64"", i,
 			     state_ptr->bb_config.pool_ptr[i].name,
 			     state_ptr->bb_config.pool_ptr[i].total_space);
 		}
-		info("%s: OtherTimeout:%u", __func__,
+		info("PollInterval:%u",
+		     state_ptr->bb_config.poll_interval);
+		info("OtherTimeout:%u",
 		     state_ptr->bb_config.other_timeout);
-		info("%s: StageInTimeout:%u", __func__,
+		info("StageInTimeout:%u",
 		     state_ptr->bb_config.stage_in_timeout);
-		info("%s: StageOutTimeout:%u", __func__,
+		info("StageOutTimeout:%u",
 		     state_ptr->bb_config.stage_out_timeout);
-		info("%s: StartStageIn:%s",  __func__,
+		info("StartStageIn:%s",
 		     state_ptr->bb_config.start_stage_in);
-		info("%s: StartStageOut:%s",  __func__,
+		info("StartStageOut:%s",
 		     state_ptr->bb_config.start_stage_out);
-		info("%s: StopStageIn:%s",  __func__,
+		info("StopStageIn:%s",
 		     state_ptr->bb_config.stop_stage_in);
-		info("%s: StopStageOut:%s",  __func__,
+		info("StopStageOut:%s",
 		     state_ptr->bb_config.stop_stage_out);
-		info("%s: ValidateTimeout:%u", __func__,
+		info("ValidateTimeout:%u",
 		     state_ptr->bb_config.validate_timeout);
 	}
 }
@@ -819,7 +825,37 @@ extern void bb_pack_state(bb_state_t *state_ptr, buf_t *buffer,
 	int i;
 
 
-	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_24_08_PROTOCOL_VERSION) {
+		packstr(config_ptr->allow_users_str, buffer);
+		packstr(config_ptr->create_buffer,   buffer);
+		packstr(config_ptr->default_pool,    buffer);
+		packstr(config_ptr->deny_users_str,  buffer);
+		packstr(config_ptr->destroy_buffer,  buffer);
+		pack32(config_ptr->flags,            buffer);
+		packstr(config_ptr->get_sys_state,   buffer);
+		packstr(config_ptr->get_sys_status,   buffer);
+		pack64(config_ptr->granularity,      buffer);
+		pack32(config_ptr->pool_cnt,         buffer);
+		for (i = 0; i < config_ptr->pool_cnt; i++) {
+			packstr(config_ptr->pool_ptr[i].name, buffer);
+			pack64(config_ptr->pool_ptr[i].total_space, buffer);
+			pack64(config_ptr->pool_ptr[i].granularity, buffer);
+			pack64(config_ptr->pool_ptr[i].unfree_space, buffer);
+			pack64(config_ptr->pool_ptr[i].used_space, buffer);
+		}
+		pack32(config_ptr->poll_interval, buffer);
+		pack32(config_ptr->other_timeout,    buffer);
+		packstr(config_ptr->start_stage_in,  buffer);
+		packstr(config_ptr->start_stage_out, buffer);
+		packstr(config_ptr->stop_stage_in,   buffer);
+		packstr(config_ptr->stop_stage_out,  buffer);
+		pack32(config_ptr->stage_in_timeout, buffer);
+		pack32(config_ptr->stage_out_timeout,buffer);
+		pack64(state_ptr->total_space,       buffer);
+		pack64(state_ptr->unfree_space,      buffer);
+		pack64(state_ptr->used_space,        buffer);
+		pack32(config_ptr->validate_timeout, buffer);
+	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		packstr(config_ptr->allow_users_str, buffer);
 		packstr(config_ptr->create_buffer,   buffer);
 		packstr(config_ptr->default_pool,    buffer);
@@ -1477,8 +1513,8 @@ extern void bb_limit_rem(uint32_t user_id, uint64_t bb_size, char *pool,
 			 * after making a claim against resources, but before
 			 * the buffer actually gets created.
 			 */
-			debug2("%s: unfree_space underflow (%"PRIu64" < %"PRIu64")",
-			        __func__, state_ptr->unfree_space, bb_size);
+			debug2("unfree_space underflow (%"PRIu64" < %"PRIu64")",
+			        state_ptr->unfree_space, bb_size);
 			state_ptr->unfree_space = 0;
 		}
 	} else {
@@ -1501,8 +1537,8 @@ extern void bb_limit_rem(uint32_t user_id, uint64_t bb_size, char *pool,
 				 * state after making a claim against resources,
 				 * but before the buffer actually gets created.
 				 */
-				debug2("%s: unfree_space underflow for pool %s",
-				       __func__, pool);
+				debug2("unfree_space underflow for pool %s",
+				       pool);
 				pool_ptr->unfree_space = 0;
 			}
 			break;
@@ -2054,7 +2090,7 @@ extern bool bb_valid_pool_test(bb_state_t *state_ptr, char *pool_name)
 		if (!xstrcmp(pool_name, pool_ptr->name))
 			return true;
 	}
-	info("%s: Invalid pool requested (%s)", __func__, pool_name);
+	info("Invalid pool requested (%s)", pool_name);
 
 	return false;
 }

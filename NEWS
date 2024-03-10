@@ -69,6 +69,20 @@ documents those changes that are of interest to users and administrators.
     that are not configured on a node.
  -- slurmrestd - Fatal during start up when loading content plugin fails.
  -- slurmrestd - Reduce complexity in URL path matching.
+ -- data_parser/v0.0.41 - Emit a warning instead of an error if a disabled
+    parser is invoked.
+ -- Federation - allow client command operation when slurmdbd is unavailable.
+ -- Enforce mutual exclusivity of --systemd and -D when launching daemons
+ -- slurmctld - remove -d option
+ -- burst_buffer/lua - Trigger a burst_buffer event for strigger when the
+    real_size function fails.
+ -- burst_buffer/lua - Added two new hooks: slurm_bb_test_data_in and
+    slurm_bb_test_data_out. The syntax and use of the new hooks are documented
+    in etc/burst_buffer.lua.example. These are required to exist. slurmctld now
+    checks on startup if the burst_buffer.lua script loads and contains all
+    required hooks; slurmctld will exit with a fatal error if this is not
+    successful. Added PollInterval to burst_buffer.conf. Removed the arbitrary
+    limit of 512 copies of the script running simultaneously.
 
 * Changes in Slurm 23.11.5
 ==========================
@@ -106,6 +120,11 @@ documents those changes that are of interest to users and administrators.
     --gres=gpu:1,tmpfs:foo:2,tmpfs:bar:7). Otherwise, the job could bypass
     limits configured for the generic of the typed one (tmpfs in the example).
  -- Fix batch step not having SLURM_CLUSTER_NAME filled in.
+ -- slurmstepd - Avoid error during `--container` job cleanup about
+    RunTimeQuery never being configured. Results in cleanup where job steps not
+    fully started.
+ -- Fix nodes not being rebooted when using salloc/sbatch/srun "--reboot" flag.
+ -- Send scrun.lua in configless mode.
 
 * Changes in Slurm 23.11.4
 ==========================

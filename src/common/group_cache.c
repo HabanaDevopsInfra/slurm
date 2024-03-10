@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  group_cache.c - locally cache results from getgrouplist()
  *****************************************************************************
- *  Copyright (C) 2017 SchedMD LLC.
- *  Written by Tim Wickberg <tim@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *  Based on code originally contributed by Takao Hatazaki (HP).
  *
  *  This file is part of Slurm, a resource management program.

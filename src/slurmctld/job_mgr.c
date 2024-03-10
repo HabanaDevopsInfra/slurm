@@ -5,7 +5,7 @@
  *****************************************************************************
  *  Copyright (C) 2002-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2010 Lawrence Livermore National Security.
- *  Portions Copyright (C) 2010-2017 SchedMD <https://www.schedmd.com>.
+ *  Copyright (C) SchedMD LLC.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Morris Jette <jette1@llnl.gov>
  *  CODE-OCEC-09-009. All rights reserved.
@@ -163,17 +163,6 @@ typedef struct {
 	int node_index;
 	int node_count;
 } node_inx_cnt_t;
-
-typedef struct {
-	int rc;
-	uint32_t *jobs_count_ptr;
-	job_state_response_job_t **jobs_pptr;
-} job_state_args_t;
-
-typedef struct {
-	job_record_t *job_ptr;
-	job_state_args_t *job_state_args;
-} foreach_het_job_state_args_t;
 
 /* Global variables */
 List   job_list = NULL;		/* job_record list */
@@ -5088,7 +5077,7 @@ extern int job_allocate(job_desc_msg_t *job_desc, int immediate,
 			job_completion_logger(job_ptr, false);
 			error("%s: setting %pJ to \"%s\"",
 			      __func__, job_ptr,
-			      job_reason_string(job_ptr->state_reason));
+			      job_state_reason_string(job_ptr->state_reason));
 		}
 		return error_code;
 	}
@@ -5142,28 +5131,28 @@ extern int job_allocate(job_desc_msg_t *job_desc, int immediate,
 		if (!independent) {
 			debug2("%s: setting %pJ to \"%s\" due to dependency (%s)",
 			       __func__, job_ptr,
-			       job_reason_string(job_ptr->state_reason),
+			       job_state_reason_string(job_ptr->state_reason),
 			       slurm_strerror(ESLURM_DEPENDENCY));
 			return ESLURM_DEPENDENCY;
 		}
 		else if (too_fragmented) {
 			debug2("%s: setting %pJ to \"%s\" due to fragmentation (%s)",
 			       __func__, job_ptr,
-			       job_reason_string(job_ptr->state_reason),
+			       job_state_reason_string(job_ptr->state_reason),
 			       slurm_strerror(ESLURM_FRAGMENTATION));
 			return ESLURM_FRAGMENTATION;
 		}
 		else if (!top_prio) {
 			debug2("%s: setting %pJ to \"%s\" because it's not top priority (%s)",
 			       __func__, job_ptr,
-			       job_reason_string(job_ptr->state_reason),
+			       job_state_reason_string(job_ptr->state_reason),
 			       slurm_strerror(ESLURM_NOT_TOP_PRIORITY));
 			return ESLURM_NOT_TOP_PRIORITY;
 		} else {
 			job_ptr->state_reason = FAIL_DEFER;
 			debug2("%s: setting %pJ to \"%s\" due to SchedulerParameters=defer (%s)",
 			       __func__, job_ptr,
-			       job_reason_string(job_ptr->state_reason),
+			       job_state_reason_string(job_ptr->state_reason),
 			       slurm_strerror(ESLURM_DEFER));
 			return ESLURM_DEFER;
 		}
@@ -5269,7 +5258,7 @@ extern int job_allocate(job_desc_msg_t *job_desc, int immediate,
 			job_completion_logger(job_ptr, false);
 			debug2("%s: setting %pJ to \"%s\" because it cannot be immediately allocated (%s)",
 			       __func__, job_ptr,
-			       job_reason_string(job_ptr->state_reason),
+			       job_state_reason_string(job_ptr->state_reason),
 			       slurm_strerror(error_code));
 		} else {	/* job remains queued */
 			if ((error_code == ESLURM_NODES_BUSY) ||
@@ -5295,7 +5284,7 @@ extern int job_allocate(job_desc_msg_t *job_desc, int immediate,
 		job_completion_logger(job_ptr, false);
 		debug2("%s: setting %pJ to \"%s\" due to a flaw in the job request (%s)",
 		       __func__, job_ptr,
-		       job_reason_string(job_ptr->state_reason),
+		       job_state_reason_string(job_ptr->state_reason),
 		       slurm_strerror(error_code));
 		return error_code;
 	}
@@ -7367,11 +7356,12 @@ static int _job_create(job_desc_msg_t *job_desc, int allocate, int will_run,
 				   &acct_policy_limit_set, 0))) {
 		if (err_msg) {
 			xfree(*err_msg);
-			*err_msg = xstrdup(job_reason_string(acct_reason));
+			*err_msg =
+				xstrdup(job_state_reason_string(acct_reason));
 		}
 		info("%s: exceeded association/QOS limit for user %u: %s",
 		     __func__, job_desc->user_id,
-		     err_msg ? *err_msg : job_reason_string(acct_reason));
+		     err_msg ? *err_msg : job_state_reason_string(acct_reason));
 		error_code = ESLURM_ACCOUNTING_POLICY;
 		goto cleanup_fail;
 	}
@@ -10235,161 +10225,6 @@ static buf_t *_pack_init_job_info(uint16_t protocol_version)
 	return buffer;
 }
 
-static job_state_response_job_t *_append_job_state(job_state_args_t *args,
-						   uint32_t job_id)
-{
-	job_state_response_job_t *rjob;
-
-	xassert(job_id > 0);
-
-	(*args->jobs_count_ptr)++;
-	if (!try_xrecalloc((*args->jobs_pptr), *args->jobs_count_ptr,
-			   sizeof(**args->jobs_pptr))) {
-		args->rc = ENOMEM;
-		return NULL;
-	}
-
-	rjob = &((*args->jobs_pptr)[*args->jobs_count_ptr - 1]);
-
-	return rjob;
-}
-
-static bitstr_t *_job_state_array_bitmap(const job_record_t *job_ptr)
-{
-	if (!job_ptr->array_recs)
-		return NULL;
-
-	if (job_ptr->array_recs->task_id_bitmap &&
-	    (bit_ffs(job_ptr->array_recs->task_id_bitmap) != -1))
-		return bit_copy(job_ptr->array_recs->task_id_bitmap);
-
-	return NULL;
-}
-
-static int _add_job_state_job(job_state_args_t *args,
-			      const job_record_t *job_ptr)
-{
-	job_state_response_job_t *rjob;
-
-	if (!(rjob = _append_job_state(args, job_ptr->job_id)))
-		return SLURM_ERROR;
-
-	rjob->job_id = job_ptr->job_id;
-	rjob->array_job_id = job_ptr->array_job_id;
-	rjob->array_task_id = job_ptr->array_task_id;
-	rjob->array_task_id_bitmap = _job_state_array_bitmap(job_ptr);
-	rjob->het_job_id = job_ptr->het_job_id;
-	rjob->state = job_ptr->job_state;
-	return SLURM_SUCCESS;
-}
-
-static int _foreach_add_job_state_het_job(void *x, void *arg)
-{
-	job_record_t *het_job_ptr = x;
-	foreach_het_job_state_args_t *het_args = arg;
-
-	if (het_job_ptr->het_job_id == het_args->job_ptr->het_job_id) {
-		_add_job_state_job(het_args->job_state_args, het_job_ptr);
-		return 0;
-	} else {
-		error("%s: Bad het_job_list for %pJ",
-		      __func__, het_args->job_ptr);
-		return -1;
-	}
-}
-
-static int _add_job_state_by_job_id(const uint32_t job_id,
-				    job_state_args_t *args)
-{
-	job_record_t *job_ptr;
-	int rc = SLURM_SUCCESS;
-
-	/*
-	 * This uses the same logic as pack_one_job().
-	 * TODO: Combine the duplicate logic.
-	 */
-	job_ptr = find_job_record(job_id);
-
-	if (job_ptr && job_ptr->het_job_list) {
-		foreach_het_job_state_args_t het_args = {
-			.job_ptr = job_ptr,
-			.job_state_args = args,
-		};
-
-		if (list_for_each(job_ptr->het_job_list,
-				  _foreach_add_job_state_het_job,
-				  &het_args) < 0) {
-			return SLURM_ERROR;
-		}
-		return SLURM_SUCCESS;
-	} else if (job_ptr && (job_ptr->array_task_id == NO_VAL) &&
-		   !job_ptr->array_recs) {
-		/* Pack regular (not array) job */
-		return _add_job_state_job(args, job_ptr);
-	} else {
-		/* Either the job is not found or it is a job array */
-		bool packed_head = false;
-
-		if (job_ptr) {
-			packed_head = true;
-			if ((rc = _add_job_state_job(args, job_ptr)))
-				return rc;
-		}
-		job_ptr = job_array_hash_j[JOB_HASH_INX(job_id)];
-		while (job_ptr) {
-			if ((job_ptr->job_id == job_id) && packed_head) {
-				; /* Already packed */
-			} else if (IS_JOB_REVOKED(job_ptr)) {
-				/*
-				 * Array jobs can't be federated but to be
-				 * consistent and future proof, don't pack
-				 * revoked array jobs.
-				 */
-			} else if (job_ptr->array_job_id == job_id) {
-				if ((rc = _add_job_state_job(args, job_ptr)))
-					return rc;
-			}
-			job_ptr = job_ptr->job_array_next_j;
-		}
-	}
-
-	return args->rc;
-}
-
-static int _foreach_job_state_filter(void *object, void *arg)
-{
-	const job_record_t *job_ptr = object;
-	job_state_args_t *args = arg;
-
-	if ((args->rc = _add_job_state_job(args, job_ptr)))
-		return SLURM_ERROR;
-
-	return SLURM_SUCCESS;
-}
-
-extern int dump_job_state(const uint32_t filter_jobs_count,
-			  const uint32_t *filter_jobs_ptr,
-			  uint32_t *jobs_count_ptr,
-			  job_state_response_job_t **jobs_pptr)
-{
-	job_state_args_t args = {
-		.rc = SLURM_SUCCESS,
-		.jobs_count_ptr = jobs_count_ptr,
-		.jobs_pptr = jobs_pptr,
-	};
-
-	if (!filter_jobs_count) {
-		(void) list_for_each_ro(job_list, _foreach_job_state_filter,
-					&args);
-		return args.rc;
-	}
-
-	for (int i = 0; !args.rc && (i < filter_jobs_count); i++)
-		args.rc = _add_job_state_by_job_id(filter_jobs_ptr[i], &args);
-
-	return args.rc;
-}
-
 /*
  * pack_all_jobs - dump all job information for all jobs in
  *	machine independent form (for network transmission)
@@ -11488,9 +11323,8 @@ static bool _top_priority(job_record_t *job_ptr, uint32_t het_job_offset)
 				if (pend_time < bf_min_age_reserve)
 					continue;
 			}
-			if (!acct_policy_job_runnable_state(job_ptr2) ||
-			    !misc_policy_job_runnable_state(job_ptr2) ||
-			    !part_policy_job_runnable_state(job_ptr2) ||
+			if (job_state_reason_check(job_ptr2->state_reason,
+				    JSR_QOS_ASSOC | JSR_MISC | JSR_PART) ||
 			    !job_independent(job_ptr2))
 				continue;
 
@@ -12702,7 +12536,7 @@ static int _update_job(job_record_t *job_ptr, job_desc_msg_t *job_desc,
 			    && !acct_limit_already_exceeded) {
 				info("%s: exceeded association/QOS limit for user %u: %s",
 				     __func__, job_desc->user_id,
-				     job_reason_string(acct_reason));
+				     job_state_reason_string(acct_reason));
 				error_code = ESLURM_ACCOUNTING_POLICY;
 				goto fini;
 			}

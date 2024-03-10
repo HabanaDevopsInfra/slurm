@@ -1,12 +1,10 @@
 /*****************************************************************************\
- *  read_config.h - Define symbols used to read configuration file for
- *  slurmsmwd
+ *  job_state_reason.h
  *****************************************************************************
- *  Copyright (C) 2017 Regents of the University of California
- *  Written by Douglas Jacobsen <dmjacobsen@lbl.gov>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
- *  For details, see <https://slurm.schedmd.com>.
+ *  For details, see <https://slurm.schedmd.com/>.
  *  Please also read the included file: DISCLAIMER.
  *
  *  Slurm is free software; you can redistribute it and/or modify it under
@@ -35,21 +33,26 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA.
 \*****************************************************************************/
 
-#ifndef _HAVE_SLURMSMWD_READ_CONFIG_H
-#define _HAVE_SLURMSMWD_READ_CONFIG_H
+#ifndef _JOB_STATE_REASON_H
+#define _JOB_STATE_REASON_H
 
-#include <inttypes.h>
-#include <sys/types.h>
-#include <unistd.h>
+#include "slurm/slurm.h"
 
-extern uint16_t slurmsmwd_cabinets_per_row;
-extern uint16_t slurmsmwd_debug_level;
-extern char *   slurmsmwd_log_file;
+#define JSR_QOS_GRP SLURM_BIT(0) /* job is held because of a QOS GRP limit */
+#define JSR_QOS_ASSOC SLURM_BIT(1) /* job is held because of a QOS or ASSOC
+				    * limit */
+#define JSR_MISC SLURM_BIT(2) /* job is held because of a miscellaneous limit */
+#define JSR_PART SLURM_BIT(3) /* job is held because of a partition limit */
 
-/* Configuration functions */
+/* Given a job's reason for waiting, return a descriptive string */
+extern const char *job_state_reason_string(enum job_state_reason inx);
 
-/* Load configuration file contents into global variables. */
-extern void slurmsmwd_read_config(void);
-extern void slurmsmwd_print_config(void);
+/* Given a job's reason string for waiting, return enum job_state_reason */
+extern enum job_state_reason job_state_reason_num(char *reason);
 
-#endif	/* _HAVE_SLURMSMWD_READ_CONFIG_H */
+/*
+ * Determine if the job_state_reason is using any flags given or not.
+ */
+extern bool job_state_reason_check(enum job_state_reason inx, uint32_t flags);
+
+#endif

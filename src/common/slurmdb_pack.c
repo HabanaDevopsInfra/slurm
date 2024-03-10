@@ -1,10 +1,9 @@
 /*****************************************************************************\
  *  slurmdb_pack.c - un/pack definitions used by slurmdb api
  ******************************************************************************
- *  Copyright (C) 2011-2015 SchedMD LLC.
+ *  Copyright (C) SchedMD LLC.
  *  Copyright (C) 2010 Lawrence Livermore National Security.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
- *  Written by Danny Auble da@schedmd.com, et. al.
  *  CODE-OCEC-09-009. All rights reserved.
  *
  *  This file is part of Slurm, a resource management program.

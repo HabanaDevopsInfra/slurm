@@ -2,8 +2,7 @@
  *  reservation_functions.c - functions dealing with RESERVATION in the
  *                        accounting system.
  *****************************************************************************
- *  Copyright (C) 2015 SchedMD LLC.
- *  Written by David Bigagli <david@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

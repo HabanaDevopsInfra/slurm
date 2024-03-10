@@ -4,7 +4,7 @@
  *****************************************************************************
  *  Copyright (C) 2002-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2010 Lawrence Livermore National Security.
- *  Portions Copyright (C) 2010-2017 SchedMD <https://www.schedmd.com>.
+ *  Copyright (C) SchedMD LLC.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Morris Jette <jette1@llnl.gov>
  *  CODE-OCEC-09-009. All rights reserved.
@@ -321,7 +321,7 @@ static bool _job_runnable_test1(job_record_t *job_ptr, bool sched_plugin)
 		sched_debug3("%pJ. State=%s. Reason=%s. Priority=%u.",
 			     job_ptr,
 			     job_state_string(job_ptr->job_state),
-			     job_reason_string(job_ptr->state_reason),
+			     job_state_reason_string(job_ptr->state_reason),
 			     job_ptr->priority);
 		return false;
 	}
@@ -356,7 +356,7 @@ static bool _job_runnable_test2(job_record_t *job_ptr, time_t now,
 	reason = job_limits_check(&job_ptr, check_min_time);
 	if ((reason != job_ptr->state_reason) &&
 	    ((reason != WAIT_NO_REASON) ||
-	     (!part_policy_job_runnable_state(job_ptr)))) {
+	     (job_state_reason_check(job_ptr->state_reason, JSR_PART)))) {
 		job_ptr->state_reason = reason;
 		xfree(job_ptr->state_desc);
 		last_job_update = now;
@@ -942,7 +942,7 @@ extern void fill_array_reasons(job_record_t *job_ptr,
 		last_job_update = time(NULL);
 		debug3("%s: Setting reason of array task %pJ to %s",
 		       __func__, job_ptr,
-		       job_reason_string(job_ptr->state_reason));
+		       job_state_reason_string(job_ptr->state_reason));
 	}
 }
 
@@ -1630,7 +1630,7 @@ next_task:
 				sched_debug("%pJ unable to schedule in Partition=%s (per _failed_partition()). State=PENDING. Previous-Reason=%s. Previous-Desc=%s. New-Reason=Priority. Priority=%u.",
 					    job_ptr,
 					    job_ptr->part_ptr->name,
-					    job_reason_string(
+					    job_state_reason_string(
 						    job_ptr->state_reason),
 					    job_ptr->state_desc,
 					    job_ptr->priority);
@@ -1644,7 +1644,7 @@ next_task:
 				sched_debug2("%pJ. unable to schedule in Partition=%s (per _failed_partition()). Retaining previous scheduling Reason=%s. Desc=%s. Priority=%u.",
 					     job_ptr,
 					     job_ptr->part_ptr->name,
-					     job_reason_string(
+					     job_state_reason_string(
 						     job_ptr->state_reason),
 					     job_ptr->state_desc,
 					     job_ptr->priority);
@@ -1713,7 +1713,8 @@ next_task:
 			}
 		}
 
-		if (!acct_policy_job_runnable_state(job_ptr) &&
+		if (job_state_reason_check(job_ptr->state_reason,
+					   JSR_QOS_ASSOC) &&
 		    !acct_policy_job_runnable_pre_select(job_ptr, false))
 			continue;
 
@@ -1743,7 +1744,8 @@ next_task:
 			sched_debug3("%pJ. State=%s. Reason=%s. Priority=%u. Partition=%s.",
 				     job_ptr,
 				     job_state_string(job_ptr->job_state),
-				     job_reason_string(job_ptr->state_reason),
+				     job_state_reason_string(
+					     job_ptr->state_reason),
 				     job_ptr->priority, job_ptr->partition);
 			fail_by_part = true;
 			goto fail_this_part;
@@ -1800,14 +1802,16 @@ skip_start:
 			sched_debug3("%pJ. State=%s. Reason=%s. Priority=%u. Partition=%s.",
 				     job_ptr,
 				     job_state_string(job_ptr->job_state),
-				     job_reason_string(job_ptr->state_reason),
+				     job_state_reason_string(
+					     job_ptr->state_reason),
 				     job_ptr->priority, job_ptr->partition);
 			fail_by_part = true;
 		} else if (error_code == ESLURM_LICENSES_UNAVAILABLE) {
 			sched_debug3("%pJ. State=%s. Reason=%s. Priority=%u.",
 				     job_ptr,
 				     job_state_string(job_ptr->job_state),
-				     job_reason_string(job_ptr->state_reason),
+				     job_state_reason_string(
+					     job_ptr->state_reason),
 				     job_ptr->priority);
 			if (bf_licenses) {
 				sched_debug("%pJ is blocked on licenses. Stopping scheduling so license backfill can handle this",
@@ -1835,7 +1839,8 @@ skip_start:
 			sched_debug3("%pJ. State=%s. Reason=%s. Priority=%u.",
 				     job_ptr,
 				     job_state_string(job_ptr->job_state),
-				     job_reason_string(job_ptr->state_reason),
+				     job_state_reason_string(
+					     job_ptr->state_reason),
 				     job_ptr->priority);
 			continue;
 		} else if ((error_code == ESLURM_RESERVATION_BUSY) ||
@@ -1845,7 +1850,8 @@ skip_start:
 				sched_debug3("%pJ. State=%s. Reason=%s. Priority=%u.",
 					     job_ptr,
 					     job_state_string(job_ptr->job_state),
-					     job_reason_string(job_ptr->state_reason),
+					     job_state_reason_string(
+						     job_ptr->state_reason),
 					     job_ptr->priority);
 				bit_and_not(avail_node_bitmap,
 					    job_ptr->resv_ptr->node_bitmap);
@@ -1868,7 +1874,8 @@ skip_start:
 			sched_debug3("%pJ. State=%s. Reason=%s. Priority=%u. Partition=%s. Couldn't get federation job lock.",
 				     job_ptr,
 				     job_state_string(job_ptr->job_state),
-				     job_reason_string(job_ptr->state_reason),
+				     job_state_reason_string(
+					     job_ptr->state_reason),
 				     job_ptr->priority, job_ptr->partition);
 			fail_by_part = true;
 		} else if (error_code == SLURM_SUCCESS) {
@@ -1940,7 +1947,7 @@ skip_start:
 			job_ptr->priority = 0;
 			debug2("%s: setting %pJ to \"%s\" (%s)",
 			       __func__, job_ptr,
-			       job_reason_string(job_ptr->state_reason),
+			       job_state_reason_string(job_ptr->state_reason),
 			       slurm_strerror(error_code));
 		}
 
@@ -4356,6 +4363,11 @@ static void _do_reboot(bool power_save_on, bitstr_t *node_bitmap,
 		       job_record_t *job_ptr, char *reboot_features,
 		       uint16_t protocol_version)
 {
+	xassert(node_bitmap);
+
+	if (bit_ffs(node_bitmap) == -1)
+		return;
+
 	if (power_save_on)
 		power_job_reboot(node_bitmap, job_ptr, reboot_features);
 	else
@@ -4523,12 +4535,20 @@ extern void reboot_job_nodes(job_record_t *job_ptr)
 		/* Reboot nodes to change KNL NUMA and/or MCDRAM mode */
 		_do_reboot(power_save_on, feature_node_bitmap, job_ptr,
 			   reboot_features, protocol_version);
+		bit_and_not(boot_node_bitmap, feature_node_bitmap);
 	}
 
 	if (non_feature_node_bitmap) {
 		/* Reboot nodes with no feature changes */
 		_do_reboot(power_save_on, non_feature_node_bitmap, job_ptr,
 			   NULL, protocol_version);
+		bit_and_not(boot_node_bitmap, non_feature_node_bitmap);
+	}
+
+	if (job_ptr->reboot) {
+		/* Reboot the remaining nodes blindly as per direct request */
+		_do_reboot(power_save_on, boot_node_bitmap, job_ptr, NULL,
+			   protocol_version);
 	}
 
 cleanup:

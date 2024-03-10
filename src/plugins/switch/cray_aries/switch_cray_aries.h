@@ -1,9 +1,8 @@
 /*****************************************************************************\
  *  switch_cray_aries.h - Library for managing a switch on a Cray/Aries system.
  *****************************************************************************
- *  Copyright (C) 2013 SchedMD LLC
+ *  Copyright (C) SchedMD LLC.
  *  Copyright 2013 Hewlett Packard Enterprise Development LP
- *  Written by Danny Auble <da@schedmd.com>
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

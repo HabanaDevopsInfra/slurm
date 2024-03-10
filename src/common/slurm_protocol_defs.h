@@ -3,7 +3,7 @@
  *****************************************************************************
  *  Copyright (C) 2002-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2010 Lawrence Livermore National Security.
- *  Portions Copyright (C) 2010-2014 SchedMD <https://www.schedmd.com>.
+ *  Copyright (C) SchedMD LLC.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Kevin Tew <tew1@llnl.gov>.
  *  CODE-OCEC-09-009. All rights reserved.
@@ -1813,9 +1813,6 @@ extern uint16_t bb_state_num(char *tok);
  * Caller must xfree() the return value */
 extern char *health_check_node_state_str(uint32_t node_state);
 
-extern char *job_reason_string(enum job_state_reason inx);
-extern enum job_state_reason job_reason_num(char *reason);
-extern bool job_state_qos_grp_limit(enum job_state_reason state_reason);
 extern char *job_share_string(uint16_t shared);
 extern char *job_state_string(uint32_t inx);
 extern char *job_state_string_compact(uint32_t inx);
@@ -1862,14 +1859,6 @@ extern char    *power_flags_str(uint16_t power_flags);
 extern void  private_data_string(uint16_t private_data, char *str, int str_len);
 extern void  accounting_enforce_string(uint16_t enforce,
 				       char *str, int str_len);
-
-/* Translate a Slurm nodelist to a char * of numbers
- * nid000[36-37] -> 36-37
- * IN - hl_in - if NULL will be made from nodelist
- * IN - nodelist - generate hl from list if hl is NULL
- * RET - nid list, needs to be xfreed.
- */
-extern char *cray_nodelist2nids(hostlist_t *hl_in, char *nodelist);
 
 /* Validate SPANK specified job environment does not contain any invalid
  * names. Log failures using info() */

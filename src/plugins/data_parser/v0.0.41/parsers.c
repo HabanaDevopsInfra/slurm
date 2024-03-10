@@ -1,8 +1,7 @@
 /*****************************************************************************\
  *  parsers.c - Slurm data parsers
  *****************************************************************************
- *  Copyright (C) 2022 SchedMD LLC.
- *  Written by Nathan Rini <nate@schedmd.com>
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.
@@ -103,8 +102,7 @@
 	static int DUMP_FUNC(type)(const parser_t *const parser, void *src,  \
 				    data_t *dst, args_t *args)               \
 	{                                                                    \
-		fatal_abort("dumping of DATA_PARSER_%s is not implemented",  \
-			    XSTRINGIFY(type));                               \
+		return DUMP_FUNC(disabled)(parser, src, dst, args);	     \
 	}
 
 #define parse_error(parser, args, parent_path, error, fmt, ...)    \
@@ -115,18 +113,24 @@ static int PARSE_FUNC(disabled)(const parser_t *const parser, void *src,
 				data_t *dst, args_t *args, data_t *parent_path)
 {
 	char *path = NULL;
-	int rc;
 
-	/* Disabled plugin should never be executed! */
-	xassert(false);
-
-	rc = on_error(PARSING, parser->type, args, ESLURM_REST_FAIL_PARSING,
-		      set_source_path(&path, args, parent_path), __func__,
-		      "parsing of DATA_PARSER_%s is not implemented",
-		      XSTRINGIFY(parser_type));
+	on_warn(PARSING, parser->type, args,
+		set_source_path(&path, args, parent_path), __func__,
+		"data_parser/v0.0.41 does not support parser %u for parsing. Output may be incomplete.",
+		parser->type);
 
 	xfree(path);
-	return rc;
+	return SLURM_SUCCESS;
+}
+
+static int DUMP_FUNC(disabled)(const parser_t *const parser, void *src,
+			       data_t *dst, args_t *args)
+{
+	on_warn(DUMPING, parser->type, args, NULL, __func__,
+		"data_parser/v0.0.41 does not support parser %u for dumping. Output may be incomplete.",
+		parser->type);
+
+	return SLURM_SUCCESS;
 }
 
 static int _parse_error_funcname(const parser_t *const parser, args_t *args,
@@ -1896,7 +1900,7 @@ static int DUMP_FUNC(JOB_REASON)(const parser_t *const parser, void *obj,
 {
 	uint32_t *state = obj;
 
-	data_set_string(dst, job_reason_string(*state));
+	data_set_string(dst, job_state_reason_string(*state));
 
 	return SLURM_SUCCESS;
 }
@@ -5876,7 +5880,11 @@ static int DUMP_FUNC(JOB_STATE_RESP_JOB_JOB_ID)(const parser_t *const parser,
 		}
 
 		FREE_NULL_DATA(dtasks);
-	} else if (src->array_task_id != NO_VAL) {
+	} else if ((src->array_task_id == NO_VAL) ||
+		   (src->array_task_id == INFINITE)) {
+		/* Treat both NO_VAL and INFINITE as request for whole job */
+		data_set_string_fmt(dst, "%u_*", src->job_id);
+	} else if (src->array_task_id < NO_VAL) {
 		data_set_string_fmt(dst, "%u_%u", src->job_id,
 				    src->array_task_id);
 	} else {

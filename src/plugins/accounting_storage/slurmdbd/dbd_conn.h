@@ -1,11 +1,9 @@
 /****************************************************************************\
  *  dbd_conn.h - functions to manage the connection to the SlurmDBD
  *****************************************************************************
- *  Copyright (C) 2011-2020 SchedMD LLC.
+ *  Copyright (C) SchedMD LLC.
  *  Copyright (C) 2008-2010 Lawrence Livermore National Security.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
- *  Written by Danny Auble <da@schedmd.com>
- *  Written by Morris Jette <jette@schedmd.com>
  *  CODE-OCEC-09-009. All rights reserved.
  *
  *  This file is part of Slurm, a resource management program.

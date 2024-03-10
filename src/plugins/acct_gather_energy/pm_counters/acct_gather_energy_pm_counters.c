@@ -2,9 +2,7 @@
  *  acct_gather_energy_pm_counters.c -
  *  slurm energy accounting plugin for HPE Cray pm_counters interface
  *****************************************************************************
- *  Copyright (C) 2015 SchedMD LLC
- *  Written by Danny Auble <da@schedmd.com> who borrowed from the rapl
- *  plugin of the same type
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.

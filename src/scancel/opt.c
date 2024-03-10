@@ -3,7 +3,7 @@
  *****************************************************************************
  *  Copyright (C) 2002-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2009 Lawrence Livermore National Security.
- *  Copyright (C) 2010-2015 SchedMD LLC.
+ *  Copyright (C) SchedMD LLC.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Mark Grondona <grondona1@llnl.gov>, et. al.
  *  CODE-OCEC-09-009. All rights reserved.
@@ -211,11 +211,12 @@ static void _opt_clusters(char *clusters)
 {
 	opt.ctld = true;
 	FREE_NULL_LIST(opt.clusters);
-	opt.clusters = slurmdb_get_info_cluster(clusters);
-	if (!opt.clusters) {
+
+	if (slurm_get_cluster_info(&(opt.clusters), clusters, 0)) {
 		print_db_notok(clusters, 0);
-		exit(1);
+		fatal("Could not get cluster information");
 	}
+
 	working_cluster_rec = list_peek(opt.clusters);
 }
 

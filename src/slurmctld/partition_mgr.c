@@ -5,7 +5,7 @@
  *****************************************************************************
  *  Copyright (C) 2002-2007 The Regents of the University of California.
  *  Copyright (C) 2008-2010 Lawrence Livermore National Security.
- *  Portions Copyright (C) 2010-2016 SchedMD <https://www.schedmd.com>.
+ *  Copyright (C) SchedMD LLC.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
  *  Written by Morris Jette <jette@llnl.gov> et. al.
  *  CODE-OCEC-09-009. All rights reserved.
@@ -2126,40 +2126,6 @@ extern int delete_partition(delete_part_msg_t *part_desc_ptr)
 	select_g_reconfigure();		/* notify select plugin too */
 
 	return SLURM_SUCCESS;
-}
-
-/*
- * Determine of the specified job can execute right now or is currently
- * blocked by a miscellaneous limit. This does not re-validate job state,
- * but relies upon schedule() in src/slurmctld/job_scheduler.c to do so.
- */
-extern bool misc_policy_job_runnable_state(job_record_t *job_ptr)
-{
-	if ((job_ptr->state_reason == FAIL_ACCOUNT) ||
-	    (job_ptr->state_reason == FAIL_QOS) ||
-	    (job_ptr->state_reason == WAIT_NODE_NOT_AVAIL)) {
-		return false;
-	}
-
-	return true;
-}
-
-/*
- * Determine of the specified job can execute right now or is currently
- * blocked by a partition state or limit. These job states should match the
- * reason values returned by job_limits_check().
- */
-extern bool part_policy_job_runnable_state(job_record_t *job_ptr)
-{
-	if ((job_ptr->state_reason == WAIT_PART_DOWN) ||
-	    (job_ptr->state_reason == WAIT_PART_INACTIVE) ||
-	    (job_ptr->state_reason == WAIT_PART_NODE_LIMIT) ||
-	    (job_ptr->state_reason == WAIT_PART_TIME_LIMIT) ||
-	    (job_ptr->state_reason == WAIT_QOS_THRES)) {
-		return false;
-	}
-
-	return true;
 }
 
 /*
