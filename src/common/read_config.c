@@ -3423,13 +3423,20 @@ rwfail:
 	FREE_NULL_BUFFER(conf_buf);
 }
 
-extern void add_config_key_pair(list_t *key_pair_list, char *key, char *value)
+extern void add_key_pair(list_t *key_pair_list, const char *key,
+			 const char *fmt, ...)
 {
-	xassert(key_pair_list);
+	va_list ap;
+	char *value = NULL;
+	config_key_pair_t *key_pair = NULL;
 
-	config_key_pair_t *key_pair = xmalloc(sizeof(*key_pair));
+	va_start(ap, fmt);
+	_xstrdup_vprintf(&value, fmt, ap);
+	va_end(ap);
+
+	key_pair = xmalloc(sizeof(*key_pair));
 	key_pair->name = xstrdup(key);
-	key_pair->value = xstrdup(value);
+	key_pair->value = value;
 	list_append(key_pair_list, key_pair);
 }
 
@@ -4384,7 +4391,9 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 		 * If adding to this please update src/api/config_log.c to do
 		 * the reverse translation.
 		 */
-		if (xstrcasestr(temp_str, "iso8601"))
+		if (xstrcasestr(temp_str, "iso8601_ms"))
+			conf->log_fmt = LOG_FMT_ISO8601_MS;
+		else if (xstrcasestr(temp_str, "iso8601"))
 			conf->log_fmt = LOG_FMT_ISO8601;
 		else if (xstrcasestr(temp_str, "rfc5424_ms"))
 			conf->log_fmt = LOG_FMT_RFC5424_MS;
