@@ -407,8 +407,8 @@ extern bool gres_common_prep_set_env(char ***prep_env_ptr,
 					    vendor_gpu_str);
 		if (gres_conf_flags & GRES_CONF_ENV_HLML)
 				env_array_overwrite(prep_env_ptr,
-						"HABANA_VISIBLE_DEVICES",
-						vendor_gpu_str);
+					    "HABANA_VISIBLE_DEVICES",
+					    vendor_gpu_str);
 		if (gres_conf_flags & GRES_CONF_ENV_OPENCL)
 			env_array_overwrite(prep_env_ptr,
 					    "GPU_DEVICE_ORDINAL",
