@@ -1,6 +1,6 @@
 IS_CONTROLLER ?= true
-#TEST_CONTAINER_IMAGE ?= vault.habana.ai/gaudi-docker/1.15.1/ubuntu22.04/habanalabs/pytorch-installer-2.2.0:1.15.1-15
-TEST_CONTAINER_IMAGE ?= slurm-test-image:latest
+TEST_CONTAINER_IMAGE ?= vault.habana.ai/gaudi-docker/1.15.1/ubuntu22.04/habanalabs/pytorch-installer-2.2.0:1.15.1-15
+SLURM_TEST_CONTAINER_IMAGE ?= slurm-test-image:latest
 MAKEFILE_DIR := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 REPO_DIR := $(shell dirname $(MAKEFILE_DIR))
 SHELL := /bin/bash
@@ -100,15 +100,15 @@ install-debian-package: configure
 
 test: test-single-card test-8-cards test-16-cards
 
-test-single-card:
+test-single-card: 
 	. /etc/profile.d/slurm.sh; \
 	TEST_CARDS_NUMBER=$$(srun --gres=gpu:1 bash -c 'docker run --init --rm --runtime=habana -e HABANA_VISIBLE_DEVICES $(TEST_CONTAINER_IMAGE) /bin/bash -c "hl-smi -Q name --format=csv | grep -v name | wc -l"'); \
 	test "$$TEST_CARDS_NUMBER" -eq 1
 	$(call prompt-status)
 
-test-8-cards:
+test-8-cards: build-slurm-test-container
 	. /etc/profile.d/slurm.sh; \
-	srun --gres=gpu:8 --nodes=1 --ntasks-per-node=1 bash -c 'docker run --init --rm --runtime=habana -e HABANA_VISIBLE_DEVICES -e SLURM_NODEID -e SLURM_LAUNCH_NODE_IPADDR --net=host $(TEST_CONTAINER_IMAGE) /bin/bash -c "cd hccl_demo; HCCL_COMM_ID=$$SLURM_LAUNCH_NODE_IPADDR:5555 python3 run_hccl_demo.py --nranks 8 --node_id $$SLURM_NODEID --size 32m --test all_reduce --loop 1000 --ranks_per_node 8"'; \
+	srun --gres=gpu:8 --nodes=1 --ntasks-per-node=1 bash -c 'docker run --init --rm --runtime=habana -e HABANA_VISIBLE_DEVICES -e SLURM_NODEID -e SLURM_LAUNCH_NODE_IPADDR --net=host $(SLURM_TEST_CONTAINER_IMAGE) /bin/bash -c "cd hccl_demo; HCCL_COMM_ID=$$SLURM_LAUNCH_NODE_IPADDR:5555 python3 run_hccl_demo.py --nranks 8 --node_id $$SLURM_NODEID --size 32m --test all_reduce --loop 1000 --ranks_per_node 8"'; \
 	$(call prompt-status)
 
 test-16-cards:
@@ -158,8 +158,17 @@ test-16-cards:
 	#
 	# Test 16 cards
 	export NODE_0_IPADDRESS=$$(srun hostname -i); \
-	srun --gres=gpu:8 --nodes=2 --ntasks-per-node=1 --export ALL bash -c 'docker run --init --rm --runtime=habana -e HABANA_VISIBLE_DEVICES -e SLURM_NODEID -e SLURM_LAUNCH_NODE_IPADDR --net=host $(TEST_CONTAINER_IMAGE) /bin/bash -c "cd hccl_demo; HCCL_COMM_ID=$$NODE_0_IPADDRESS:5555 python3 run_hccl_demo.py --nranks 16 --node_id $$SLURM_NODEID --size 32m --test all_reduce --loop 1000 --ranks_per_node 8"'; \
+	srun --gres=gpu:8 --nodes=2 --ntasks-per-node=1 --export ALL bash -c 'docker run --init --rm --runtime=habana -e HABANA_VISIBLE_DEVICES -e SLURM_NODEID -e SLURM_LAUNCH_NODE_IPADDR --net=host $(SLURM_TEST_CONTAINER_IMAGE) /bin/bash -c "cd hccl_demo; HCCL_COMM_ID=$$NODE_0_IPADDRESS:5555 python3 run_hccl_demo.py --nranks 16 --node_id $$SLURM_NODEID --size 32m --test all_reduce --loop 1000 --ranks_per_node 8"'; \
 	$(call prompt-status)
+
+build-slurm-test-container:
+	cd $(REPO_DIR)/habana-test; \
+        git clone https://github.com/HabanaAI/hccl_demo.git; \
+        cd hccl_demo && make; 
+	cd .. && \
+        docker build -t  $(SLURM_TEST_CONTAINER_IMAGE) ./habana-test
+
+
 
 define prompt-status
 	if [ $$? -eq 0 ]; then \

@@ -2,4 +2,4 @@ FROM vault.habana.ai/gaudi-docker/1.15.1/ubuntu22.04/habanalabs/pytorch-installe
 
 WORKDIR /
 
-COPY ./hccl_demo /hccl_demo
+COPY ../hccl_demo /hccl_demo
