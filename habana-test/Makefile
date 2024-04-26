@@ -1,5 +1,6 @@
 IS_CONTROLLER ?= true
-TEST_CONTAINER_IMAGE ?= vault.habana.ai/gaudi-docker/1.15.1/ubuntu22.04/habanalabs/pytorch-installer-2.2.0:1.15.1-15
+#TEST_CONTAINER_IMAGE ?= vault.habana.ai/gaudi-docker/1.15.1/ubuntu22.04/habanalabs/pytorch-installer-2.2.0:1.15.1-15
+TEST_CONTAINER_IMAGE ?= slurm-test-image:latest
 MAKEFILE_DIR := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 REPO_DIR := $(shell dirname $(MAKEFILE_DIR))
 SHELL := /bin/bash
