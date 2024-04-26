@@ -24,9 +24,7 @@ habana-configure:
 	fi
 	#
 	# Intel GAUDI external ports
-	wget https://raw.githubusercontent.com/HabanaAI/Setup_and_Install/main/utils/manage_network_ifs.sh && \
-	chmod +x ./manage_network_ifs.sh && \
-	./manage_network_ifs.sh --up
+	/opt/habanalabs/qual/gaudi2/bin/manage_network_ifs.sh --up
 
 configure:
 	# Slurm pre-requisits
