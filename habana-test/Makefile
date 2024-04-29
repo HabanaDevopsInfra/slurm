@@ -169,6 +169,8 @@ build-slurm-test-container:
         docker build -t  $(SLURM_TEST_CONTAINER_IMAGE) ./habana-test
 
 
+clean:
+	docker rmi -f $(SLURM_TEST_CONTAINER_IMAGE)
 
 define prompt-status
 	if [ $$? -eq 0 ]; then \
