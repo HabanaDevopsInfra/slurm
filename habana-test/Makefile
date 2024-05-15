@@ -97,9 +97,9 @@ build-source:
 ifeq ($(OS_NAME), debian)
 	sudo $(INSTALL_COMMAND) install munge libmunge-dev libglib2.0-dev libdbus-1-dev -y
 else
-	ifeq ($(OS_NAME), fedora)
-		sudo $(INSTALL_COMMAND) install autoconf automake mariadb-devel munge munge-devel munge-libs pam-devel perl-ExtUtils-MakeMaker kernel-headers dbus-devel glib2-devel -y
-	endif
+ifeq ($(OS_NAME), fedora)
+	sudo $(INSTALL_COMMAND) install autoconf automake mariadb-devel munge munge-devel munge-libs pam-devel perl-ExtUtils-MakeMaker kernel-headers dbus-devel glib2-devel -y
+endif
 endif
 	cd $(REPO_DIR); \
 	autoreconf; \
