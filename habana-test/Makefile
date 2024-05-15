@@ -7,6 +7,27 @@ SHELL := /bin/bash
 VERSION ?= ""
 SECOND_NODE ?= ""
 
+# Check for OS identification either debian or fedora
+ifeq ($(OS_NAME),)
+	ifneq ($(shell grep 'debian' /etc/os-release), )
+		OS_NAME ?= debian
+	else
+		ifneq ($(shell grep 'fedora' /etc/os-release), )
+			OS_NAME := fedora
+		endif
+	endif
+endif
+
+ifeq ($(OS_NAME), fedora)
+	INSTALL_COMMAND := dnf
+else
+	ifeq ($(OS_NAME), debian)
+		INSTALL_COMMAND := apt
+	else
+		$(error Unsupported operating system. Requires Debian-based or Fedora-based system.)
+	endif
+endif
+
 habana-configure:
 	# Intel GAUDI drivers
 	if ! hl-smi -Q name --format=csv || ! hl-smi -Q name --format=csv | grep -v name | grep -qv N/A; then \
@@ -16,9 +37,17 @@ habana-configure:
 		hl-smi -Q name --format=csv; \
 	fi
 	#
+	# Accelerators NUMA setting
+	lspci -d 1da3: -D | cut -d " " -f 1 | while read BUS_ID; do \
+		NUMA_NODE_FILE="/sys/bus/pci/devices/$${BUS_ID}/numa_node"; \
+		if cat $${NUMA_NODE_FILE} | grep -q '\-1'; then \
+			echo 0 | sudo tee $${NUMA_NODE_FILE}; \
+		fi; \
+	done
+	#
 	# Intel GAUDI runtime
 	if ! grep -q habana /etc/docker/daemon.json; then \
-		sudo apt install -y habanalabs-container-runtime && \
+		sudo $(INSTALL_COMMAND) install -y habanalabs-container-runtime && \
 		sudo cp docker-daemon.json /etc/docker/daemon.json && \
 		sudo systemctl restart docker.service; \
 	fi
@@ -65,7 +94,13 @@ build-and-install-source: build-source install-source
 
 build-source:
 	$(call update-version)
-	sudo apt install munge libmunge-dev libglib2.0-dev libdbus-1-dev -y
+ifeq ($(OS_NAME), debian)
+	sudo $(INSTALL_COMMAND) install munge libmunge-dev libglib2.0-dev libdbus-1-dev -y
+else
+	ifeq ($(OS_NAME), fedora)
+		sudo $(INSTALL_COMMAND) install autoconf automake mariadb-devel munge munge-devel munge-libs pam-devel perl-ExtUtils-MakeMaker kernel-headers dbus-devel glib2-devel -y
+	endif
+endif
 	cd $(REPO_DIR); \
 	autoreconf; \
 	./configure --prefix=/usr/local/slurm --sysconfdir=/etc/slurm --with-systemdsystemunitdir=/lib/systemd/system; \
@@ -79,24 +114,57 @@ install-source: configure
 	fi
 	sudo systemctl enable --now slurmd.service
 
+build-and-install-package: build-package install-package
+
+build-package: build-$(OS_NAME)-package
+
+install-package: install-$(OS_NAME)-package
+
 build-and-install-debian-package: build-debian-package install-debian-package
 
 build-debian-package:
 	$(call update-version)
-	sudo apt install build-essential fakeroot devscripts equivs libglib2.0-dev libdbus-1-dev libmunge-dev libgtk2.0-dev libpam0g-dev libperl-dev liblua5.3-dev dh-exec librrd-dev libipmimonitoring-dev hdf5-helpers libfreeipmi-dev libhdf5-dev man2html-base libcurl4-openssl-dev libhttp-parser-dev libyaml-dev libjson-c-dev libjwt-dev liblz4-dev librdkafka-dev -y
+	sudo $(INSTALL_COMMAND) install build-essential fakeroot devscripts equivs libglib2.0-dev libdbus-1-dev libmunge-dev libgtk2.0-dev libpam0g-dev libperl-dev liblua5.3-dev dh-exec librrd-dev libipmimonitoring-dev hdf5-helpers libfreeipmi-dev libhdf5-dev man2html-base libcurl4-openssl-dev libhttp-parser-dev libyaml-dev libjson-c-dev libjwt-dev liblz4-dev librdkafka-dev -y
 	cd $(REPO_DIR); \
 	mkdir debian-packages/; \
 	autoreconf; \
-	yes | mk-build-deps -i debian/control; \
+	yes | sudo mk-build-deps -i debian/control; \
 	debuild -b -uc -us; \
 	mv ../slurm-smd*.deb debian-packages
 
 install-debian-package: configure
 	cd $(REPO_DIR)/debian-packages; \
-	sudo apt install ./slurm-smd_*.deb ./slurm-smd-slurmd_*.deb ./slurm-smd-client_*.deb -y
-	if [ "$(IS_CONTROLLER)" == true ]; then \
-		sudo apt install $(REPO_DIR)/debian-packages/slurm-smd-slurmctld_*.deb -y; \
-	fi
+	sudo $(INSTALL_COMMAND) install ./slurm-smd_*.deb ./slurm-smd-slurmd_*.deb ./slurm-smd-client_*.deb -y
+ifeq ($(IS_CONTROLLER), true)
+	sudo $(INSTALL_COMMAND) install $(REPO_DIR)/debian-packages/slurm-smd-slurmctld_*.deb -y
+endif
+
+build-and-install-fedora-package: build-fedora-package install-fedora-package
+
+build-fedora-package:
+	$(call update-version)
+	sudo $(INSTALL_COMMAND) install autoconf automake mariadb-devel munge munge-devel munge-libs pam-devel perl-ExtUtils-MakeMaker bzip2 rpm-build kernel-headers dbus-devel glib2-devel -y
+	cd $(REPO_DIR) && \
+	autoreconf
+	cd $$(dirname $(REPO_DIR)) && \
+	ARCHIVE_NAME="$$(awk '$$1=="Name:" {print $$NF}' $(REPO_DIR)/slurm.spec)-\
+	$$(awk '$$1=="Version:" {print $$NF}' $(REPO_DIR)/slurm.spec)\
+	$$(awk '$$1=="%define" && $$2=="rel" {if ($$NF != "1") print "-"$$NF}' $(REPO_DIR)/slurm.spec)" && \
+	tar -cjf $${ARCHIVE_NAME}.tar.bz2 --transform "s/$$(basename $(REPO_DIR))/$${ARCHIVE_NAME}/" $$(basename $(REPO_DIR)) && \
+	rpmbuild -ta $${ARCHIVE_NAME}.tar.bz2 --buildroot=$(REPO_DIR)/rpmbuild --define "_rpmdir $(REPO_DIR)/fedora-packages" && \
+	rm -rf $${ARCHIVE_NAME}.tar.bz2
+
+install-fedora-package: configure
+	sudo $(INSTALL_COMMAND) install munge -y && \
+	echo | sudo create-munge-key && \
+	sudo systemctl start munge
+	cd $(REPO_DIR)/fedora-packages/x86_64/; \
+	sudo $(INSTALL_COMMAND) install ./slurm-[0-9]*rpm ./slurm-slurmd*rpm ./slurm-perlapi*rpm -y
+ifeq ($(IS_CONTROLLER), true)
+	sudo $(INSTALL_COMMAND) install $(REPO_DIR)/fedora-packages/x86_64/slurm-slurmctld*rpm -y
+	sudo systemctl start slurmctld
+endif
+	sudo systemctl start slurmd
 
 test: test-single-card test-8-cards test-16-cards
 
@@ -183,19 +251,23 @@ endef
 
 define update-version
 	if [ -n "$(VERSION)" ]; then \
-		if [[ ! "$(VERSION)" =~ [0-9]+\.[0-9]+\.[0-9]+ ]]; then \
-			echo "Version is not in the format of [MAJOR].[MINOR].[MICRO]"; \
+		if [[ ! "$(VERSION)" =~ [0-9]+\.[0-9]+\.[0-9]+-[0-9]+ ]]; then \
+			echo "Version is not in the format of [MAJOR].[MINOR].[MICRO]-[RELEASE]"; \
 			exit 1; \
 		fi; \
 		cp debian-changelog $(REPO_DIR)/debian/changelog; \
-		MAJOR_VERSION=$$(echo $(VERSION) | cut -d . -f 1); \
-		MINOR_VERSION=$$(echo $(VERSION) | cut -d . -f 2); \
-		MICRO_VERSION=$$(echo $(VERSION) | cut -d . -f 3); \
+		VERSION_WITHOUT_RELEASE=$$(echo $(VERSION) | cut -d - -f 1); \
+		MAJOR_VERSION=$$(echo $${VERSION_WITHOUT_RELEASE} | cut -d . -f 1); \
+		MINOR_VERSION=$$(echo $${VERSION_WITHOUT_RELEASE} | cut -d . -f 2); \
+		MICRO_VERSION=$$(echo $${VERSION_WITHOUT_RELEASE} | cut -d . -f 3); \
+		RELEASE_VERSION=$$(echo $(VERSION) | cut -d - -f 2); \
 		cd $(REPO_DIR); \
-		sed -i -r 's/(Version:[ \t]+)[0-9]+\.[0-9]+\.[0-9]+$$/\1$(VERSION)/' slurm.spec META; \
+		sed -i -r 's/(Version:[ \t]+)[0-9]+\.[0-9]+\.[0-9]+$$/\1'"$${VERSION_WITHOUT_RELEASE}"'/' slurm.spec META; \
+		sed -i -r 's/(%define rel[ \t]+).*$$/\1'"$${RELEASE_VERSION}"'/' slurm.spec; \
 		sed -i -r 's/(Major:[ \t]+)[0-9]+$$/\1'"$${MAJOR_VERSION}"'/' META; \
 		sed -i -r 's/(Minor:[ \t]+)[0-9]+$$/\1'"$${MINOR_VERSION}"'/' META; \
 		sed -i -r 's/(Micro:[ \t]+)[0-9]+$$/\1'"$${MICRO_VERSION}"'/' META; \
+		sed -i -r 's/(Release:[ \t]+)[0-9]+$$/\1'"$${RELEASE_VERSION}"'/' META; \
 		sed -i -r 's/VERSION_PLACE_HOLDER/$(VERSION)/' debian/changelog; \
 	fi
 endef
