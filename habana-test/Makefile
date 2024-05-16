@@ -7,6 +7,7 @@ SHELL := /bin/bash
 VERSION ?= ""
 SECOND_NODE ?= ""
 
+
 # Check for OS identification either debian or fedora
 ifeq ($(OS_NAME),)
 	ifneq ($(shell grep 'debian' /etc/os-release), )
@@ -72,6 +73,8 @@ configure:
 	sudo cp slurm.conf /etc/slurm/slurm.conf
 	sudo cp gres.conf /etc/slurm/gres.conf
 	sudo cp cgroup.conf /etc/slurm/cgroup.conf
+    sudo cp slurmd.conf /etc/slurm/slurmd.conf
+
 	NodeName=$$(hostname -s); \
 	CPUs=$$(lscpu | awk '$$1=="CPU(s):" {print $$2}'); \
 	RealMemory=$$(free -m | awk '$$1=="Mem:" {print $$NF}'); \
@@ -89,6 +92,10 @@ configure:
 		-e "s/ThreadsPerCorePlaceholder/$$ThreadsPerCore/" \
 		-e "s/GresPlaceholder/$$Gres/" \
 		/etc/slurm/slurm.conf
+
+	sudo sed -i \
+	    -e "s/NodeNamePlaceHolder/$$NodeName/" \
+		/etc/slurm/slurmd.conf
 
 build-and-install-source: build-source install-source
 
@@ -173,6 +180,14 @@ test-single-card:
 	TEST_CARDS_NUMBER=$$(srun --gres=gpu:1 bash -c 'docker run --init --rm --runtime=habana -e HABANA_VISIBLE_DEVICES $(TEST_CONTAINER_IMAGE) /bin/bash -c "hl-smi -Q name --format=csv | grep -v name | wc -l"'); \
 	test "$$TEST_CARDS_NUMBER" -eq 1
 	$(call prompt-status)
+
+test-2-cards: build-slurm-test-container
+	. /etc/profile.d/slurm.sh; \
+	srun --gres=gpu:2 --nodes=1 --ntasks-per-node=1 bash -c 'docker run --init --rm --runtime=habana -e HABANA_VISIBLE_DEVICES -e SLURM_NODEID -e SLURM_LAUNCH_NODE_IPADDR --net=host $(SLURM_TEST_CONTAINER_IMAGE) /bin/bash -c "cd hccl_demo; HCCL_COMM_ID=$$SLURM_LAUNCH_NODE_IPADDR:5555 python3 run_hccl_demo.py --nranks 2 --node_id $$SLURM_NODEID --size 32m --test all_reduce --loop 1000 --ranks_per_node 2"'; \
+	$(call prompt-status)
+
+
+
 
 test-8-cards: build-slurm-test-container
 	. /etc/profile.d/slurm.sh; \
