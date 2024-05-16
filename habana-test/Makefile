@@ -73,7 +73,7 @@ configure:
 	sudo cp slurm.conf /etc/slurm/slurm.conf
 	sudo cp gres.conf /etc/slurm/gres.conf
 	sudo cp cgroup.conf /etc/slurm/cgroup.conf
-    sudo cp slurmd.conf /etc/slurm/slurmd.conf
+	sudo cp slurmd.conf /etc/slurm/slurmd.conf
 
 	NodeName=$$(hostname -s); \
 	CPUs=$$(lscpu | awk '$$1=="CPU(s):" {print $$2}'); \
@@ -91,11 +91,13 @@ configure:
 		-e "s/CoresPerSocketPlaceholder/$$CoresPerSocket/" \
 		-e "s/ThreadsPerCorePlaceholder/$$ThreadsPerCore/" \
 		-e "s/GresPlaceholder/$$Gres/" \
-		/etc/slurm/slurm.conf
-
-	sudo sed -i \
-	    -e "s/NodeNamePlaceHolder/$$NodeName/" \
-		/etc/slurm/slurmd.conf
+		/etc/slurm/slurm.conf \
+	@NodeName=$$(hostname -s); \
+	NumaNodes=$$(numactl --hardware | grep available | awk '{print $$2}'); \
+	echo "Configuring slurmd.conf with Node Name: $$NodeName and NUMA nodes: $$NumaNodes"; \
+	sudo sed -i 's/NodeNamePlaceHolder/'"$$NodeName"'/g' /etc/slurm/slurmd.conf; \
+	sudo sed -i 's/NumaNodesPlaceHolder/'"$$NumaNodes"'/g' /etc/slurm/slurmd.conf; \
+	echo "slurmd.conf updated."
 
 build-and-install-source: build-source install-source
 
