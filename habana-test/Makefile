@@ -91,12 +91,14 @@ configure:
 		-e "s/CoresPerSocketPlaceholder/$$CoresPerSocket/" \
 		-e "s/ThreadsPerCorePlaceholder/$$ThreadsPerCore/" \
 		-e "s/GresPlaceholder/$$Gres/" \
-		/etc/slurm/slurm.conf \
-	@NodeName=$$(hostname -s); \
+		/etc/slurm/slurm.conf; \
+	NodeName=$$(hostname -s); \
 	NumaNodes=$$(numactl --hardware | grep available | awk '{print $$2}'); \
 	echo "Configuring slurmd.conf with Node Name: $$NodeName and NUMA nodes: $$NumaNodes"; \
-	sudo sed -i 's/NodeNamePlaceHolder/'"$$NodeName"'/g' /etc/slurm/slurmd.conf; \
-	sudo sed -i 's/NumaNodesPlaceHolder/'"$$NumaNodes"'/g' /etc/slurm/slurmd.conf; \
+	sudo sed -i \
+		-e "s/NodeNamePlaceHolder/$$NodeName/" \
+		-e "s/NumaNodesPlaceHolder/$$NumaNodes/" \
+		/etc/slurm/slurmd.conf; \
 	echo "slurmd.conf updated."
 
 build-and-install-source: build-source install-source
