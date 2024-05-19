@@ -1,4 +1,4 @@
-# Intel GAUDI SLURM testing
+# Intel GAUDI SLURM
 This directory contains scripts and instructions for building, installing, and testing SLURM with Intel's GAUDI accelerators. Follow the steps below to get started.
 
 ## Building the Packages
