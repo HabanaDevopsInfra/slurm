@@ -51,7 +51,8 @@
 #include "src/interfaces/auth.h"
 #include "src/interfaces/topology.h"
 #include "src/common/read_config.h"
-#include "src/common/slurm_protocol_interface.h"
+#include "src/common/slurm_protocol_defs.h"
+#include "src/common/slurm_protocol_socket.h"
 #include "src/common/slurm_protocol_pack.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
@@ -63,7 +64,7 @@ typedef struct {
 	pthread_cond_t *notify;
 	int            *p_thr_count;
 	slurm_msg_t *orig_msg;
-	List ret_list;
+	list_t *ret_list;
 	int timeout;
 	hostlist_t *tree_hl;
 	pthread_mutex_t *tree_mutex;
@@ -112,12 +113,13 @@ static void *_forward_thread(void *arg)
 {
 	forward_msg_t *fwd_msg = arg;
 	forward_struct_t *fwd_struct = fwd_msg->fwd_struct;
+	forward_t *fwd_ptr = &fwd_msg->header.forward;
 	buf_t *buffer = init_buf(BUF_SIZE);	/* probably enough for header */
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	int fd = -1;
 	ret_data_info_t *ret_data_info = NULL;
 	char *name = NULL;
-	hostlist_t *hl = hostlist_create(fwd_msg->header.forward.nodelist);
+	hostlist_t *hl = hostlist_create(fwd_ptr->nodelist);
 	slurm_addr_t addr;
 	char *buf = NULL;
 	int steps = 0;
@@ -165,23 +167,20 @@ static void *_forward_thread(void *arg)
 		}
 		buf = hostlist_ranged_string_xmalloc(hl);
 
-		xfree(fwd_msg->header.forward.nodelist);
-		fwd_msg->header.forward.nodelist = buf;
-		fwd_msg->header.forward.cnt = hostlist_count(hl);
+		xfree(fwd_ptr->nodelist);
+		fwd_ptr->nodelist = buf;
+		fwd_ptr->cnt = hostlist_count(hl);
 
-		if (fwd_msg->header.flags & SLURM_PACK_ADDRS) {
-			fwd_msg->header.forward.alias_addrs =
-				*(fwd_struct->alias_addrs);
-		}
+		if (fwd_msg->header.flags & SLURM_PACK_ADDRS)
+			fwd_ptr->alias_addrs = *(fwd_struct->alias_addrs);
 
 #if 0
 		info("sending %d forwards (%s) to %s",
-		     fwd_msg->header.forward.cnt,
-		     fwd_msg->header.forward.nodelist, name);
+		     fwd_ptr->cnt, fwd_ptr->nodelist, name);
 #endif
-		if (fwd_msg->header.forward.nodelist[0]) {
+		if (fwd_ptr->nodelist[0]) {
 			debug3("forward: send to %s along with %s",
-			       name, fwd_msg->header.forward.nodelist);
+			       name, fwd_ptr->nodelist);
 		} else
 			debug3("forward: send to %s ", name);
 
@@ -253,26 +252,23 @@ static void *_forward_thread(void *arg)
 			goto cleanup;
 		}
 
-		if (fwd_msg->header.forward.cnt > 0) {
-			if (!fwd_msg->header.forward.tree_width)
-				fwd_msg->header.forward.tree_width =
-					slurm_conf.tree_width;
-			steps = (fwd_msg->header.forward.cnt+1) /
-					fwd_msg->header.forward.tree_width;
+		if (fwd_ptr->cnt > 0) {
+			if (!fwd_ptr->tree_width)
+				fwd_ptr->tree_width = slurm_conf.tree_width;
+			steps = (fwd_ptr->cnt + 1) / fwd_ptr->tree_width;
 			fwd_msg->timeout =
 				slurm_conf.msg_timeout * 1000 * steps;
 			steps++;
-			fwd_msg->timeout += (start_timeout*steps);
+			fwd_msg->timeout += (start_timeout * steps);
 			/* info("now  + %d*%d = %d", start_timeout, */
 			/*      steps, fwd_msg->timeout); */
 		}
 
 		ret_list = slurm_receive_resp_msgs(fd, steps, fwd_msg->timeout);
 		/* info("sent %d forwards got %d back", */
-		/*      fwd_msg->header.forward.cnt, list_count(ret_list)); */
+		/*      fwd_ptr->cnt, list_count(ret_list)); */
 
-		if (!ret_list || (fwd_msg->header.forward.cnt != 0
-				  && list_count(ret_list) <= 1)) {
+		if (!ret_list || (fwd_ptr->cnt && list_count(ret_list) <= 1)) {
 			slurm_mutex_lock(&fwd_struct->forward_mutex);
 			mark_as_failed_forward(&fwd_struct->ret_list, name,
 					       errno);
@@ -287,8 +283,7 @@ static void *_forward_thread(void *arg)
 				continue;
 			}
 			goto cleanup;
-		} else if ((fwd_msg->header.forward.cnt + 1) !=
-			   list_count(ret_list)) {
+		} else if ((fwd_ptr->cnt + 1) != list_count(ret_list)) {
 			/* this should never be called since the above
 			   should catch the failed forwards and pipe
 			   them back down, but this is here so we
@@ -299,10 +294,8 @@ static void *_forward_thread(void *arg)
 			int first_node_found = 0;
 			hostlist_iterator_t *host_itr
 				= hostlist_iterator_create(hl);
-			error("We shouldn't be here.  We forwarded to %d "
-			      "but only got %d back",
-			      (fwd_msg->header.forward.cnt + 1),
-			      list_count(ret_list));
+			error("We shouldn't be here.  We forwarded to %d but only got %d back",
+			      (fwd_ptr->cnt + 1), list_count(ret_list));
 			while ((tmp = hostlist_next(host_itr))) {
 				int node_found = 0;
 				itr = list_iterator_create(ret_list);
@@ -358,10 +351,10 @@ cleanup:
 	if ((fd >= 0) && close(fd) < 0)
 		error ("close(%d): %m", fd);
 	hostlist_destroy(hl);
-	fwd_msg->header.forward.alias_addrs.net_cred = NULL;
-	fwd_msg->header.forward.alias_addrs.node_addrs = NULL;
-	fwd_msg->header.forward.alias_addrs.node_list = NULL;
-	destroy_forward(&fwd_msg->header.forward);
+	fwd_ptr->alias_addrs.net_cred = NULL;
+	fwd_ptr->alias_addrs.node_addrs = NULL;
+	fwd_ptr->alias_addrs.node_list = NULL;
+	destroy_forward(fwd_ptr);
 	FREE_NULL_BUFFER(buffer);
 	slurm_cond_signal(&fwd_struct->notify);
 	slurm_mutex_unlock(&fwd_struct->forward_mutex);
@@ -403,7 +396,7 @@ static int _fwd_tree_get_addr(fwd_tree_t *fwd_tree, char *name,
 static void *_fwd_tree_thread(void *arg)
 {
 	fwd_tree_t *fwd_tree = arg;
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	char *name = NULL;
 	char *buf = NULL;
 	slurm_msg_t send_msg;
@@ -637,8 +630,7 @@ static void _forward_msg_internal(hostlist_t *hl, hostlist_t **sp_hl,
  */
 extern void forward_init(forward_t *forward)
 {
-	memset(forward, 0, sizeof(forward_t));
-	forward->init = FORWARD_INIT;
+	*forward = (forward_t) FORWARD_INITIALIZER;
 }
 
 /*
@@ -800,17 +792,17 @@ static void _get_dynamic_addrs(hostlist_t *hl, slurm_msg_t *msg)
  * IN: hl          - hostlist_t   - list of every node to send message to
  * IN: msg         - slurm_msg_t  - message to send.
  * IN: timeout     - int          - how long to wait in milliseconds.
- * RET List 	   - List containing the responses of the children
- *		     (if any) we forwarded the message to. List
+ * RET list_t *    - list containing the responses of the children
+ *		     (if any) we forwarded the message to. list
  *		     containing type (ret_data_info_t).
  */
-extern List start_msg_tree(hostlist_t *hl, slurm_msg_t *msg, int timeout)
+extern list_t *start_msg_tree(hostlist_t *hl, slurm_msg_t *msg, int timeout)
 {
 	fwd_tree_t fwd_tree;
 	pthread_mutex_t tree_mutex;
 	pthread_cond_t notify;
 	int count = 0;
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	int thr_count = 0;
 	int host_count = 0;
 	hostlist_t **sp_hl;
@@ -869,12 +861,12 @@ extern List start_msg_tree(hostlist_t *hl, slurm_msg_t *msg, int timeout)
 /*
  * mark_as_failed_forward- mark a node as failed and add it to "ret_list"
  *
- * IN: ret_list       - List *   - ret_list to put ret_data_info
+ * IN: ret_list       - list_t ** - ret_list to put ret_data_info
  * IN: node_name      - char *   - node name that failed
  * IN: err            - int      - error message from attempt
  *
  */
-extern void mark_as_failed_forward(List *ret_list, char *node_name, int err)
+extern void mark_as_failed_forward(list_t **ret_list, char *node_name, int err)
 {
 	ret_data_info_t *ret_data_info = NULL;
 

@@ -58,10 +58,10 @@
  */
 
 #if defined (__APPLE__)
-extern List part_list __attribute__((weak_import));
+extern list_t *part_list __attribute__((weak_import));
 extern bitstr_t *idle_node_bitmap __attribute__((weak_import));
 #else
-List part_list = NULL;
+list_t *part_list = NULL;
 bitstr_t *idle_node_bitmap;
 #endif
 
@@ -326,6 +326,7 @@ extern int common_topo_choose_nodes(topology_eval_t *topo_eval)
 	bitstr_t *orig_node_map, *req_node_map = NULL;
 	bitstr_t **orig_core_array;
 	int rem_nodes;
+	uint32_t orig_max_nodes = topo_eval->max_nodes;
 
 	if (job_ptr->details->req_node_bitmap)
 		req_node_map = job_ptr->details->req_node_bitmap;
@@ -336,7 +337,7 @@ extern int common_topo_choose_nodes(topology_eval_t *topo_eval)
 		 * Make sure we don't say we can use a node exclusively
 		 * that is bigger than our whole-job maximum CPU count.
 		 */
-		if (((job_ptr->details->whole_node == 1) &&
+		if (((job_ptr->details->whole_node & WHOLE_NODE_REQUIRED) &&
 		     (job_ptr->details->max_cpus != NO_VAL) &&
 		     (job_ptr->details->max_cpus <
 		      avail_res_array[i]->avail_cpus)) ||
@@ -371,6 +372,7 @@ extern int common_topo_choose_nodes(topology_eval_t *topo_eval)
 		goto fini;
 
 	topo_eval->first_pass = false;
+	topo_eval->max_nodes = orig_max_nodes;
 
 	bit_or(topo_eval->node_map, orig_node_map);
 	core_array_or(topo_eval->avail_core, orig_core_array);
@@ -396,6 +398,7 @@ extern int common_topo_choose_nodes(topology_eval_t *topo_eval)
 
 	for (count = 1; count < most_res; count++) {
 		int nochange = 1;
+		topo_eval->max_nodes = orig_max_nodes;
 		bit_or(topo_eval->node_map, orig_node_map);
 		core_array_or(topo_eval->avail_core, orig_core_array);
 		for (i = 0; next_node_bitmap(topo_eval->node_map, &i); i++) {

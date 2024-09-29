@@ -339,6 +339,9 @@ static job_desc_msg_t *_entry_to_job(cron_entry_t *entry, char *script)
 	job->script = script;
 
 	job->environment = env_array_create();
+	set_prio_process_env();
+	env_array_overwrite(&job->environment, "SLURM_PRIO_PROCESS",
+			    getenv("SLURM_PRIO_PROCESS"));
 	env_array_overwrite(&job->environment, "SLURM_GET_USER_ENV", "1");
 	job->env_size = envcount(job->environment);
 
@@ -381,7 +384,7 @@ static int _foreach_env_var_expand(void *x, void *arg)
 	return SLURM_SUCCESS;
 }
 
-static void _expand_variables(cron_entry_t *entry, List env_vars)
+static void _expand_variables(cron_entry_t *entry, list_t *env_vars)
 {
 	if (!env_vars || !list_count(env_vars))
 		return;
@@ -395,7 +398,7 @@ static void _edit_and_update_crontab(char *crontab)
 	char *badline = NULL;
 	int lineno, line_start;
 	char *line;
-	List jobs, env_vars;
+	list_t *jobs, *env_vars;
 	int line_count;
 	bool setup_next_entry = true;
 	char *script;
@@ -403,7 +406,8 @@ static void _edit_and_update_crontab(char *crontab)
 
 edit:
 	if (edit_only && crontab) {
-		slurm_hash_t before = { 0 }, after = { 0 };
+		slurm_hash_t before = { .type = HASH_PLUGIN_K12 };
+		slurm_hash_t after = { .type = HASH_PLUGIN_K12 };
 		int before_len, after_len;
 
 		before_len = hash_g_compute(crontab, strlen(crontab), NULL, 0,

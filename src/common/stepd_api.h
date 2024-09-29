@@ -45,7 +45,6 @@
 #include "slurm/slurm.h"
 #include "src/common/list.h"
 #include "src/common/slurm_protocol_defs.h"
-#include "src/common/io_hdr.h"
 
 #define GETHOST_NOT_MATCH_PID SLURM_BIT(0)
 #define GETHOST_IPV4 SLURM_BIT(1)
@@ -182,9 +181,9 @@ int stepd_signal_container(int fd, uint16_t protocol_version, int signal,
  *         probably be moved into a more generic stepd_api call so that
  *         this header does not need to include slurm_protocol_defs.h.
  */
-int stepd_attach(int fd, uint16_t protocol_version, slurm_addr_t *ioaddr,
-		 slurm_addr_t *respaddr, void *job_cred_sig, uint32_t sig_len,
-		 uid_t uid, reattach_tasks_response_msg_t *resp);
+extern int stepd_attach(int fd, uint16_t protocol_version, slurm_addr_t *ioaddr,
+			slurm_addr_t *respaddr, char *io_key, uid_t uid,
+			reattach_tasks_response_msg_t *resp);
 
 /*
  * Scan for available running slurm step daemons by checking
@@ -195,9 +194,9 @@ int stepd_attach(int fd, uint16_t protocol_version, slurm_addr_t *ioaddr,
  * slurmd on one node (unusual outside of development environments), you
  * will get one of the local NodeNames more-or-less at random.
  *
- * Returns a List of pointers to step_loc_t structures.
+ * Returns a list of pointers to step_loc_t structures.
  */
-extern List stepd_available(const char *directory, const char *nodename);
+extern list_t *stepd_available(const char *directory, const char *nodename);
 
 /*
  * Return true if the process with process ID "pid" is found in
@@ -335,4 +334,10 @@ extern uint32_t stepd_get_nodeid(int fd, uint16_t protocol_version);
  * On error returns -1.
  */
 extern int stepd_get_namespace_fd(int fd, uint16_t protocol_version);
+
+/*
+ * Relay message to stepd.
+ */
+extern int stepd_relay_msg(int fd, slurm_msg_t *msg, uint16_t protocol_version);
+
 #endif /* _STEPD_API_H */

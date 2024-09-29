@@ -107,6 +107,7 @@ static const http_status_code_txt_t http_status_codes[] = {
 	{ HTTP_STATUS_CODE_SRVERR_GATEWAY_TIMEOUT, "GATEWAY TIMEOUT" },
 	{ HTTP_STATUS_CODE_SRVERR_HTTP_VERSION_NOT_SUPPORTED,
 	  "HTTP VERSION NOT SUPPORTED" },
+	{ HTTP_STATUS_CODE_DEFAULT, "default" },
 };
 
 static const struct {
@@ -263,6 +264,24 @@ extern data_t *parse_url_path(const char *path, bool convert_types,
 	}
 
 	return d;
+}
+
+extern http_status_code_t get_http_status_code(const char *str)
+{
+	if (isdigit(str[0])) {
+		uint64_t n = slurm_atoul(str);
+
+		if (!n || (n > HTTP_STATUS_CODE_DEFAULT))
+			return HTTP_STATUS_NONE;
+
+		return n;
+	}
+
+	for (int i = 0; i < ARRAY_SIZE(http_status_codes); i++)
+		if (!xstrcasecmp(http_status_codes[i].text, str))
+			return http_status_codes[i].code;
+
+	return HTTP_STATUS_NONE;
 }
 
 extern const char *get_http_status_code_string(http_status_code_t code)

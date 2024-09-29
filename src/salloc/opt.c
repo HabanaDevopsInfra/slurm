@@ -403,6 +403,13 @@ static bool _opt_verify(void)
 		verified = false;
 	}
 
+	if ((opt.resv_port_cnt != NO_VAL) &&
+	    !(opt.job_flags & STEPMGR_ENABLED) &&
+	    !xstrstr(slurm_conf.slurmctld_params, "enable_stepmgr")) {
+		error("Slurmstepd step management must be enabled to use --resv-ports for job allocations");
+		verified = false;
+	}
+
 	if (opt.burst_buffer && opt.burst_buffer_file) {
 		error("Cannot specify both --bb and --bbf");
 		exit(error_exit);
@@ -441,10 +448,8 @@ static bool _opt_verify(void)
 
 	if (opt.nodelist && !opt.nodes_set) {
 		hl = hostlist_create(opt.nodelist);
-		if (!hl) {
-			error("memory allocation failure");
-			exit(error_exit);
-		}
+		if (!hl)
+			fatal("Invalid node list specified");
 		hostlist_uniq(hl);
 		hl_cnt = hostlist_count(hl);
 		opt.min_nodes = hl_cnt;
@@ -555,6 +560,8 @@ static bool _opt_verify(void)
 	    && (!opt.nodes_set || !opt.ntasks_set)) {
 		FREE_NULL_HOSTLIST(hl);
 		hl = hostlist_create(opt.nodelist);
+		if (!hl)
+			fatal("Invalid node list specified");
 		if (!opt.ntasks_set) {
 			opt.ntasks_set = 1;
 			opt.ntasks = hostlist_count(hl);
@@ -666,7 +673,7 @@ extern char *spank_get_job_env(const char *name)
 
 	if ((name == NULL) || (name[0] == '\0') ||
 	    (strchr(name, (int)'=') != NULL)) {
-		slurm_seterrno(EINVAL);
+		errno = EINVAL;
 		return NULL;
 	}
 
@@ -692,7 +699,7 @@ extern int   spank_set_job_env(const char *name, const char *value,
 
 	if ((name == NULL) || (name[0] == '\0') ||
 	    (strchr(name, (int)'=') != NULL)) {
-		slurm_seterrno(EINVAL);
+		errno = EINVAL;
 		return -1;
 	}
 
@@ -726,7 +733,7 @@ extern int   spank_unset_job_env(const char *name)
 
 	if ((name == NULL) || (name[0] == '\0') ||
 	    (strchr(name, (int)'=') != NULL)) {
-		slurm_seterrno(EINVAL);
+		errno = EINVAL;
 		return -1;
 	}
 
@@ -882,6 +889,7 @@ static void _help(void)
 "      --mem-per-cpu=MB        maximum amount of real memory per allocated\n"
 "                              cpu required by the job.\n"
 "                              --mem >= --mem-per-cpu if --mem is specified.\n"
+"      --resv-ports            reserve communication ports\n"
 "\n"
 "Affinity/Multi-core options: (when the task/affinity plugin is enabled)\n"
 "                              For the following 4 options, you are\n"
@@ -890,7 +898,7 @@ static void _help(void)
 "      --sockets-per-node=S    number of sockets per node to allocate\n"
 "      --cores-per-socket=C    number of cores per socket to allocate\n"
 "      --threads-per-core=T    number of threads per core to allocate\n"
-"  -B  --extra-node-info=S[:C[:T]]  combine request of sockets per node,\n"
+"  -B, --extra-node-info=S[:C[:T]]  combine request of sockets per node,\n"
 "                              cores per socket and threads per core.\n"
 "                              Specify an asterisk (*) as a placeholder,\n"
 "                              a minimum value, or a min-max range.\n"

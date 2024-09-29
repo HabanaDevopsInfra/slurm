@@ -52,7 +52,7 @@
 
 static char *slurmd_config_files[] = {
 	"slurm.conf", "acct_gather.conf", "cgroup.conf",
-	"cli_filter.lua", "ext_sensors.conf", "gres.conf", "helpers.conf",
+	"cli_filter.lua", "gres.conf", "helpers.conf",
 	"job_container.conf", "mpi.conf", "oci.conf",
 	"plugstack.conf", "scrun.lua", "topology.conf", NULL
 };
@@ -63,7 +63,7 @@ static char *client_config_files[] = {
 };
 
 
-static void _init_minimal_conf_server_config(List controllers);
+static void _init_minimal_conf_server_config(list_t *controllers);
 
 static int to_parent[2] = {-1, -1};
 
@@ -107,7 +107,7 @@ rwfail:
 	return NULL;
 }
 
-static void _fetch_child(List controllers, uint32_t flags)
+static void _fetch_child(list_t *controllers, uint32_t flags)
 {
 	config_response_msg_t *config;
 	buf_t *buffer = init_buf(1024 * 1024);
@@ -149,9 +149,9 @@ rwfail:
 extern config_response_msg_t *fetch_config(char *conf_server, uint32_t flags)
 {
 	char *env_conf_server = getenv("SLURM_CONF_SERVER");
-	List controllers = NULL;
+	list_t *controllers = NULL;
 	pid_t pid;
-	char *sack_key = NULL;
+	char *sack_jwks = NULL, *sack_key = NULL;
 	struct stat statbuf;
 
 	/*
@@ -195,14 +195,13 @@ extern config_response_msg_t *fetch_config(char *conf_server, uint32_t flags)
 	}
 
 	/* If the slurm.key file exists, assume we're using auth/slurm */
+	sack_jwks = get_extra_conf_path("slurm.jwks");
 	sack_key = get_extra_conf_path("slurm.key");
-	if (!stat(sack_key, &statbuf)) {
-		/*
-		 * This envvar will ensure both the config fetching process
-		 * as well as ourselves will use the original key location.
-		 */
+	if (!stat(sack_jwks, &statbuf))
+		setenv("SLURM_SACK_JWKS", sack_jwks, 1);
+	else if (!stat(sack_key, &statbuf))
 		setenv("SLURM_SACK_KEY", sack_key, 1);
-	}
+	xfree(sack_jwks);
 	xfree(sack_key);
 
 	/*
@@ -256,11 +255,11 @@ extern config_response_msg_t *fetch_config_from_controller(uint32_t flags)
 	case RESPONSE_SLURM_RC:
 		rc = ((return_code_msg_t *) resp_msg.data)->return_code;
 		slurm_free_return_code_msg(resp_msg.data);
-		slurm_seterrno(rc);
+		errno = rc;
 		return NULL;
 		break;
 	default:
-		slurm_seterrno(SLURM_UNEXPECTED_MSG_ERROR);
+		errno = SLURM_UNEXPECTED_MSG_ERROR;
 		return NULL;
 		break;
 	}
@@ -328,7 +327,7 @@ static int _print_controllers(void *x, void *arg)
 	return SLURM_SUCCESS;
 }
 
-static void _init_minimal_conf_server_config(List controllers)
+static void _init_minimal_conf_server_config(list_t *controllers)
 {
 	char *conf = NULL, *filename = NULL;
 	int fd;
@@ -541,10 +540,16 @@ extern config_response_msg_t *new_config_response(bool to_slurmd)
 	 * configuration semantics for the Include lines.
 	 */
 	if (to_slurmd) {
-		if (slurm_conf.prolog && (slurm_conf.prolog[0] != '/'))
-			_load_conf2list(msg, slurm_conf.prolog, true);
-		if (slurm_conf.epilog && (slurm_conf.epilog[0] != '/'))
-			_load_conf2list(msg, slurm_conf.epilog, true);
+		for (int i = 0; i < slurm_conf.prolog_cnt; i++) {
+			if (slurm_conf.prolog[i][0] != '/')
+				_load_conf2list(msg, slurm_conf.prolog[i],
+						true);
+		}
+		for (int i = 0; i < slurm_conf.epilog_cnt; i++) {
+			if (slurm_conf.epilog[i][0] != '/')
+				_load_conf2list(msg, slurm_conf.epilog[i],
+						true);
+		}
 	}
 
 	return msg;

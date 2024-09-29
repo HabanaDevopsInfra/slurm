@@ -50,6 +50,7 @@
 #include "src/common/bitstring.h"
 #include "src/common/list.h"
 #include "src/common/log.h"
+#include "src/common/timers.h"
 #include "src/common/xassert.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
@@ -70,7 +71,7 @@ const char plugin_type[] = "cgroup/v2";
 const uint32_t plugin_version = SLURM_VERSION_NUMBER;
 
 /* Internal cgroup structs */
-static List task_list;
+static list_t *task_list;
 static uint16_t step_active_cnt;
 static xcgroup_ns_t int_cg_ns;
 static xcgroup_t int_cg[CG_LEVEL_CNT];
@@ -622,6 +623,81 @@ end_inotify:
 	xfree(cgroup_events);
 }
 
+/*
+ * dbus is a batch system and asynchronous, so we cannot know when the scope
+ * will be ready unless we wait for the cgroup directories to be created and
+ * for the pid to show up in cgroup.procs.
+ *
+ * The waiting time will depend completely on the time systemd takes to complete
+ * such operations.
+ */
+static int _wait_scope_ready(xcgroup_t scope_root, pid_t pid, uint32_t t)
+{
+	DEF_TIMERS;
+	bool found = false;
+	int rc, npids, retries = 0;
+	pid_t *pids;
+	uint32_t timeout = t * 1000; //msec to usec
+	struct stat sb;
+	struct timeval start_tv;
+
+	START_TIMER;
+	gettimeofday(&start_tv, NULL);
+
+	/* Wait for the scope directory to show up. */
+	do {
+		rc = stat(scope_root.path, &sb);
+		if (!rc)
+			break;
+		if ((rc < 0) && (errno != ENOENT)) {
+			error("stat() error checking for %s after dbus call: %m",
+			      scope_root.path);
+			return SLURM_ERROR;
+		}
+		retries++;
+		if (slurm_delta_tv(&start_tv) > timeout)
+			goto dbus_timeout;
+		poll(NULL, 0, 10);
+	} while (true);
+
+	END_TIMER;
+	log_flag(CGROUP, "Took %s and %d retries for scope dir %s to show up.",
+		 TIME_STR, retries, scope_root.path);
+
+	/* Wait for the pid to show up in cgroup.procs */
+	START_TIMER;
+	retries = 0;
+	do {
+		common_cgroup_get_pids(&scope_root, &pids, &npids);
+		for (int i = 0; i < npids; i++) {
+			if (pids[i] == pid) {
+				found = true;
+				break;
+			}
+		}
+		xfree(pids);
+		retries++;
+		if (!found) {
+			if (slurm_delta_tv(&start_tv) > timeout)
+				goto dbus_timeout;
+			poll(NULL, 0, 10);
+		}
+	}  while (!found);
+
+	END_TIMER;
+	log_flag(CGROUP, "Took %s and %d retries for pid %d to show up in %s/cgroup.procs.",
+		 TIME_STR, retries, pid, scope_root.path);
+
+	log_flag(CGROUP, "Scope initialization complete after %d msec",
+		 (slurm_delta_tv(&start_tv)/1000));
+
+	return SLURM_SUCCESS;
+dbus_timeout:
+	END_TIMER;
+	error("Scope initialization timeout after %s", TIME_STR);
+	return SLURM_ERROR;
+}
+
 static int _init_stepd_system_scope(pid_t pid)
 {
 	char *system_dir = "/" SYSTEM_CGDIR;
@@ -688,96 +764,147 @@ static int _init_new_scope(char *scope_path)
  */
 static int _init_new_scope_dbus(char *scope_path)
 {
-	struct stat sb;
-	int status, retries = 0;
-	pid_t pid, sleep_parent_pid;
-	xcgroup_t sys_root;
+	int status, pipe_fd[2];
+	pid_t pid;
+	xcgroup_t sys_root, scope_root;
 	char *const argv[3] = {
 		(char *)conf->stepd_loc,
 		"infinity",
 		NULL };
 
+	if (pipe(pipe_fd))
+		fatal("pipe() failed: %m");
+	xassert(pipe_fd[0] > STDERR_FILENO);
+	xassert(pipe_fd[1] > STDERR_FILENO);
+
 	pid = fork();
+	if (pid < 0)
+		fatal("%s: cannot start slurmstepd infinity process", __func__);
+	else if (pid == 0) {
+		/* wait for signal from parent */
+		if (close(pipe_fd[1]))
+			fatal("close(%u) failed: %m", pipe_fd[1]);
 
-	if (pid < 0) {
-		return SLURM_ERROR;
-	} else if (pid == 0) { /* child */
-		sleep_parent_pid = getpid();
-		if (cgroup_dbus_attach_to_scope(sleep_parent_pid, scope_path) !=
-		    SLURM_SUCCESS) {
-			/*
-			 * Systemd scope unit may already exist or is stuck, and
-			 * the directory is not there!.
-			 */
-			_exit(1);
-		}
-		/*
-		 * Wait for the scope to be alive. There's no way that dbus
-		 * tells us if the mkdir operation on the cgroup filesystem went
-		 * well, and we know that there's a noticeable delay. Because of
-		 * systemd and because of cgroup. We need to wait.
-		 */
-		while ((retries < CGROUP_MAX_RETRIES) &&
-		       (stat(scope_path, &sb) < 0)) {
-			if (errno == ENOENT) {
-				retries++;
-				usleep(10000);
-			} else {
-				error("stat() error waiting for %s to show up after dbus call: %m",
-				      scope_path);
-				_exit(1);
-			}
-		}
-		if (retries > CGROUP_MAX_RETRIES)
-			error("Long time waiting for %s to show up after dbus call.",
-			      scope_path);
-		else if (retries > 1)
-			log_flag(CGROUP, "Possible systemd slowness, %d msec waiting scope to show up.",
-				 (retries * 10));
+		safe_read(pipe_fd[0], &pid, sizeof(pid));
+
+		if (close(pipe_fd[0]))
+			fatal("close(%u) failed: %m", pipe_fd[0]);
 
 		/*
-		 * Assuming the scope is created, let's mkdir the /system dir
-		 * which will allocate the sleep inifnity pid. This way the
-		 * slurmstepd scope won't be a leaf anymore and we'll be able
-		 * to create more directories. _init_new_scope here is simply
-		 * used as a mkdir.
+		 * Uncouple ourselves from slurmd, so a signal sent to the
+		 * slurmd process group won't kill slurmstepd infinity. This way
+		 * the scope will remain forever and no further calls to
+		 * dbus/systemd will be needed until the scope is manually
+		 * stopped.
+		 *
+		 * This minimizes the interaction with systemd becoming less
+		 * dependant on possible malfunctions it might have.
 		 */
-		memset(&sys_root, 0, sizeof(sys_root));
-		xstrfmtcat(sys_root.path, "%s/%s", scope_path, SYSTEM_CGDIR);
-		if (_init_new_scope(sys_root.path) != SLURM_SUCCESS) {
-			xfree(sys_root.path);
-			_exit(1);
-		}
-		/* Success!, we got the cg directory, move ourselves there. */
-		if (common_cgroup_move_process(&sys_root, sleep_parent_pid)) {
-			error("Unable to move pid %d to system cgroup %s",
-			      sleep_parent_pid, sys_root.path);
-			_exit(1);
-		}
-		common_cgroup_destroy(&sys_root);
-
-		/*
-		 * We don't need to wait to be in the new cgroup, if the fs is
-		 * slow we anyway know that at some point the kernel will move
-		 * us there. So continue as normal.
-		 */
-		if (xdaemon() != 0) {
-			error("Cannot spawn dummy process for the systemd scope.");
+		if (xdaemon())
 			_exit(127);
-		}
+
+		/* Become slurmstepd infinity */
 		execvp(argv[0], argv);
 		error("execvp of slurmstepd wait failed: %m");
 		_exit(127);
-	} else if (pid > 0) {
-		if ((waitpid(pid, &status, 0) != pid) || WEXITSTATUS(status)) {
-			/* If we receive an error it means scope is not ok. */
-			error("%s: scope and/or cgroup directory for slurmstepd could not be set.",
-			      __func__);
-			return SLURM_ERROR;
-		}
 	}
 
+	if (close(pipe_fd[0]))
+		fatal("close(%u) failed: %m", pipe_fd[0]);
+
+	if (cgroup_dbus_attach_to_scope(pid, scope_path) != SLURM_SUCCESS) {
+		/*
+		 * Systemd scope unit may already exist or is stuck, and
+		 * the directory is not there!.
+		 */
+		kill(pid, SIGKILL);
+		waitpid(pid, &status, WNOHANG);
+		fatal("systemd scope for slurmstepd could not be set.");
+	}
+
+	/*
+	 * We need to wait for the scope to be created, and the child pid
+	 * moved to the root, so we do not race with systemd.
+	 *
+	 * Experiments shown that depending on systemd load, it can be slow
+	 * (>500ms) launching and executing the 'systemd job'. The 'job' will
+	 * consist in internally creating the scope, mkdir the cgroup
+	 * directories and finally move the pid.
+	 *
+	 * After *all* this work is done, then we can continue.
+	 */
+	scope_root.path = scope_path;
+	if (_wait_scope_ready(scope_root, pid,
+			      slurm_cgroup_conf.systemd_timeout)
+	    != SLURM_SUCCESS) {
+		kill(pid, SIGKILL);
+		waitpid(pid, &status, WNOHANG);
+		fatal("Scope init timed out, systemd might need cleanup with 'systemctl reset-failed', please consider increasing SystemdTimeout in cgroup.conf (SystemdTimeout=%"PRIu64").",
+		      slurm_cgroup_conf.systemd_timeout);
+	}
+
+	/*
+	 * Assuming the scope is created, let's mkdir the /system dir which will
+	 * allocate the sleep inifnity pid. This way the slurmstepd scope won't
+	 * be a leaf anymore and we'll be able to create more directories.
+	 * _init_new_scope here is simply used as a mkdir.
+	 */
+	memset(&sys_root, 0, sizeof(sys_root));
+	xstrfmtcat(sys_root.path, "%s/%s", scope_path, SYSTEM_CGDIR);
+	if (_init_new_scope(sys_root.path) != SLURM_SUCCESS) {
+		xfree(sys_root.path);
+		kill(pid, SIGKILL);
+		waitpid(pid, &status, WNOHANG);
+		fatal("slurmstepd scope could not be set.");
+	}
+
+	/* Success!, we got the system/ cg directory, move the child there. */
+	if (common_cgroup_move_process(&sys_root, pid)) {
+		xfree(sys_root.path);
+		kill(pid, SIGKILL);
+		waitpid(pid, &status, WNOHANG);
+		fatal("Unable to move pid %d to system cgroup %s", pid,
+		      sys_root.path);
+	}
+	common_cgroup_destroy(&sys_root);
+
+	/*
+	  * Wait for the infinity pid to be in the correct cgroup or further
+	  * cgroup configuration will fail as we're at this point violating the
+	  * no internal process constrain.
+	  *
+	  * To control resource distribution of a cgroup, the cgroup must create
+	  * children directories and transfer all its processes to these
+	  * children before enabling controllers in its cgroup.subtree_control
+	  * file.
+	  *
+	  * As cgroupfs is sometimes slow, we cannot continue setting up this
+	  * cgroup unless we guarantee the child are moved.
+	  */
+	if (!common_cgroup_wait_pid_moved(&scope_root, pid, scope_path)) {
+		kill(pid, SIGKILL);
+		waitpid(pid, &status, WNOHANG);
+		fatal("Timeout waiting for pid %d to leave %s", pid,
+		      scope_path);
+	}
+
+	/* Tell the child it can continue daemonizing itself. */
+	safe_write(pipe_fd[1], &pid, sizeof(pid));
+	if ((waitpid(pid, &status, 0) != pid) || WEXITSTATUS(status)) {
+		/*
+		 * If we receive an error it means xdaemon() or execv() has
+		 * failed.
+		 */
+		fatal("%s: slurmstepd infinity could not be executed.",
+		      __func__);
+	}
+
+	if (close(pipe_fd[1]))
+		fatal("close(%u) failed: %m", pipe_fd[1]);
+
 	return SLURM_SUCCESS;
+rwfail:
+	fatal("Unable to contact with child: %m");
 }
 
 /*
@@ -1426,14 +1553,24 @@ extern int cgroup_p_step_destroy(cgroup_ctl_type_t ctl)
 	 */
 
 	/*
-	 * Move ourselves to the init root. This is the only cgroup level where
-	 * pids can be put and which is not a leaf.
+	 * Move ourselves to the CGROUP SYETEM level. This is the waiting area
+	 * for new Slurmstepd process which do not have job folders yet, or for
+	 * jobs that are ending execution. This directory also contains the
+	 * "stepd infinity" process to keep the scope alive.
+	 *
+	 * This level is a leaf.  We are not violating the no-internal-processes
+	 * constrain.
+	 *
+	 * Moving the process here instead of to the cgroup root
+	 * (typically /sys/fs/cgroup) will prevent problems when running into
+	 * containerized environments, where cgroupfs root might not be
+	 * writeable.
 	 */
 	memset(&init_root, 0, sizeof(init_root));
-	init_root.path = xstrdup(slurm_cgroup_conf.cgroup_mountpoint);
+	init_root.path = xstrdup(int_cg[CG_LEVEL_SYSTEM].path);
 	rc = common_cgroup_move_process(&init_root, getpid());
 	if (rc != SLURM_SUCCESS) {
-		error("Unable to move pid %d to init root cgroup %s", getpid(),
+		error("Unable to move pid %d to system cgroup %s", getpid(),
 		      init_root.path);
 		goto end;
 	}
@@ -2014,10 +2151,12 @@ extern int cgroup_p_task_addto(cgroup_ctl_type_t ctl, stepd_step_rec_t *step,
 extern cgroup_acct_t *cgroup_p_task_get_acct_data(uint32_t task_id)
 {
 	char *cpu_stat = NULL, *memory_stat = NULL, *memory_current = NULL;
+	char *memory_peak = NULL;
 	char *ptr;
 	size_t tmp_sz = 0;
 	cgroup_acct_t *stats = NULL;
 	task_cg_info_t *task_cg_info;
+	static bool interfaces_checked = false, memory_peak_interface = false;
 
 	if (!(task_cg_info = list_find_first(task_list, _find_task_cg_info,
 					     &task_id))) {
@@ -2028,6 +2167,20 @@ extern cgroup_acct_t *cgroup_p_task_get_acct_data(uint32_t task_id)
 			error("No task found with id %u, this should never happen",
 			      task_id);
 		return NULL;
+	}
+
+	/*
+	 * Check optional interfaces existence and permissions. This check
+	 * will help to avoid querying unexistent cgroup interfaces everytime,
+	 * as might happen in kernel versions that do not provide all of them
+	 */
+	if (!interfaces_checked) {
+		/*
+		 * Check for memory.peak support as RHEL8 and other OSes with
+		 * old kernels might not provide it.
+		 */
+		memory_peak_interface = cgroup_p_has_feature(CG_MEMCG_PEAK);
+		interfaces_checked = true;
 	}
 
 	if (common_cgroup_get_param(&task_cg_info->task_cg,
@@ -2063,6 +2216,19 @@ extern cgroup_acct_t *cgroup_p_task_get_acct_data(uint32_t task_id)
 				 task_id);
 	}
 
+	if (memory_peak_interface) {
+		if (common_cgroup_get_param(&task_cg_info->task_cg,
+					    "memory.peak",
+					    &memory_peak,
+					    &tmp_sz) != SLURM_SUCCESS) {
+			if (task_id == task_special_id)
+				log_flag(CGROUP, "Cannot read task_special memory.peak interface, does your OS support it?");
+			else
+				log_flag(CGROUP, "Cannot read task %d memory.peak interface, does your OS support it?",
+					 task_id);
+		}
+	}
+
 	/*
 	 * Initialize values. A NO_VAL64 will indicate the caller that something
 	 * happened here. Values that aren't set here are returned as 0.
@@ -2072,6 +2238,7 @@ extern cgroup_acct_t *cgroup_p_task_get_acct_data(uint32_t task_id)
 	stats->ssec = NO_VAL64;
 	stats->total_rss = NO_VAL64;
 	stats->total_pgmajfault = NO_VAL64;
+	stats->memory_peak = INFINITE64; /* As required in common_jag.c */
 
 	if (cpu_stat) {
 		ptr = xstrstr(cpu_stat, "user_usec");
@@ -2108,6 +2275,12 @@ extern cgroup_acct_t *cgroup_p_task_get_acct_data(uint32_t task_id)
 		xfree(memory_stat);
 	}
 
+	if (memory_peak) {
+		if (sscanf(memory_peak, "%"PRIu64, &stats->memory_peak) != 1)
+			error("Cannot parse memory.peak file");
+		xfree(memory_peak);
+	}
+
 	return stats;
 }
 
@@ -2123,20 +2296,27 @@ extern long int cgroup_p_get_acct_units(void)
 
 extern bool cgroup_p_has_feature(cgroup_ctl_feature_t f)
 {
-	struct stat st;
-	int rc;
-	char *memsw_filepath = NULL;
+	char file_path[PATH_MAX];
 
-	/* Check if swap constrain capability is enabled in this system. */
 	switch (f) {
+	case CG_MEMCG_PEAK:
+		if (!bit_test(int_cg_ns.avail_controllers, CG_MEMORY))
+			break;
+		if (snprintf(file_path, PATH_MAX, "%s/memory.peak",
+			     int_cg[CG_LEVEL_ROOT].path) >= PATH_MAX)
+			break;
+		if (!access(file_path, F_OK))
+			return true;
+		break;
 	case CG_MEMCG_SWAP:
 		if (!bit_test(int_cg_ns.avail_controllers, CG_MEMORY))
-			return false;
-		xstrfmtcat(memsw_filepath, "%s/memory.swap.max",
-			   int_cg[CG_LEVEL_ROOT].path);
-		rc = stat(memsw_filepath, &st);
-		xfree(memsw_filepath);
-		return (rc == 0);
+			break;
+		if (snprintf(file_path, PATH_MAX, "%s/memory.swap.max",
+			     int_cg[CG_LEVEL_ROOT].path) >= PATH_MAX)
+			break;
+		if (!access(file_path, F_OK))
+			return true;
+		break;
 	default:
 		break;
 	}

@@ -73,7 +73,7 @@ data_for_each_cmd_t _add_argv_entry(data_t *data, void *arg)
 	if (data_convert_type(data, DATA_TYPE_STRING) != DATA_TYPE_STRING)
 		fatal("invalid args data type");
 
-	args->cmd[args->i] = xstrdup(data_get_string_const(data));
+	args->cmd[args->i] = xstrdup(data_get_string(data));
 	args->i++;
 
 	return DATA_FOR_EACH_CONT;
@@ -94,6 +94,34 @@ extern char **create_argv(data_t *args)
 static void _exec_add(data_t *data, const char *arg)
 {
 	data_set_string(data_list_append(data), arg);
+}
+
+/*
+ * Propagate SPANK environment via SLURM_SPANK_ environment variables (same as
+ * with salloc).
+ */
+static void _set_spank_env(void)
+{
+	int count = envcount(state.spank_job_env);
+
+	for (int i = 0; i < count; i++) {
+		char *name = NULL, *eq;
+		const char *value = "";
+
+		if ((eq = xstrchr(state.spank_job_env[i], '='))) {
+			value = eq + 1;
+			*eq = '\0';
+		}
+
+		xstrfmtcat(name, "SLURM_SPANK_%s", state.spank_job_env[i]);
+		setenvf(&state.job_env, name, "%s", value);
+
+		/* revert change */
+		if (eq)
+			*eq = '=';
+
+		xfree(name);
+	}
 }
 
 extern void exec_srun_container(void)
@@ -184,6 +212,8 @@ extern void exec_srun_container(void)
 
 		if (state.requested_terminal && !isatty(STDIN_FILENO))
 			fatal("requested_terminal=t but isatty(STDIN_FILENO)=0: %m");
+
+		_set_spank_env();
 
 		if (execve(argvl[0], argvl, state.job_env))
 			fatal("execv() failed: %m");

@@ -60,6 +60,7 @@
 #include "src/common/uid.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
+#include "src/interfaces/switch.h"
 #include "src/slurmd/slurmstepd/slurmstepd_job.h"
 
 #include "read_jcconf.h"
@@ -105,7 +106,7 @@ static bool _is_plugin_disabled(char *basepath)
 	return ((!basepath) || (!xstrncasecmp(basepath, "none", 4)));
 }
 
-static int _restore_ns(List steps, const char *d_name)
+static int _restore_ns(list_t *steps, const char *d_name)
 {
 	char *endptr;
 	int fd;
@@ -190,7 +191,7 @@ extern int container_p_restore(char *dir_name, bool recover)
 {
 	DIR *dp;
 	struct dirent *ep;
-	List steps;
+	list_t *steps;
 	int rc = SLURM_SUCCESS;
 
 	if (plugin_disabled)
@@ -554,6 +555,16 @@ static int _create_ns(uint32_t job_id, stepd_step_rec_t *step)
 		if (rc) {
 			error("%s: chown failed for %s: %m",
 			      __func__, src_bind);
+			rc = -1;
+			goto child_exit;
+		}
+
+		/*
+		 * switch/nvidia_imex needs to create an ephemeral device
+		 * node under /dev in this new namespace.
+		 */
+		if ((rc = switch_g_fs_init(step))) {
+			error("%s: switch_g_fs_init failed", __func__);
 			rc = -1;
 			goto child_exit;
 		}

@@ -41,7 +41,6 @@
 #include "src/common/xassert.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
-#include "src/interfaces/serializer.h"
 
 #define _DEBUG 0 /* Set this to non-zero to see detailed debugging */
 
@@ -214,10 +213,10 @@ static op_t _str2op(char *str, const char *valid_chars, char **end_out)
 	char save_char;
 	char *end = str;
 
-	xassert(strchr(valid_chars, *str));
+	xassert(xstrchr(valid_chars, *str));
 
 	while (*end) {
-		if (!strchr(valid_chars, *end))
+		if (!xstrchr(valid_chars, *end))
 			break;
 		end++;
 	}
@@ -248,7 +247,7 @@ static char *_find_op_in_string(char *str)
 		return NULL;
 
 	while (*str) {
-		if ((p = strchr(op_chars, *str)))
+		if ((p = xstrchr(op_chars, *str)))
 			return p;
 		str++;
 	}
@@ -273,7 +272,7 @@ static elem_t *_parse_leaf(char *str)
 		return NULL;
 
 	/* This is not a leaf if there are paren */
-	xassert(!strchr(str, '(') && !strchr(str, ')'));
+	xassert(!xstrchr(str, '(') && !xstrchr(str, ')'));
 
 	if (*str == '\0') {
 #if _DEBUG
@@ -287,7 +286,7 @@ static elem_t *_parse_leaf(char *str)
 	/* Find the first leaf operator character */
 	op_ptr = key;
 	while (*op_ptr) {
-		if (strchr(leaf_op_chars, *op_ptr))
+		if (xstrchr(leaf_op_chars, *op_ptr))
 			break;
 		op_ptr++;
 	}
@@ -305,11 +304,11 @@ static elem_t *_parse_leaf(char *str)
 
 	if (op == OP_NONE) {
 		/*
-		 * The strchr check verified that an operator
+		 * The xstrchr check verified that an operator
 		 * character exists, but not that the whole
 		 * operator string is valid. For example, there
 		 * could be repeating operator characters:
-		 * strchr would return a pointer to the first
+		 * xstrchr would return a pointer to the first
 		 * one, but _str2op would correctly identify
 		 * that the operator is invalid.
 		 */
@@ -359,7 +358,7 @@ static char *_find_leaf_end(char *str)
 
 	/* None of the following characters are allowed in a leaf */
 	while (*ptr) {
-		if (strchr(child_op_chars, *ptr) ||
+		if (xstrchr(child_op_chars, *ptr) ||
 		    (*ptr == '(') || (*ptr == ')'))
 			break;
 		ptr++;
@@ -437,15 +436,11 @@ static bool _valid_parent_child_op(elem_t *parent)
 static void _recurse(char **str_ptr, int *level, elem_t *parent, int *rc)
 {
 	elem_t *child;
-	char *save_ptr;
 
 	xassert(str_ptr);
 	xassert(level);
 	xassert(parent);
 	xassert(rc);
-
-	/* Save a pointer to the beginning of the string */
-	save_ptr = *str_ptr;
 
 	while (**str_ptr && (*rc == SLURM_SUCCESS)) {
 		char save_char;
@@ -485,6 +480,11 @@ static void _recurse(char **str_ptr, int *level, elem_t *parent, int *rc)
 				error("Unbalanced parentheses");
 #endif
 				*rc = SLURM_ERROR;
+				/*
+				 * Do not return because we were not recursively
+				 * called to get here.
+				 */
+				break;
 			}
 			if (!parent->num_children) {
 #if _DEBUG
@@ -499,21 +499,21 @@ static void _recurse(char **str_ptr, int *level, elem_t *parent, int *rc)
 		/* Check if we are at a child operator. */
 		if (**str_ptr == '\0') {
 			/*
-			 * End of string. strchr will find the '\0' character
+			 * End of string. xstrchr will find the '\0' character
 			 * in a string, so we need to avoid that when looking
 			 * for child operator characters.
 			 */
-		} else if (strchr(child_op_chars, **str_ptr)) {
+		} else if (xstrchr(child_op_chars, **str_ptr)) {
 			char *tmp_end = NULL;
 			op_t op = _str2op(*str_ptr, child_op_chars, &tmp_end);
 
 			if (op == OP_NONE) {
 				/*
-				 * The strchr check verified that an operator
+				 * The xstrchr check verified that an operator
 				 * character exists, but not that the whole
 				 * operator string is valid. For example, there
 				 * could be repeating operator characters:
-				 * strchr would return a pointer to the first
+				 * xstrchr would return a pointer to the first
 				 * one, but _str2op would correctly identify
 				 * that the operator is invalid.
 				 */
@@ -578,12 +578,6 @@ static void _recurse(char **str_ptr, int *level, elem_t *parent, int *rc)
 	 * underflow conditions and return an error instead.
 	 */
 	xassert(*level >= 0);
-
-	/*
-	 * Restore the pointer to the beginning so it can be free'd by the
-	 * caller if it was malloc'd.
-	 */
-	*str_ptr = save_ptr;
 
 	if (*level) {
 		/* Unbalanced parentheses or parsing error */
@@ -816,7 +810,7 @@ extern int extra_constraints_parse(char *extra, elem_t **head)
 {
 	int rc = SLURM_SUCCESS;
 	int level = 0;
-	char *copy;
+	char *copy, *copy_start;
 	elem_t *tree_head;
 
 	xassert(head);
@@ -833,10 +827,10 @@ extern int extra_constraints_parse(char *extra, elem_t **head)
 	copy = xstrdup(extra);
 	tree_head = _alloc_tree();
 	/*
-	 * _recurse is currently not destructive of the string.
-	 * However, just in case this changes in the future, operate on a copy
-	 * of the string.
+	 * _recurse modifies the string pointer, so save a copy of the pointer
+	 * to the beginning of the string so it can be free'd.
 	 */
+	copy_start = copy; /* Save a pointer to the beginning of the string */
 	_recurse(&copy, &level, tree_head, &rc);
 	if (rc != SLURM_SUCCESS) {
 		error("%s: Parsing %s failed", __func__, extra);
@@ -867,7 +861,7 @@ extern int extra_constraints_parse(char *extra, elem_t **head)
 #endif
 
 	*head = tree_head;
-	xfree(copy);
+	xfree(copy_start);
 	return rc;
 }
 

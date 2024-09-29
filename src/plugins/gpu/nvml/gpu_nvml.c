@@ -263,7 +263,7 @@ static bool _nvml_get_mem_freqs(nvmlDevice_t *device,
 	}
 
 	qsort(mem_freqs, *mem_freqs_size, sizeof(unsigned int),
-	      gpu_common_sort_freq_descending);
+	      slurm_sort_uint_list_desc);
 
 	if ((*mem_freqs_size > 1) &&
 	    (mem_freqs[0] <= mem_freqs[(*mem_freqs_size)-1])) {
@@ -308,7 +308,7 @@ static bool _nvml_get_gfx_freqs(nvmlDevice_t *device,
 	}
 
 	qsort(gfx_freqs, *gfx_freqs_size, sizeof(unsigned int),
-	      gpu_common_sort_freq_descending);
+	      slurm_sort_uint_list_desc);
 
 	if ((*gfx_freqs_size > 1) &&
 	    (gfx_freqs[0] <= gfx_freqs[(*gfx_freqs_size)-1])) {
@@ -1309,12 +1309,12 @@ static int _handle_mig(nvmlDevice_t *device, unsigned int gpu_minor,
  * so the user doesn't need to specify manually in gres.conf.
  * Specifically populate cpu affinity and nvlink information
  */
-static List _get_system_gpu_list_nvml(node_config_load_t *node_config)
+static list_t *_get_system_gpu_list_nvml(node_config_load_t *node_config)
 {
 	bitstr_t *enabled_cpus_bits = NULL;
 	unsigned int i;
 	unsigned int device_count = 0;
-	List gres_list_system = list_create(destroy_gres_slurmd_conf);
+	list_t *gres_list_system = list_create(destroy_gres_slurmd_conf);
 	char driver[NVML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE];
 	char version[NVML_SYSTEM_NVML_VERSION_BUFFER_SIZE];
 	char **device_lut;
@@ -1354,7 +1354,7 @@ static List _get_system_gpu_list_nvml(node_config_load_t *node_config)
 		device_lut[i] = xstrdup(pci_info.busId);
 	}
 
-	if (!(slurm_conf.conf_flags & CTL_CONF_ECORE)) {
+	if (!(slurm_conf.conf_flags & CONF_FLAG_ECORE)) {
 		enabled_cpus_bits = bit_alloc(MAX_CPUS);
 		for (i = 0; i < conf->block_map_size; i++) {
 			bit_set(enabled_cpus_bits, conf->block_map[i]);
@@ -1609,8 +1609,6 @@ static int _get_nvml_process_info(nvmlReturn_t (*get_proc)(nvmlDevice_t,
 
 static int _get_gpumem(nvmlDevice_t device, pid_t pid, acct_gather_data_t *data)
 {
-	data[gpumem_pos].size_read = 0;
-
 	if (_get_nvml_process_info(nvmlDeviceGetComputeRunningProcesses, device,
 				   pid, data) != SLURM_SUCCESS)
 		return SLURM_ERROR;
@@ -1628,8 +1626,6 @@ static int _get_gpuutil(nvmlDevice_t device, pid_t pid,
 	nvmlReturn_t rc;
 	nvmlProcessUtilizationSample_t *proc_util;
 	unsigned int cnt = 0;
-
-	data[gpuutil_pos].size_read = 0;
 
 	/*
 	 * Sending NULL will fill in cnt with the number of processes so we can
@@ -1705,9 +1701,9 @@ extern int fini(void)
 	return SLURM_SUCCESS;
 }
 
-extern List gpu_p_get_system_gpu_list(node_config_load_t *node_config)
+extern list_t *gpu_p_get_system_gpu_list(node_config_load_t *node_config)
 {
-	List gres_list_system = NULL;
+	list_t *gres_list_system = NULL;
 
 	if (!(gres_list_system = _get_system_gpu_list_nvml(node_config)))
 		error("System GPU detection failed");
@@ -1852,6 +1848,9 @@ extern int gpu_p_usage_read(pid_t pid, acct_gather_data_t *data)
 
 	_nvml_init();
 	gpu_p_get_device_count(&device_count);
+
+	data[gpumem_pos].size_read = 0;
+	data[gpuutil_pos].size_read = 0;
 
 	for (int i = 0; i < device_count; i++) {
 		nvmlDevice_t device;

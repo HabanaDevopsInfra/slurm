@@ -1,7 +1,6 @@
 # Makefile for common/interfaces
 
 AUTOMAKE_OPTIONS = foreign
-CLEANFILES = core.*
 
 AM_CPPFLAGS = -I$(top_srcdir)
 
@@ -40,8 +39,6 @@ libcommon_interfaces_la_SOURCES =    \
 	cred.c					\
 	data_parser.c				\
 	data_parser.h				\
-	ext_sensors.c				\
-	ext_sensors.h				\
 	gpu.c					\
 	gpu.h					\
 	gres.c					\
@@ -70,6 +67,8 @@ libcommon_interfaces_la_SOURCES =    \
 	site_factor.h				\
 	switch.c				\
 	switch.h				\
+	tls.c					\
+	tls.h					\
 	topology.c				\
 	topology.h
 

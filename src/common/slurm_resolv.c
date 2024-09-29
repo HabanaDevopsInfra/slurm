@@ -53,17 +53,17 @@ static int _sort_controllers(void *x, void *y)
 	ctl_entry_t *ctl1 = *(ctl_entry_t **) x;
 	ctl_entry_t *ctl2 = *(ctl_entry_t **) y;
 
-	return ctl1->priority > ctl2->priority;
+	return slurm_sort_uint16_list_asc(&ctl1->priority, &ctl2->priority);
 }
 
-extern List resolve_ctls_from_dns_srv(void)
+extern list_t *resolve_ctls_from_dns_srv(void)
 {
 	struct __res_state res;
 	ns_msg handle;
 	ns_rr rr;
 	unsigned char answer[512];
 	int len;
-	List controllers;
+	list_t *controllers;
 
 	if (res_ninit(&res)) {
 		error("%s: res_ninit error: %m", __func__);

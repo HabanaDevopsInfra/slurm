@@ -36,7 +36,7 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA.
 \*****************************************************************************/
 
-#include "src/common/slurm_persist_conn.h"
+#include "src/common/persist_conn.h"
 
 /*
  * dbd_conn_open - Get a connection to the dbd.
@@ -47,18 +47,18 @@
  * IN - rem_port - Port on host of DBD listening for connections.
  * RET - Nonnection to the dbd on SUCCESS, NULL otherwise.
  */
-extern slurm_persist_conn_t *dbd_conn_open(uint16_t *persist_conn_flags,
-					   char *cluster_name,
-					   char *rem_host,
-					   uint16_t rem_port);
+extern persist_conn_t *dbd_conn_open(uint16_t *persist_conn_flags,
+				     char *cluster_name,
+				     char *rem_host,
+				     uint16_t rem_port);
 
 /* reopen connection if needed */
-extern int dbd_conn_check_and_reopen(slurm_persist_conn_t *pc);
+extern int dbd_conn_check_and_reopen(persist_conn_t *pc);
 
 /*
  * dbd_conn_close - Close and free memory of connection made from dbd_conn_open.
  */
-extern void dbd_conn_close(slurm_persist_conn_t **pc);
+extern void dbd_conn_close(persist_conn_t **pc);
 
 /*
  * Send an RPC to the SlurmDBD and wait for an arbitrary reply message.

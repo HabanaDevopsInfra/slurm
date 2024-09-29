@@ -45,7 +45,9 @@
 
 #define STEPD_MESSAGE_COMP_WAIT 3 /* seconds */
 
-extern int slurmstepd_blocked_signals[];
+extern pthread_mutex_t stepmgr_mutex;
+
+extern job_record_t *job_step_ptr;
 
 typedef struct {
 	pthread_cond_t cond;

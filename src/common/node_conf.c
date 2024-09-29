@@ -52,25 +52,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <time.h>
 
 #include "src/common/assoc_mgr.h"
-#include "src/interfaces/gres.h"
 #include "src/common/hostlist.h"
 #include "src/common/macros.h"
 #include "src/common/pack.h"
 #include "src/common/parse_time.h"
 #include "src/common/read_config.h"
-#include "src/interfaces/select.h"
-#include "src/interfaces/accounting_storage.h"
-#include "src/interfaces/acct_gather_energy.h"
-#include "src/interfaces/ext_sensors.h"
-#include "src/interfaces/topology.h"
 #include "src/common/xassert.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
+
+#include "src/interfaces/accounting_storage.h"
+#include "src/interfaces/acct_gather_energy.h"
+#include "src/interfaces/gres.h"
+#include "src/interfaces/select.h"
+#include "src/interfaces/topology.h"
 
 #define _DEBUG 0
 
@@ -82,8 +82,8 @@ strong_alias(bitmap2node_name, slurm_bitmap2node_name);
 strong_alias(find_node_record, slurm_find_node_record);
 
 /* Global variables */
-List config_list  = NULL;	/* list of config_record entries */
-List front_end_list = NULL;	/* list of slurm_conf_frontend_t entries */
+list_t *config_list = NULL;	/* list of config_record entries */
+list_t *front_end_list = NULL;	/* list of slurm_conf_frontend_t entries */
 time_t last_node_update = (time_t) 0;	/* time of last update */
 node_record_t **node_record_table_ptr = NULL;	/* node records */
 xhash_t* node_hash_table = NULL;
@@ -101,13 +101,13 @@ bool spec_cores_first = false;
 static void _delete_config_record(void);
 static void _delete_node_config_ptr(node_record_t *node_ptr);
 #if _DEBUG
-static void	_dump_hash (void);
+static void _dump_hash(void);
 #endif
 static node_record_t *_find_node_record(char *name, bool test_alias,
 					bool log_missing);
-static void	_list_delete_config (void *config_entry);
-static void _node_record_hash_identity (void* item, const char** key,
-					uint32_t* key_len);
+static void _list_delete_config(void *config_entry);
+static void _node_record_hash_identity(void *item, const char **key,
+				       uint32_t *key_len);
 
 /*
  * _delete_config_record - delete all configuration records
@@ -121,12 +121,11 @@ static void _delete_config_record(void)
 	list_flush(front_end_list);
 }
 
-
 #if _DEBUG
 /*
  * helper function used by _dump_hash to print the hash table elements
  */
-static void xhash_walk_helper_cbk (void* item, void* arg)
+static void xhash_walk_helper_cbk(void *item, void *arg)
 {
 	int *i_ptr = arg;
 	node_record_t *node_ptr = (node_record_t *) item;
@@ -134,13 +133,14 @@ static void xhash_walk_helper_cbk (void* item, void* arg)
 	debug3("node_hash[%d]:%d(%s)", (*i_ptr)++, node_ptr->index,
 	       node_ptr->name);
 }
+
 /*
  * _dump_hash - print the node_hash_table contents, used for debugging
  *	or analysis of hash technique
  * global: node_record_table_ptr - pointer to global node table
  *         node_hash_table - table of hash indexes
  */
-static void _dump_hash (void)
+static void _dump_hash(void)
 {
 	int i = 0;
 	if (node_hash_table == NULL)
@@ -153,7 +153,7 @@ static void _dump_hash (void)
 
 /* _list_delete_config - delete an entry from the config list,
  *	see list.h for documentation */
-static void _list_delete_config (void *config_entry)
+static void _list_delete_config(void *config_entry)
 {
 	config_record_t *config_ptr = (config_record_t *) config_entry;
 
@@ -173,10 +173,10 @@ static void _list_delete_config (void *config_entry)
  * xhash helper function to index node_record per name field
  * in node_hash_table
  */
-static void _node_record_hash_identity (void* item, const char** key,
-					uint32_t* key_len)
+static void _node_record_hash_identity(void *item, const char **key,
+				       uint32_t *key_len)
 {
-	node_record_t *node_ptr = (node_record_t *) item;
+	node_record_t *node_ptr = item;
 	*key = node_ptr->name;
 	*key_len = strlen(node_ptr->name);
 }
@@ -188,7 +188,7 @@ static void _node_record_hash_identity (void* item, const char** key,
  * globals: node_record_table_ptr - pointer to node table
  * NOTE: the caller must xfree the memory at node_list when no longer required
  */
-hostlist_t *bitmap2hostlist(bitstr_t *bitmap)
+extern hostlist_t *bitmap2hostlist(bitstr_t *bitmap)
 {
 	hostlist_t *hl;
 	node_record_t *node_ptr;
@@ -214,7 +214,7 @@ hostlist_t *bitmap2hostlist(bitstr_t *bitmap)
  * globals: node_record_table_ptr - pointer to node table
  * NOTE: the caller must xfree the memory at node_list when no longer required
  */
-char * bitmap2node_name_sortable (bitstr_t *bitmap, bool sort)
+extern char *bitmap2node_name_sortable(bitstr_t *bitmap, bool sort)
 {
 	hostlist_t *hl;
 	char *buf;
@@ -238,7 +238,7 @@ char * bitmap2node_name_sortable (bitstr_t *bitmap, bool sort)
  * globals: node_record_table_ptr - pointer to node table
  * NOTE: the caller must xfree the memory at node_list when no longer required
  */
-char * bitmap2node_name (bitstr_t *bitmap)
+extern char *bitmap2node_name(bitstr_t *bitmap)
 {
 	return bitmap2node_name_sortable(bitmap, 1);
 }
@@ -263,7 +263,7 @@ static void _dump_front_end(slurm_conf_frontend_t *fe_ptr)
  * is_slurmd_context: set to true if run from slurmd
  * RET 0 if no error, error code otherwise
  */
-extern void build_all_frontend_info (bool is_slurmd_context)
+extern void build_all_frontend_info(bool is_slurmd_context)
 {
 	slurm_conf_frontend_t **ptr_array;
 #ifdef HAVE_FRONT_END
@@ -380,6 +380,7 @@ extern config_record_t *config_record_from_conf_node(
 	config_ptr->mem_spec_limit = conf_node->mem_spec_limit;
 	config_ptr->nodes = xstrdup(conf_node->nodenames);
 	config_ptr->real_memory = conf_node->real_memory;
+	config_ptr->res_cores_per_gpu = conf_node->res_cores_per_gpu;
 	config_ptr->threads = conf_node->threads;
 	config_ptr->tmp_disk = conf_node->tmp_disk;
 	config_ptr->tot_sockets = conf_node->tot_sockets;
@@ -606,29 +607,13 @@ extern int expand_nodeline_info(slurm_conf_node_t *node_ptr,
 	alias_count    = hostlist_count(alias_list);
 	hostname_count = hostlist_count(hostname_list);
 	port_count     = hostlist_count(port_list);
-#ifdef HAVE_FRONT_END
+
+	if ((address_count != alias_count) && (address_count != 1))
+		fatal("NodeAddr count must equal that of NodeName records or  there must be no more than one");
+	if ((bcast_count != alias_count) && (bcast_count > 1))
+		fatal("BcastAddr count must equal that of NodeName records or there must be no more than one");
 	if ((hostname_count != alias_count) && (hostname_count != 1))
-		fatal("NodeHostname count must equal that of NodeName records of there must be no more than one");
-
-	if ((address_count != alias_count) && (address_count != 1))
-		fatal("NodeAddr count must equal that of NodeName records of there must be no more than one");
-#else
-#ifdef MULTIPLE_SLURMD
-	if ((address_count != alias_count) && (address_count != 1))
-		fatal("NodeAddr count must equal that of NodeName records of there must be no more than one");
-	if (bcast_count && (bcast_count != alias_count) && (bcast_count != 1))
-		fatal("BcastAddr count must equal that of NodeName records, or there must be no more than one");
-#else
-	if (address_count < alias_count)
-		fatal("At least as many NodeAddr are required as NodeName");
-
-	if (bcast_count && (bcast_count < alias_count))
-		fatal("At least as many BcastAddr are required as NodeName");
-
-	if (hostname_count < alias_count)
-		fatal("At least as many NodeHostname are required as NodeName");
-#endif	/* MULTIPLE_SLURMD */
-#endif	/* HAVE_FRONT_END */
+		fatal("NodeHostname count must equal that of NodeName records or there must be no more than one");
 	if ((port_count != alias_count) && (port_count > 1))
 		fatal("Port count must equal that of NodeName records or there must be no more than one (%u != %u)",
 		      port_count, alias_count);
@@ -780,7 +765,6 @@ static void _init_node_record(node_record_t *node_ptr,
 	node_ptr->magic = NODE_MAGIC;
 	node_ptr->cpu_load = 0;
 	node_ptr->energy = acct_gather_energy_alloc(1);
-	node_ptr->ext_sensors = ext_sensors_alloc();
 	node_ptr->free_mem = NO_VAL64;
 	node_ptr->next_state = NO_VAL;
 	node_ptr->owner = NO_VAL;
@@ -799,6 +783,7 @@ static void _init_node_record(node_record_t *node_ptr,
 	node_ptr->cpus = config_ptr->cpus;
 	node_ptr->mem_spec_limit = config_ptr->mem_spec_limit;
 	node_ptr->real_memory = config_ptr->real_memory;
+	node_ptr->res_cores_per_gpu = config_ptr->res_cores_per_gpu;
 	node_ptr->threads = config_ptr->threads;
 	node_ptr->tmp_disk = config_ptr->tmp_disk;
 	node_ptr->tot_sockets = config_ptr->tot_sockets;
@@ -941,42 +926,49 @@ static int _find_config_ptr(void *x, void *arg)
 	return (x == arg);
 }
 
-extern void insert_node_record(node_record_t *node_ptr)
+extern void insert_node_record_at(node_record_t *node_ptr, int index)
 {
-	for (int i = 0; i < node_record_count; i++) {
-		if (node_record_table_ptr[i])
-			continue;
+	xassert(node_ptr);
+	xassert(node_ptr->config_ptr);
 
-		if (i > last_node_index)
-			last_node_index = i;
-
-		if (!node_ptr->config_ptr)
-			error("node should have config_ptr from previous tables");
-
-		if (!list_find_first(config_list, _find_config_ptr,
-				     node_ptr->config_ptr))
-			list_append(config_list, node_ptr->config_ptr);
-
-		node_record_table_ptr[i] = node_ptr;
-		/*
-		 * _build_bitmaps_pre_select() will reset bitmaps on
-		 * start/reconfig. Set here to be consistent in case this is
-		 * called elsewhere.
-		 */
-		bit_clear(node_ptr->config_ptr->node_bitmap, node_ptr->index);
-		node_ptr->index = i;
-		bit_set(node_ptr->config_ptr->node_bitmap, node_ptr->index);
-		xhash_add(node_hash_table, node_ptr);
-		active_node_record_count++;
-
-		/* re-add node to conf node hash tables */
-		slurm_conf_add_node(node_ptr);
-
+	if (node_record_table_ptr[index]) {
+		error("existing node '%s' already exists at index %d, can't add node '%s'",
+		      node_record_table_ptr[index]->name, index,
+		      node_ptr->name);
 		return;
 	}
 
-	error("Not able to add node '%s' to node_record_table_ptr",
-	      node_ptr->name);
+	if (index >= node_record_count) {
+		error("trying to add node '%s' at index %d past node_record_count %d",
+		      node_ptr->name, index, node_record_count);
+		return;
+	}
+
+	if (index > last_node_index)
+		last_node_index = index;
+
+	if (!node_ptr->config_ptr)
+		error("node should have config_ptr from previous tables");
+
+	if (!list_find_first(config_list, _find_config_ptr,
+			     node_ptr->config_ptr))
+		list_append(config_list, node_ptr->config_ptr);
+
+	node_record_table_ptr[index] = node_ptr;
+	/*
+	 * _build_bitmaps_pre_select() will reset bitmaps on
+	 * start/reconfig. Set here to be consistent in case this is
+	 * called elsewhere.
+	 */
+	bit_clear(node_ptr->config_ptr->node_bitmap, node_ptr->index);
+	node_ptr->index = index;
+	bit_set(node_ptr->config_ptr->node_bitmap, node_ptr->index);
+	xhash_add(node_hash_table, node_ptr);
+	active_node_record_count++;
+
+	/* add node to conf node hash tables */
+	slurm_conf_remove_node(node_ptr->name);
+	slurm_conf_add_node(node_ptr);
 }
 
 extern void delete_node_record(node_record_t *node_ptr)
@@ -1124,7 +1116,7 @@ extern void init_node_conf(void)
 
 
 /* node_fini2 - free memory associated with node records (except bitmaps) */
-extern void node_fini2 (void)
+extern void node_fini2(void)
 {
 	int i;
 	node_record_t *node_ptr;
@@ -1174,15 +1166,15 @@ extern int node_name_get_inx(char *node_name)
  * RET 0 if no error, otherwise EINVAL
  * NOTE: call FREE_NULL_BITMAP() to free bitmap memory when no longer required
  */
-extern int node_name2bitmap (char *node_names, bool best_effort,
-			     bitstr_t **bitmap)
+extern int node_name2bitmap(char *node_names, bool best_effort,
+			    bitstr_t **bitmap)
 {
 	int rc = SLURM_SUCCESS;
 	char *this_node_name;
 	bitstr_t *my_bitmap;
 	hostlist_t *host_list;
 
-	my_bitmap = (bitstr_t *) bit_alloc (node_record_count);
+	my_bitmap = bit_alloc(node_record_count);
 	*bitmap = my_bitmap;
 
 	if (node_names == NULL) {
@@ -1231,7 +1223,7 @@ extern int hostlist2bitmap(hostlist_t *hl, bool best_effort, bitstr_t **bitmap)
 	hostlist_iterator_t *hi;
 
 	FREE_NULL_BITMAP(*bitmap);
-	my_bitmap = (bitstr_t *) bit_alloc (node_record_count);
+	my_bitmap = bit_alloc(node_record_count);
 	*bitmap = my_bitmap;
 
 	hi = hostlist_iterator_create(hl);
@@ -1282,8 +1274,10 @@ static void _delete_node_config_ptr(node_record_t *node_ptr)
 }
 
 /* Purge the contents of a node record */
-extern void purge_node_rec(node_record_t *node_ptr)
+extern void purge_node_rec(void *in)
 {
+	node_record_t *node_ptr = in;
+
 	xfree(node_ptr->arch);
 	xfree(node_ptr->comment);
 	xfree(node_ptr->comm_name);
@@ -1292,6 +1286,8 @@ extern void purge_node_rec(node_record_t *node_ptr)
 	FREE_NULL_DATA(node_ptr->extra_data);
 	xfree(node_ptr->features);
 	xfree(node_ptr->features_act);
+	xfree(node_ptr->gpu_spec);
+	FREE_NULL_BITMAP(node_ptr->gpu_spec_bitmap);
 	xfree(node_ptr->gres);
 	FREE_NULL_LIST(node_ptr->gres_list);
 	xfree(node_ptr->instance_id);
@@ -1306,7 +1302,6 @@ extern void purge_node_rec(node_record_t *node_ptr)
 	xfree(node_ptr->resv_name);
 	xfree(node_ptr->version);
 	acct_gather_energy_destroy(node_ptr->energy);
-	ext_sensors_destroy(node_ptr->ext_sensors);
 	if (running_in_slurmctld())
 		select_g_select_nodeinfo_free(node_ptr->select_nodeinfo);
 	xfree(node_ptr->tres_str);
@@ -1320,7 +1315,7 @@ extern void purge_node_rec(node_record_t *node_ptr)
  * rehash_node - build a hash table of the node_record entries.
  * NOTE: using xhash implementation
  */
-extern void rehash_node (void)
+extern void rehash_node(void)
 {
 	int i;
 	node_record_t *node_ptr;
@@ -1378,8 +1373,8 @@ extern void cr_init_global_core_data(node_record_t **node_ptr, int node_cnt)
 
 	cr_fini_global_core_data();
 
-	cr_node_num_cores = xmalloc(node_cnt * sizeof(uint16_t));
-	cr_node_cores_offset = xmalloc((node_cnt+1) * sizeof(uint32_t));
+	cr_node_num_cores = xcalloc(node_cnt, sizeof(uint16_t));
+	cr_node_cores_offset = xcalloc(node_cnt + 1, sizeof(uint32_t));
 
 	for (n = 0; n < node_cnt; n++) {
 		if (!node_ptr[n])
@@ -1558,4 +1553,304 @@ extern void node_conf_create_cluster_core_bitmap(bitstr_t **core_bitmap)
 		return;
 
 	*core_bitmap = bit_alloc(cr_get_coremap_offset(node_record_count));
+}
+
+/*
+ * Pack node_record_t to buffer.
+ *
+ * Used for dumping node state and passing node_record_t between ctld and
+ * stepmgr.
+ */
+extern void node_record_pack(void *in,
+			     uint16_t protocol_version,
+			     buf_t *buffer)
+{
+	node_record_t *object = in;
+
+	if (protocol_version >= SLURM_24_11_PROTOCOL_VERSION) {
+		packstr(object->comm_name, buffer);
+		packstr(object->name, buffer);
+		packstr(object->node_hostname, buffer);
+		packstr(object->comment, buffer);
+		packstr(object->extra, buffer);
+		packstr(object->reason, buffer);
+		packstr(object->features, buffer);
+		packstr(object->features_act, buffer);
+		packstr(object->gres, buffer);
+		packstr(object->instance_id, buffer);
+		packstr(object->instance_type, buffer);
+		packstr(object->cpu_spec_list, buffer);
+		pack32(object->next_state, buffer);
+		pack32(object->node_state, buffer);
+		pack32(object->cpu_bind, buffer);
+		pack16(object->cpus, buffer);
+		pack16(object->boards, buffer);
+		pack16(object->tot_sockets, buffer);
+		pack16(object->cores, buffer);
+		pack16(object->core_spec_cnt, buffer);
+		pack64(object->mem_spec_limit, buffer);
+		pack16(object->threads, buffer);
+		pack64(object->real_memory, buffer);
+		pack16(object->res_cores_per_gpu, buffer);
+		pack_bit_str_hex(object->gpu_spec_bitmap, buffer);
+		pack32(object->tmp_disk, buffer);
+		pack32(object->reason_uid, buffer);
+		pack_time(object->reason_time, buffer);
+		pack_time(object->resume_after, buffer);
+		pack_time(object->boot_req_time, buffer);
+		pack_time(object->power_save_req_time, buffer);
+		pack_time(object->last_busy, buffer);
+		pack_time(object->last_response, buffer);
+		pack16(object->port, buffer);
+		pack16(object->protocol_version, buffer);
+		pack16(object->tpc, buffer);
+		packstr(object->mcs_label, buffer);
+		(void) gres_node_state_pack(object->gres_list, buffer,
+					    object->name);
+		pack32(object->weight, buffer);
+	} else if (protocol_version >= SLURM_24_05_PROTOCOL_VERSION) {
+		packstr(object->comm_name, buffer);
+		packstr(object->name, buffer);
+		packstr(object->node_hostname, buffer);
+		packstr(object->comment, buffer);
+		packstr(object->extra, buffer);
+		packstr(object->reason, buffer);
+		packstr(object->features, buffer);
+		packstr(object->features_act, buffer);
+		packstr(object->gres, buffer);
+		packstr(object->instance_id, buffer);
+		packstr(object->instance_type, buffer);
+		packstr(object->cpu_spec_list, buffer);
+		pack32(object->next_state, buffer);
+		pack32(object->node_state, buffer);
+		pack32(object->cpu_bind, buffer);
+		pack16(object->cpus, buffer);
+		pack16(object->boards, buffer);
+		pack16(object->tot_sockets, buffer);
+		pack16(object->cores, buffer);
+		pack16(object->core_spec_cnt, buffer);
+		pack16(object->threads, buffer);
+		pack64(object->real_memory, buffer);
+		pack16(object->res_cores_per_gpu, buffer);
+		pack_bit_str_hex(object->gpu_spec_bitmap, buffer);
+		pack32(object->tmp_disk, buffer);
+		pack32(object->reason_uid, buffer);
+		pack_time(object->reason_time, buffer);
+		pack_time(object->resume_after, buffer);
+		pack_time(object->boot_req_time, buffer);
+		pack_time(object->power_save_req_time, buffer);
+		pack_time(object->last_busy, buffer);
+		pack_time(object->last_response, buffer);
+		pack16(object->port, buffer);
+		pack16(object->protocol_version, buffer);
+		pack16(object->tpc, buffer);
+		packstr(object->mcs_label, buffer);
+		(void) gres_node_state_pack(object->gres_list, buffer,
+					    object->name);
+		pack32(object->weight, buffer);
+	}
+}
+
+extern int node_record_unpack(void **out,
+			      uint16_t protocol_version,
+			      buf_t *buffer)
+{
+	node_record_t *object = xmalloc(sizeof(*object));
+	object->magic = NODE_MAGIC;
+	*out = object;
+
+	if (protocol_version >= SLURM_24_11_PROTOCOL_VERSION) {
+		safe_unpackstr(&object->comm_name, buffer);
+		safe_unpackstr(&object->name, buffer);
+		safe_unpackstr(&object->node_hostname, buffer);
+		safe_unpackstr(&object->comment, buffer);
+		safe_unpackstr(&object->extra, buffer);
+		safe_unpackstr(&object->reason, buffer);
+		safe_unpackstr(&object->features, buffer);
+		safe_unpackstr(&object->features_act, buffer);
+		safe_unpackstr(&object->gres, buffer);
+		safe_unpackstr(&object->instance_id, buffer);
+		safe_unpackstr(&object->instance_type, buffer);
+		safe_unpackstr(&object->cpu_spec_list, buffer);
+		safe_unpack32(&object->next_state, buffer);
+		safe_unpack32(&object->node_state, buffer);
+		safe_unpack32(&object->cpu_bind, buffer);
+		safe_unpack16(&object->cpus, buffer);
+		safe_unpack16(&object->boards, buffer);
+		safe_unpack16(&object->tot_sockets, buffer);
+		safe_unpack16(&object->cores, buffer);
+		safe_unpack16(&object->core_spec_cnt, buffer);
+		safe_unpack64(&object->mem_spec_limit, buffer);
+		safe_unpack16(&object->threads, buffer);
+		safe_unpack64(&object->real_memory, buffer);
+		safe_unpack16(&object->res_cores_per_gpu, buffer);
+		unpack_bit_str_hex(&object->gpu_spec_bitmap, buffer);
+		safe_unpack32(&object->tmp_disk, buffer);
+		safe_unpack32(&object->reason_uid, buffer);
+		safe_unpack_time(&object->reason_time, buffer);
+		safe_unpack_time(&object->resume_after, buffer);
+		safe_unpack_time(&object->boot_req_time, buffer);
+		safe_unpack_time(&object->power_save_req_time, buffer);
+		safe_unpack_time(&object->last_busy, buffer);
+		safe_unpack_time(&object->last_response, buffer);
+		safe_unpack16(&object->port, buffer);
+		safe_unpack16(&object->protocol_version, buffer);
+		safe_unpack16(&object->tpc, buffer);
+		safe_unpackstr(&object->mcs_label, buffer);
+		if (gres_node_state_unpack(&object->gres_list, buffer,
+					   object->name, protocol_version) !=
+		    SLURM_SUCCESS)
+			goto unpack_error;
+		safe_unpack32(&object->weight, buffer);
+	} else if (protocol_version >= SLURM_24_05_PROTOCOL_VERSION) {
+		safe_unpackstr(&object->comm_name, buffer);
+		safe_unpackstr(&object->name, buffer);
+		safe_unpackstr(&object->node_hostname, buffer);
+		safe_unpackstr(&object->comment, buffer);
+		safe_unpackstr(&object->extra, buffer);
+		safe_unpackstr(&object->reason, buffer);
+		safe_unpackstr(&object->features, buffer);
+		safe_unpackstr(&object->features_act, buffer);
+		safe_unpackstr(&object->gres, buffer);
+		safe_unpackstr(&object->instance_id, buffer);
+		safe_unpackstr(&object->instance_type, buffer);
+		safe_unpackstr(&object->cpu_spec_list, buffer);
+		safe_unpack32(&object->next_state, buffer);
+		safe_unpack32(&object->node_state, buffer);
+		safe_unpack32(&object->cpu_bind, buffer);
+		safe_unpack16(&object->cpus, buffer);
+		safe_unpack16(&object->boards, buffer);
+		safe_unpack16(&object->tot_sockets, buffer);
+		safe_unpack16(&object->cores, buffer);
+		safe_unpack16(&object->core_spec_cnt, buffer);
+		safe_unpack16(&object->threads, buffer);
+		safe_unpack64(&object->real_memory, buffer);
+		safe_unpack16(&object->res_cores_per_gpu, buffer);
+		unpack_bit_str_hex(&object->gpu_spec_bitmap, buffer);
+		safe_unpack32(&object->tmp_disk, buffer);
+		safe_unpack32(&object->reason_uid, buffer);
+		safe_unpack_time(&object->reason_time, buffer);
+		safe_unpack_time(&object->resume_after, buffer);
+		safe_unpack_time(&object->boot_req_time, buffer);
+		safe_unpack_time(&object->power_save_req_time, buffer);
+		safe_unpack_time(&object->last_busy, buffer);
+		safe_unpack_time(&object->last_response, buffer);
+		safe_unpack16(&object->port, buffer);
+		safe_unpack16(&object->protocol_version, buffer);
+		safe_unpack16(&object->tpc, buffer);
+		safe_unpackstr(&object->mcs_label, buffer);
+		if (gres_node_state_unpack(&object->gres_list, buffer,
+					   object->name, protocol_version) !=
+		    SLURM_SUCCESS)
+			goto unpack_error;
+		safe_unpack32(&object->weight, buffer);
+	} else if (protocol_version >= SLURM_23_11_PROTOCOL_VERSION) {
+		safe_unpackstr(&object->comm_name, buffer);
+		safe_unpackstr(&object->name, buffer);
+		safe_unpackstr(&object->node_hostname, buffer);
+		safe_unpackstr(&object->comment, buffer);
+		safe_unpackstr(&object->extra, buffer);
+		safe_unpackstr(&object->reason, buffer);
+		safe_unpackstr(&object->features, buffer);
+		safe_unpackstr(&object->features_act, buffer);
+		safe_unpackstr(&object->gres, buffer);
+		safe_unpackstr(&object->instance_id, buffer);
+		safe_unpackstr(&object->instance_type, buffer);
+		safe_unpackstr(&object->cpu_spec_list, buffer);
+		safe_unpack32(&object->next_state, buffer);
+		safe_unpack32(&object->node_state, buffer);
+		safe_unpack32(&object->cpu_bind, buffer);
+		safe_unpack16(&object->cpus, buffer);
+		safe_unpack16(&object->boards, buffer);
+		safe_unpack16(&object->tot_sockets, buffer);
+		safe_unpack16(&object->cores, buffer);
+		safe_unpack16(&object->core_spec_cnt, buffer);
+		safe_unpack16(&object->threads, buffer);
+		safe_unpack64(&object->real_memory, buffer);
+		safe_unpack32(&object->tmp_disk, buffer);
+		safe_unpack32(&object->reason_uid, buffer);
+		safe_unpack_time(&object->reason_time, buffer);
+		safe_unpack_time(&object->resume_after, buffer);
+		safe_unpack_time(&object->boot_req_time, buffer);
+		safe_unpack_time(&object->power_save_req_time, buffer);
+		safe_unpack_time(&object->last_response, buffer);
+		safe_unpack16(&object->port, buffer);
+		safe_unpack16(&object->protocol_version, buffer);
+		safe_unpackstr(&object->mcs_label, buffer);
+		if (gres_node_state_unpack(&object->gres_list, buffer,
+					   object->name, protocol_version) !=
+		    SLURM_SUCCESS)
+			goto unpack_error;
+		safe_unpack32(&object->weight, buffer);
+	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
+		safe_unpackstr(&object->comm_name, buffer);
+		safe_unpackstr(&object->name, buffer);
+		safe_unpackstr(&object->node_hostname, buffer);
+		safe_unpackstr(&object->comment, buffer);
+		safe_unpackstr(&object->extra, buffer);
+		safe_unpackstr(&object->reason, buffer);
+		safe_unpackstr(&object->features, buffer);
+		safe_unpackstr(&object->features_act, buffer);
+		safe_unpackstr(&object->gres, buffer);
+		safe_unpackstr(&object->cpu_spec_list, buffer);
+		safe_unpack32(&object->next_state, buffer);
+		safe_unpack32(&object->node_state, buffer);
+		safe_unpack32(&object->cpu_bind, buffer);
+		safe_unpack16(&object->cpus, buffer);
+		safe_unpack16(&object->boards, buffer);
+		safe_unpack16(&object->tot_sockets, buffer);
+		safe_unpack16(&object->cores, buffer);
+		safe_unpack16(&object->core_spec_cnt, buffer);
+		safe_unpack16(&object->threads, buffer);
+		safe_unpack64(&object->real_memory, buffer);
+		safe_unpack32(&object->tmp_disk, buffer);
+		safe_unpack32(&object->reason_uid, buffer);
+		safe_unpack_time(&object->reason_time, buffer);
+		safe_unpack_time(&object->resume_after, buffer);
+		safe_unpack_time(&object->boot_req_time, buffer);
+		safe_unpack_time(&object->power_save_req_time, buffer);
+		safe_unpack_time(&object->last_response, buffer);
+		safe_unpack16(&object->protocol_version, buffer);
+		safe_unpackstr(&object->mcs_label, buffer);
+		if (gres_node_state_unpack(&object->gres_list, buffer,
+					   object->name, protocol_version) !=
+		    SLURM_SUCCESS)
+			goto unpack_error;
+		safe_unpack32(&object->weight, buffer);
+	} else {
+		error("%s: protocol_version %hu not supported",
+		      __func__, protocol_version);
+		goto unpack_error;
+	}
+
+	return SLURM_SUCCESS;
+
+unpack_error:
+	purge_node_rec(object);
+	*out = NULL;
+	return SLURM_ERROR;
+}
+
+extern config_record_t *config_record_from_node_record(node_record_t *node_ptr)
+{
+	config_record_t *config_ptr = create_config_record();
+
+	config_ptr->boards = node_ptr->boards;
+	config_ptr->core_spec_cnt = node_ptr->core_spec_cnt;
+	config_ptr->mem_spec_limit = node_ptr->mem_spec_limit;
+	config_ptr->cores = node_ptr->cores;
+	config_ptr->cpu_spec_list = xstrdup(node_ptr->cpu_spec_list);
+	config_ptr->cpus = node_ptr->cpus;
+	config_ptr->feature = xstrdup(node_ptr->features);
+	config_ptr->gres = xstrdup(node_ptr->gres);
+	config_ptr->node_bitmap = bit_alloc(node_record_count);
+	config_ptr->nodes = xstrdup(node_ptr->name);
+	config_ptr->real_memory = node_ptr->real_memory;
+	config_ptr->res_cores_per_gpu = node_ptr->res_cores_per_gpu;
+	config_ptr->threads = node_ptr->threads;
+	config_ptr->tmp_disk = node_ptr->tmp_disk;
+	config_ptr->tot_sockets = node_ptr->tot_sockets;
+	config_ptr->weight = node_ptr->weight;
+
+	return config_ptr;
 }

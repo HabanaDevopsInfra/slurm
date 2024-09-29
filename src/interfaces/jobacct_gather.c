@@ -88,7 +88,7 @@ strong_alias(jobacctinfo_create, slurm_jobacctinfo_create);
 strong_alias(jobacctinfo_destroy, slurm_jobacctinfo_destroy);
 
 typedef struct slurm_jobacct_gather_ops {
-	void (*poll_data) (List task_list, uint64_t cont_id, bool profile);
+	void (*poll_data) (list_t *task_list, uint64_t cont_id, bool profile);
 	int (*endpoll)    ();
 	int (*add_task)   (pid_t pid, jobacct_id_t *jobacct_id);
 } slurm_jobacct_gather_ops_t;
@@ -111,7 +111,7 @@ static pthread_mutex_t init_run_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t watch_tasks_thread_id = 0;
 
 static int freq = 0;
-static List task_list = NULL;
+static list_t *task_list = NULL;
 static uint64_t cont_id = NO_VAL64;
 static pthread_mutex_t task_list_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -596,7 +596,7 @@ extern int jobacct_gather_startpoll(uint16_t frequency)
 {
 	int retval = SLURM_SUCCESS;
 
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return SLURM_SUCCESS;
@@ -629,7 +629,7 @@ extern int jobacct_gather_endpoll(void)
 {
 	int retval = SLURM_SUCCESS;
 
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return SLURM_SUCCESS;
@@ -652,7 +652,7 @@ extern int jobacct_gather_add_task(pid_t pid, jobacct_id_t *jobacct_id,
 {
 	struct jobacctinfo *jobacct;
 
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return SLURM_SUCCESS;

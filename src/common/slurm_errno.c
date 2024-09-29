@@ -39,12 +39,9 @@
 
 /*  This implementation relies on "overloading" the libc errno by
  *  partitioning its domain into system (<1000) and Slurm (>=1000) values.
- *  Slurm API functions should call slurm_seterrno() to set errno to a value.
  *  API users should call slurm_strerror() to convert all errno values to
  *  their description strings.
  */
-
-#include "config.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -96,6 +93,12 @@ slurm_errtab_t slurm_errtab[] = {
 	  "Can't find an address, check slurm.conf"		},
 	{ ERRTAB_ENTRY(SLURM_COMMUNICATIONS_MISSING_SOCKET_ERROR),
 	  "Unexpected missing socket error"			},
+	{ ERRTAB_ENTRY(SLURM_COMMUNICATIONS_INVALID_INCOMING_FD),
+	  "Unable to process incoming file descriptor" },
+	{ ERRTAB_ENTRY(SLURM_COMMUNICATIONS_MISSING_SOCKET_ERROR),
+	  "Unable to process outgoing file descriptor" },
+	{ ERRTAB_ENTRY(SLURM_COMMUNICATIONS_INVALID_FD),
+	  "Unable to process incoming and outgoing file descriptors" },
 
 	/* communication failures to/from slurmctld */
 	{ ERRTAB_ENTRY(SLURMCTLD_COMMUNICATIONS_CONNECTION_ERROR),
@@ -108,6 +111,8 @@ slurm_errtab_t slurm_errtab[] = {
 	  "Unable to contact slurm controller (shutdown failure)"},
 	{ ERRTAB_ENTRY(SLURMCTLD_COMMUNICATIONS_BACKOFF),
 	  "Rate limit exceeded, please retry momentarily"},
+	{ ERRTAB_ENTRY(SLURMCTLD_COMMUNICATIONS_HARD_DROP),
+	  "Rate limit exceeded, please retry later"},
 
 	/* _info.c/communication layer RESPONSE_SLURM_RC message codes */
 
@@ -412,7 +417,7 @@ slurm_errtab_t slurm_errtab[] = {
 	{ ERRTAB_ENTRY(ESLURM_INVALID_JOB_ARRAY_ID_TOO_LARGE),
 	  "Job Array ID larger than acceptable range" },
 	{ ERRTAB_ENTRY(ESLURM_INVALID_JOB_ARRAY_ID_NON_NUMERIC),
-	  "HetJob component includes unexpected non-numeric characters" },
+	  "Job Array ID includes unexpected non-numeric characters" },
 	{ ERRTAB_ENTRY(ESLURM_EMPTY_HET_JOB_COMP),
 	  "HetJob component must not be an empty string" },
 	{ ERRTAB_ENTRY(ESLURM_INVALID_HET_JOB_COMP_NEGATIVE),
@@ -463,6 +468,18 @@ slurm_errtab_t slurm_errtab[] = {
 	  "Invalid QOS specification, relative QOS can only be used in a single partition per cluster." },
 	{ ERRTAB_ENTRY(ESLURM_INVALID_EXTRA),
 	  "Invalid extra constraints specification" },
+	{ ERRTAB_ENTRY(ESLURM_JOB_SIGNAL_FAILED),
+	  "Cannot signal job" },
+	{ ERRTAB_ENTRY(ESLURM_SIGNAL_JOBS_INVALID),
+	  "Invalid signal jobs request, at least one job id or filter is required." },
+	{ ERRTAB_ENTRY(ESLURM_RES_CORES_PER_GPU_UNIQUE),
+	  "RestrictedCoresPerGPU: Not enough unique cores per GPU" },
+	{ ERRTAB_ENTRY(ESLURM_RES_CORES_PER_GPU_TOPO),
+	  "RestrictedCoresPerGPU: Missing core topology for GPUs" },
+	{ ERRTAB_ENTRY(ESLURM_RES_CORES_PER_GPU_NO),
+	  "RestrictedCoresPerGPU: No GPUs configured on node" },
+	{ ERRTAB_ENTRY(ESLURM_MAX_POWERED_NODES),
+	  "Max powered up nodes reached" },
 
 	/* SPANK errors */
 	{ ERRTAB_ENTRY(ESPANK_ERROR),
@@ -547,6 +564,8 @@ slurm_errtab_t slurm_errtab[] = {
 
 	{ ERRTAB_ENTRY(ESLURM_AUTH_CRED_INVALID),
 	  "Invalid authentication credential"			},
+	{ ERRTAB_ENTRY(ESLURM_AUTH_EXPIRED),
+	  "Authentication credential expired"			},
 	{ ERRTAB_ENTRY(ESLURM_AUTH_BADARG),
 	  "Bad argument to plugin function"			},
 	{ ERRTAB_ENTRY(ESLURM_AUTH_UNPACK),
@@ -581,6 +600,9 @@ slurm_errtab_t slurm_errtab[] = {
 	  "There is something internally wrong with the SQL needed for this. Please consult the slurmdbd log for more info."                    },
 	{ ERRTAB_ENTRY(ESLURM_NO_REMOVE_DEFAULT_QOS),
 	  "This request would make it so some associations would not have access to their default qos."                                         },
+	{ ERRTAB_ENTRY(ESLURM_COORD_NO_INCREASE_JOB_LIMIT),
+	  "Coordinators can not increase job limits beyond the parent ones" },
+
 
 	/* Federation Errors */
 	{ ERRTAB_ENTRY(ESLURM_FED_CLUSTER_MAX_CNT),
@@ -709,26 +731,6 @@ char *slurm_strerror(int errnum)
 		return strerror(errnum);
 	else
 		return "Unknown negative error number";
-}
-
-/*
- * Get errno
- */
-int slurm_get_errno(void)
-{
-	return errno;
-}
-
-/*
- * Set errno to the specified value.
- */
-void slurm_seterrno(int errnum)
-{
-#ifdef __set_errno
-	__set_errno(errnum);
-#else
-	errno = errnum;
-#endif
 }
 
 /*

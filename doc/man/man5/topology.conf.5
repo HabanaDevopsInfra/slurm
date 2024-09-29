@@ -1,4 +1,4 @@
-.TH "topology.conf" "5" "Slurm Configuration File" "November 2023" "Slurm Configuration File"
+.TH "topology.conf" "5" "Slurm Configuration File" "September 2024" "Slurm Configuration File"
 
 .SH "NAME"
 topology.conf \-  Slurm configuration file for the topology plugins
@@ -46,7 +46,7 @@ The overall configuration parameters available for topology/tree include:
 \fBSwitchName\fR
 The name of a switch. This name is internal to Slurm and arbitrary.
 Each switch should have a unique name.
-This field must be specified.
+This field must be specified and cannot be longer than 64 characters.
 .IP
 
 .TP
@@ -86,12 +86,8 @@ as possible on the first available resources.
 Defined blocks of nodes are paired with other contiguous blocks, to create
 a higher level block of nodes. These larger blocks can then be paired with
 other blocks at the same level for bigger and bigger blocks of contiguous
-nodes with optimized communication between them. Levels are defined as
-level 0 being a single defined block, level 1 being a pair of blocks,
-level 2 being a group of 4 blocks, or as many as can be grouped together
-if there are an uneven number of blocks, level 3 being a group of (up to)
-8 blocks, etc. You can define how many levels you want to enforce jobs
-remain contiguous across with \fBBlockLevels\fR.
+nodes with optimized communication between them. The enforced block sizes
+are defined by \fBBlockSizes\fR.
 
 .LP
 The overall configuration parameters available for topology/block include:
@@ -110,8 +106,11 @@ This must be specified along with the \fBBlockName\fR.
 .IP
 
 .TP
-\fBBlockLevels\fR
-List of enforced levels of block aggregation.
+\fBBlockSizes\fR
+List of the planning base block size, alongside any
+higher-level block sizes that would be enforced.
+Each block must have at least the planning base block size count of nodes.
+Successive BlockSizes must be a power of two larger than the prior values.
 .IP
 
 .SH "EXAMPLE"
@@ -131,12 +130,11 @@ SwitchName=s3 Switches=s[0\-2]
 # Slurm's network topology configuration file for use with the
 # topology/block plugin
 ##################################################################
-BlockName=block1 Nodes=node[01,05,09,13]
-BlockName=block2 Nodes=node[02,06,10,14]
-BlockName=block3 Nodes=node[03,07,11,15]
-BlockName=block4 Nodes=node[04,08,12,16]
-
-BlockLevels=0-1,2
+BlockName=block1 Nodes=node[1-32]
+BlockName=block2 Nodes=node[33-64]
+BlockName=block3 Nodes=node[65-96]
+BlockName=block4 Nodes=node[97-128]
+BlockSizes=30,120
 .fi
 
 .SH "COPYING"
@@ -155,7 +153,7 @@ any later version.
 .LP
 Slurm is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
 details.
 
 .SH "SEE ALSO"

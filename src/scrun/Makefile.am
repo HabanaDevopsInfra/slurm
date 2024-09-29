@@ -1,5 +1,4 @@
 AUTOMAKE_OPTIONS = foreign
-CLEANFILES = core.*
 
 SRCS = \
 	alloc.c \
@@ -10,6 +9,7 @@ SRCS = \
 	scrun.c	\
 	scrun.h \
 	srun.c \
+	spank.c \
 	state.c
 
 convenience_libs = $(LIB_SLURM)

@@ -162,11 +162,14 @@ typedef enum {
 				 * add_assoc_cond */
 	DBD_GET_INSTANCES,	/* Get instance information */
 	DBD_GOT_INSTANCES,	/* Response to DBD_GET_INSTANCES */
+	DBD_GET_QOS_USAGE,  	/* Get qos usage information */
+	DBD_GOT_QOS_USAGE,  	/* Response to DBD_GET_QOS_USAGE */
 	SLURM_DBD_MESSAGES_END = 2000, /* So that we don't overlap with any
 					* slurm_msg_type_t numbers. */
 	SLURM_PERSIST_INIT = 6500, /* So we don't use the
 				    * REQUEST_PERSIST_INIT also used here.
 				    */
+	SLURM_PERSIST_INIT_TLS = 6501,
 } slurmdbd_msg_type_t;
 
 /*****************************************************************************\
@@ -174,7 +177,7 @@ typedef enum {
 \*****************************************************************************/
 
 typedef struct {
-	List acct_list; /* list of account names (char *'s) */
+	list_t *acct_list; /* list of account names (char *'s) */
 	slurmdb_user_cond_t *cond;
 } dbd_acct_coord_msg_t;
 
@@ -214,8 +217,8 @@ typedef struct dbd_get_jobs_msg {
 				 * of accounting record */
 	uint32_t gid;		/* group id */
 	time_t last_update;	/* time of latest info */
-	List selected_steps;	/* List of slurm_selected_step_t *'s */
-	List selected_parts;	/* List of char *'s */
+	list_t *selected_steps;	/* list_t *of slurm_selected_step_t *'s */
+	list_t *selected_parts;	/* list_t *of char *'s */
 	char *user;		/* user name */
 } dbd_get_jobs_msg_t;
 
@@ -294,6 +297,9 @@ typedef struct dbd_job_start_msg {
 	time_t   start_time;	/* job start time */
 	uint32_t state_reason_prev; /* Last reason of blocking before job
 				     * started */
+	char *std_err;          /* The stderr file path of the job */
+	char *std_in;           /* The stdin file path of the job */
+	char *std_out;          /* The stdout file path of the job */
 	char *submit_line;      /* The command issued with all it's options in a
 				 * string */
 	time_t   submit_time;	/* job submit time */
@@ -336,7 +342,7 @@ typedef struct dbd_job_suspend_msg {
 } dbd_job_suspend_msg_t;
 
 typedef struct {
-	List my_list;		/* this list could be of any type as long as it
+	list_t *my_list;	/* this list could be of any type as long as it
 				 * is handled correctly on both ends */
 	uint32_t return_code;   /* If there was an error and a list of
 				 * them this is the type of error it
@@ -415,6 +421,11 @@ typedef struct dbd_step_start_msg {
 	uint32_t total_tasks;	/* count of tasks for step */
 	char *tres_alloc_str;   /* Simple comma separated list of TRES */
 } dbd_step_start_msg_t;
+
+typedef struct {
+	void *data;
+	uint16_t msg_type;
+} dbd_relay_msg_t;
 
 /*****************************************************************************\
  * Slurm DBD message processing functions

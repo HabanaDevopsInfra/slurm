@@ -48,13 +48,79 @@
 #include "src/common/xstring.h"
 #include "src/slurmctld/slurmctld.h"
 
-/*
- * Must be synchronized with slurm_select_ops_t in select.h.
- * Also must be synchronized with the other_select.c in
- * the select/other lib. (We tried to make it so we only had to
- * define it once, but it didn't seem to work.)
- */
-const char *node_select_syms[] = {
+typedef struct {
+	uint32_t	(*plugin_id);
+	int		(*state_save)		(char *dir_name);
+	int		(*state_restore)	(char *dir_name);
+	int		(*job_init)		(list_t *job_list);
+	int		(*node_init)		(void);
+	int		(*job_test)		(job_record_t *job_ptr,
+						 bitstr_t *bitmap,
+						 uint32_t min_nodes,
+						 uint32_t max_nodes,
+						 uint32_t req_nodes,
+						 uint16_t mode,
+						 list_t *preeemptee_candidates,
+						 list_t **preemptee_job_list,
+						 resv_exc_t *resv_exc_ptr);
+	int		(*job_begin)		(job_record_t *job_ptr);
+	int		(*job_ready)		(job_record_t *job_ptr);
+	int		(*job_expand)		(job_record_t *from_job_ptr,
+						 job_record_t *to_job_ptr);
+	int		(*job_resized)		(job_record_t *job_ptr,
+						 node_record_t *node_ptr);
+	int		(*job_fini)		(job_record_t *job_ptr);
+	int		(*job_suspend)		(job_record_t *job_ptr,
+						 bool indf_susp);
+	int		(*job_resume)		(job_record_t *job_ptr,
+						 bool indf_susp);
+	bitstr_t *      (*step_pick_nodes)      (job_record_t *job_ptr,
+						 select_jobinfo_t *step_jobinfo,
+						 uint32_t node_count,
+						 bitstr_t **avail_nodes);
+	int             (*step_start)           (step_record_t *step_ptr);
+	int             (*step_finish)          (step_record_t *step_ptr,
+						 bool killing_step);
+	int		(*nodeinfo_pack)	(select_nodeinfo_t *nodeinfo,
+						 buf_t *buffer,
+						 uint16_t protocol_version);
+	int		(*nodeinfo_unpack)	(select_nodeinfo_t **nodeinfo,
+						 buf_t *buffer,
+						 uint16_t protocol_version);
+	select_nodeinfo_t *(*nodeinfo_alloc)	(void);
+	int		(*nodeinfo_free)	(select_nodeinfo_t *nodeinfo);
+	int		(*nodeinfo_set_all)	(void);
+	int		(*nodeinfo_set)		(job_record_t *job_ptr);
+	int		(*nodeinfo_get)		(select_nodeinfo_t *nodeinfo,
+						 enum
+						 select_nodedata_type dinfo,
+						 enum node_states state,
+						 void *data);
+	select_jobinfo_t *(*jobinfo_alloc)	(void);
+	int		(*jobinfo_free)		(select_jobinfo_t *jobinfo);
+	int		(*jobinfo_set)		(select_jobinfo_t *jobinfo,
+						 enum
+						 select_jobdata_type data_type,
+						 void *data);
+	int		(*jobinfo_get)		(select_jobinfo_t *jobinfo,
+						 enum
+						 select_jobdata_type data_type,
+						 void *data);
+	select_jobinfo_t *(*jobinfo_copy)	(select_jobinfo_t *jobinfo);
+	int		(*jobinfo_pack)		(select_jobinfo_t *jobinfo,
+						 buf_t *buffer,
+						 uint16_t protocol_version);
+	int		(*jobinfo_unpack)	(select_jobinfo_t **jobinfo_pptr,
+						 buf_t *buffer,
+						 uint16_t protocol_version);
+	int		(*get_info_from_plugin)	(enum
+						 select_plugindata_info dinfo,
+						 job_record_t *job_ptr,
+						 void *data);
+	int		(*reconfigure)		(void);
+} slurm_select_ops_t;
+
+static const char *node_select_syms[] = {
 	"plugin_id",
 	"select_p_state_save",
 	"select_p_state_restore",
@@ -171,7 +237,7 @@ extern int select_g_init(bool only_default)
 	int retval = SLURM_SUCCESS;
 	int i, j, plugin_cnt;
 	char *plugin_type = "select";
-	List plugin_names = NULL;
+	list_t *plugin_names = NULL;
 	_plugin_args_t plugin_args = {0};
 
 	slurm_mutex_lock( &select_context_lock );
@@ -341,6 +407,26 @@ extern char *select_type_param_string(uint16_t select_type_param)
 			strcat(select_str, ",");
 		strcat(select_str, "CR_PACK_NODES");
 	}
+	if (select_type_param & LL_SHARED_GRES) {
+		if (select_str[0])
+			strcat(select_str, ",");
+		strcat(select_str, "LL_SHARED_GRES");
+	}
+	if (select_type_param & MULTIPLE_SHARING_GRES_PJ) {
+		if (select_str[0])
+			strcat(select_str, ",");
+		strcat(select_str, "MULTIPLE_SHARING_GRES_PJ");
+	}
+	if (select_type_param & ENFORCE_BINDING_GRES) {
+		if (select_str[0])
+			strcat(select_str, ",");
+		strcat(select_str, "ENFORCE_BINDING_GRES");
+	}
+	if (select_type_param & ONE_TASK_PER_SHARING_GRES) {
+		if (select_str[0])
+			strcat(select_str, ",");
+		strcat(select_str, "ONE_TASK_PER_SHARING_GRES");
+	}
 	if (select_str[0] == '\0')
 		strcat(select_str, "NONE");
 
@@ -383,7 +469,7 @@ extern int select_g_state_restore(char *dir_name)
  * Note the initialization of job records, issued upon restart of
  * slurmctld and used to synchronize any job state.
  */
-extern int select_g_job_init(List job_list)
+extern int select_g_job_init(list_t *job_list)
 {
 	xassert(select_context_cnt >= 0);
 
@@ -426,8 +512,8 @@ extern int select_g_node_init(void)
 extern int select_g_job_test(job_record_t *job_ptr, bitstr_t *bitmap,
 			     uint32_t min_nodes, uint32_t max_nodes,
 			     uint32_t req_nodes, uint16_t mode,
-			     List preemptee_candidates,
-			     List *preemptee_job_list,
+			     list_t *preemptee_candidates,
+			     list_t **preemptee_job_list,
 			     resv_exc_t *resv_exc_ptr)
 {
 	xassert(select_context_cnt >= 0);
@@ -865,6 +951,13 @@ extern int select_g_select_jobinfo_pack(dynamic_plugin_data_t *jobinfo,
 	} else
 		plugin_id = select_context_default;
 
+	/* Remove when 23.02 is no longer supported. */
+	if (!running_in_slurmctld() &&
+	    (protocol_version <= SLURM_23_02_PROTOCOL_VERSION)) {
+		pack32(plugin_id, buffer);
+		return SLURM_SUCCESS;
+	}
+
 	xassert(select_context_cnt >= 0);
 
 	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
@@ -888,6 +981,22 @@ extern int select_g_select_jobinfo_unpack(dynamic_plugin_data_t **jobinfo,
 					  uint16_t protocol_version)
 {
 	dynamic_plugin_data_t *jobinfo_ptr = NULL;
+
+	/* Remove when 23.02 is no longer supported. */
+	if (!running_in_slurmctld() &&
+	    (protocol_version <= SLURM_23_02_PROTOCOL_VERSION)) {
+		uint32_t plugin_id;
+		safe_unpack32(&plugin_id, buffer);
+		/*
+		 * srun will unpack this and then repack things later when
+		 * sending to the slurmd. Instead of the context here we have
+		 * the actual plugin id.
+		 * This hack works for all systems that aren't cray_aries.
+		 */
+		select_context_default = plugin_id;
+		*jobinfo = NULL;
+		return SLURM_SUCCESS;
+	}
 
 	xassert(select_context_cnt >= 0);
 

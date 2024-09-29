@@ -57,7 +57,7 @@ typedef struct load_step_req_struct {
 	slurmdb_cluster_rec_t *cluster;
 	bool local_cluster;
 	slurm_msg_t *req_msg;
-	List resp_msg_list;
+	list_t *resp_msg_list;
 } load_step_req_struct_t;
 
 typedef struct load_step_resp_struct {
@@ -304,6 +304,58 @@ slurm_sprint_job_step_info ( job_step_info_t * job_step_ptr,
 	return out;
 }
 
+static int _get_stepmgr_steps(void *x, void *arg)
+{
+	stepmgr_job_info_t *sji = x;
+	slurm_msg_t resp_msg;
+	slurm_msg_t_init(&resp_msg);
+
+	job_step_info_response_msg_t *ctld_resp = arg;
+
+	slurm_msg_t req_msg;
+	slurm_msg_t_init(&req_msg);
+	slurm_msg_set_r_uid(&req_msg, slurm_conf.slurmd_user_id);
+	slurm_conf_get_addr(sji->stepmgr, &req_msg.address,
+			    req_msg.flags);
+
+	job_step_info_request_msg_t req_data = {0};
+	req_data.step_id.job_id = sji->job_id;
+	req_data.step_id.step_id = NO_VAL;
+	req_data.step_id.step_het_comp = NO_VAL;
+
+	req_msg.msg_type = REQUEST_JOB_STEP_INFO;
+	req_msg.data = &req_data;
+	if (slurm_send_recv_node_msg(&req_msg, &resp_msg, 0))
+		return SLURM_ERROR;
+
+	if (resp_msg.msg_type == RESPONSE_JOB_STEP_INFO) {
+		uint32_t new_rec_cnt;
+		job_step_info_response_msg_t *stepmgr_resp;
+		stepmgr_resp = (job_step_info_response_msg_t *) resp_msg.data;
+
+		/* Merge the step records into a single response message */
+		new_rec_cnt = ctld_resp->job_step_count +
+			stepmgr_resp->job_step_count;
+		if (stepmgr_resp->job_step_count) {
+			ctld_resp->job_steps =
+				xrealloc(ctld_resp->job_steps,
+					 sizeof(job_step_info_t) *
+					 new_rec_cnt);
+			(void) memcpy(ctld_resp->job_steps +
+				      ctld_resp->job_step_count,
+				      stepmgr_resp->job_steps,
+				      sizeof(job_step_info_t) *
+				      stepmgr_resp->job_step_count);
+			ctld_resp->job_step_count = new_rec_cnt;
+
+			xfree(stepmgr_resp->job_steps);
+			xfree(stepmgr_resp);
+		}
+	}
+
+	return SLURM_SUCCESS;
+}
+
 static int
 _load_cluster_steps(slurm_msg_t *req_msg, job_step_info_response_msg_t **resp,
 		    slurmdb_cluster_rec_t *cluster)
@@ -322,6 +374,11 @@ _load_cluster_steps(slurm_msg_t *req_msg, job_step_info_response_msg_t **resp,
 	case RESPONSE_JOB_STEP_INFO:
 		*resp = (job_step_info_response_msg_t *) resp_msg.data;
 		resp_msg.data = NULL;
+
+		if ((*resp)->stepmgr_jobs) {
+			list_for_each((*resp)->stepmgr_jobs, _get_stepmgr_steps,
+				      *resp);
+		}
 		break;
 	case RESPONSE_SLURM_RC:
 		rc = ((return_code_msg_t *) resp_msg.data)->return_code;
@@ -376,7 +433,7 @@ _load_fed_steps(slurm_msg_t *req_msg, job_step_info_response_msg_t **resp,
 	int pthread_count = 0;
 	pthread_t *load_thread = 0;
 	load_step_req_struct_t *load_args;
-	List resp_msg_list;
+	list_t *resp_msg_list;
 
 	*resp = NULL;
 
@@ -561,6 +618,7 @@ extern slurm_step_layout_t *slurm_job_step_layout_get(slurm_step_id_t *step_id)
 	slurm_step_id_t data;
 	slurm_msg_t req, resp;
 	int errnum;
+	char *stepmgr_nodename = NULL;
 
 	slurm_msg_t_init(&req);
 	slurm_msg_t_init(&resp);
@@ -569,10 +627,49 @@ extern slurm_step_layout_t *slurm_job_step_layout_get(slurm_step_id_t *step_id)
 	req.data = &data;
 	memcpy(&data, step_id, sizeof(data));
 
-	if (slurm_send_recv_controller_msg(&req, &resp, working_cluster_rec) <0)
+trystepmgr:
+	if (stepmgr_nodename) {
+		slurm_msg_set_r_uid(&req, slurm_conf.slurmd_user_id);
+
+		if (slurm_conf_get_addr(stepmgr_nodename, &req.address,
+					req.flags)) {
+			/*
+			 * The node isn't in the conf, see if the
+			 * controller has an address for it.
+			 */
+			slurm_node_alias_addrs_t *alias_addrs;
+			if (!slurm_get_node_alias_addrs(stepmgr_nodename,
+							&alias_addrs)) {
+				add_remote_nodes_to_conf_tbls(
+					alias_addrs->node_list,
+					alias_addrs->node_addrs);
+			}
+			slurm_free_node_alias_addrs(alias_addrs);
+			slurm_conf_get_addr(stepmgr_nodename, &req.address,
+					    req.flags);
+		}
+		xfree(stepmgr_nodename);
+
+		if (slurm_send_recv_node_msg(&req, &resp, 0))
+			return NULL;
+	} else if (slurm_send_recv_controller_msg(&req, &resp,
+						  working_cluster_rec) <0)
 		return NULL;
 
 	switch (resp.msg_type) {
+	case RESPONSE_SLURM_REROUTE_MSG:
+	{
+		reroute_msg_t *rr_msg = resp.data;
+		stepmgr_nodename = rr_msg->stepmgr;
+		rr_msg->stepmgr = NULL;
+		if (stepmgr_nodename) {
+			goto trystepmgr;
+		} else {
+			errno = SLURM_ERROR;
+			return NULL;
+		}
+		break;
+	}
 	case RESPONSE_STEP_LAYOUT:
 		return (slurm_step_layout_t *)resp.data;
 	case RESPONSE_SLURM_RC:
@@ -603,7 +700,7 @@ extern int slurm_job_step_stat(slurm_step_id_t *step_id,
 	slurm_msg_t req_msg;
 	list_itr_t *itr;
 	slurm_step_id_t req;
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	ret_data_info_t *ret_data_info = NULL;
 	int rc = SLURM_SUCCESS;
 	slurm_step_layout_t *step_layout = NULL;
@@ -715,7 +812,7 @@ extern int slurm_job_step_get_pids(slurm_step_id_t *step_id,
 	slurm_msg_t req_msg;
 	slurm_step_id_t req;
 	list_itr_t *itr;
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	ret_data_info_t *ret_data_info = NULL;
 	slurm_step_layout_t *step_layout = NULL;
 	job_step_pids_response_msg_t *resp_out;

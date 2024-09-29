@@ -58,7 +58,7 @@ typedef struct {
 	ssize_t index;
 	args_t *args;
 	const parser_t *const parser;
-	List list;
+	list_t *list;
 	data_t *dlist;
 	data_t *parent_path;
 } foreach_list_t;
@@ -195,12 +195,20 @@ static data_for_each_cmd_t _foreach_flag_parser(data_t *src, void *arg)
 	const parser_t *const parser = args->parser;
 	char *path = NULL;
 	bool matched_any = false;
+	data_for_each_cmd_t rc = DATA_FOR_EACH_CONT;
 
 	xassert(args->magic == MAGIC_FOREACH_LIST_FLAG);
 	xassert(args->args->magic == MAGIC_ARGS);
 	xassert(parser->magic == MAGIC_PARSER);
 
 	path = _flag_parent_path(&path, args);
+
+	if (data_convert_type(src, DATA_TYPE_STRING) != DATA_TYPE_STRING) {
+		on_warn(PARSING, parser->type, args->args, path,
+			__func__, "Ignoring unexpected field of type %s",
+			data_get_type_string(src));
+		goto cleanup;
+	}
 
 	for (int8_t i = 0; (i < parser->flag_bit_array_count); i++) {
 		const flag_bit_t *bit = &parser->flag_bit_array[i];
@@ -220,23 +228,26 @@ static data_for_each_cmd_t _foreach_flag_parser(data_t *src, void *arg)
 				_set_flag_bit_equal(parser, dst, bit, matched,
 						    path, src);
 			args->set |= bit->mask;
+		} else if (bit->type == FLAG_BIT_TYPE_REMOVED) {
+			if (matched)
+				on_warn(PARSING, parser->type, args->args, path,
+					__func__,
+					"Ignoring deprecated flag: %s",
+					bit->name);
 		} else
 			fatal_abort("%s: invalid bit_flag_t", __func__);
 
 	}
 
-	args->index++;
-
-	if (!matched_any) {
+	if (!matched_any)
 		on_error(PARSING, parser->type, args->args,
 			 ESLURM_DATA_FLAGS_INVALID, path, __func__,
 			 "Unknown flag \"%s\"", data_get_string(src));
-		xfree(path);
-		return DATA_FOR_EACH_FAIL;
-	}
 
+cleanup:
 	xfree(path);
-	return DATA_FOR_EACH_CONT;
+	args->index++;
+	return rc;
 }
 
 static int _parse_flag(void *dst, const parser_t *const parser, data_t *src,
@@ -342,7 +353,7 @@ static int _parse_list(const parser_t *const parser, void *dst, data_t *src,
 {
 	int rc = SLURM_SUCCESS;
 	char *path = NULL;
-	List *list = dst;
+	list_t **list = dst;
 	foreach_list_t list_args = {
 		.magic = MAGIC_FOREACH_LIST,
 		.dlist = NULL,
@@ -415,18 +426,17 @@ static int _parse_pointer(const parser_t *const parser, void *dst, data_t *src,
 			     !data_get_list_length(src);
 
 	xassert(!*ptr);
+	*ptr = alloc_parser_obj(parser);
 
 	if (is_empty_dict || is_empty_list) {
 		/*
 		 * Detect work around for OpenAPI clients being unable to handle
 		 * a null in place of a object/array by placing an empty
-		 * dict/array.
+		 * dict/array. Place the default allocated object pointer but
+		 * skip attempting to parse.
 		 */
-		*ptr = NULL;
 		return SLURM_SUCCESS;
 	}
-
-	*ptr = alloc_parser_obj(parser);
 
 	if ((rc = parse(*ptr, NO_VAL, pt, src, args, parent_path))) {
 		log_flag(DATA, "%s object at 0x%"PRIxPTR" freed due to parser error: %s",
@@ -445,6 +455,8 @@ static data_for_each_cmd_t _foreach_array_entry(data_t *src, void *arg)
 	foreach_nt_array_t *args = arg;
 	void *obj = NULL;
 	data_t *ppath = NULL;
+	const parser_t *const parser = args->parser;
+	const parser_t *const array_parser = args->array_parser;
 
 	xassert(args->magic == MAGIC_FOREACH_NT_ARRAY);
 	xassert((args->index > 0) || (args->index == -1));
@@ -463,21 +475,22 @@ static data_for_each_cmd_t _foreach_array_entry(data_t *src, void *arg)
 				    data_get_string(ppath_last), args->index);
 	}
 
-	if (args->parser->model == PARSER_MODEL_NT_PTR_ARRAY)
-		obj = alloc_parser_obj(args->parser);
-	else if (args->parser->model == PARSER_MODEL_NT_ARRAY)
-		obj = args->sarray + (args->parser->size * args->index);
+	if (array_parser->model == PARSER_MODEL_NT_PTR_ARRAY)
+		obj = alloc_parser_obj(parser);
+	else if (array_parser->model == PARSER_MODEL_NT_ARRAY)
+		obj = args->sarray + (parser->size * args->index);
 
-	if ((rc = parse(obj, NO_VAL, args->parser, src, args->args, ppath))) {
+	if ((rc = parse(obj, NO_VAL, parser, src, args->args, ppath))) {
 		log_flag(DATA, "%s object at 0x%"PRIxPTR" freed due to parser error: %s",
-			 args->parser->obj_type_string, (uintptr_t) obj,
+			 parser->obj_type_string, (uintptr_t) obj,
 			 slurm_strerror(rc));
-		free_parser_obj(args->parser, obj);
+		if (array_parser->model == PARSER_MODEL_NT_PTR_ARRAY)
+			free_parser_obj(parser, obj);
 		FREE_NULL_DATA(ppath);
 		return DATA_FOR_EACH_FAIL;
 	}
 
-	if (args->parser->model == PARSER_MODEL_NT_PTR_ARRAY) {
+	if (array_parser->model == PARSER_MODEL_NT_PTR_ARRAY) {
 		xassert(!args->array[args->index]);
 		args->array[args->index] = obj;
 	}
@@ -495,7 +508,7 @@ static int _parse_nt_array(const parser_t *const parser, void *dst, data_t *src,
 	foreach_nt_array_t fargs = {
 		.magic = MAGIC_FOREACH_NT_ARRAY,
 		.array_parser = parser,
-		.parser = find_parser_by_type(parser->pointer_type),
+		.parser = find_parser_by_type(parser->array_type),
 		.args = args,
 		.parent_path = parent_path,
 		.index = -1,
@@ -520,7 +533,11 @@ static int _parse_nt_array(const parser_t *const parser, void *dst, data_t *src,
 				      sizeof(*fargs.array));
 	else if (parser->model == PARSER_MODEL_NT_ARRAY)
 		fargs.sarray = xcalloc(data_get_list_length(src) + 1,
-				       sizeof(fargs.parser->size));
+				       fargs.parser->size);
+
+	/* verify new array actually allocated */;
+	xassert((fargs.array && (xsize(fargs.array) > 0)) ^
+		(fargs.sarray && (xsize(fargs.sarray) > 0)));
 
 	if (data_get_type(src) == DATA_TYPE_LIST) {
 		if (data_list_for_each(src, _foreach_array_entry, &fargs) < 0)
@@ -549,6 +566,8 @@ cleanup:
 		for (int i = 0; fargs.array[i]; i++)
 			free_parser_obj(parser, &fargs.array[i]);
 		xfree(fargs.array);
+	} else if (fargs.sarray) {
+		xfree(fargs.sarray);
 	}
 
 	return rc;
@@ -591,6 +610,10 @@ static void _parser_linked_flag(args_t *args, const parser_t *const array,
 			_set_flag_bit_equal(parser, dst, bit, matched, path,
 					    src);
 		*set |= bit->mask;
+	} else if (bit->type == FLAG_BIT_TYPE_REMOVED) {
+		if (matched && !is_fast_mode(args))
+			on_warn(PARSING, parser->type, args, path, __func__,
+				"Ignoring deprecated flag: %s", bit->name);
 	} else {
 		fatal_abort("%s: invalid bit_flag_t", __func__);
 	}
@@ -916,7 +939,8 @@ extern int parse(void *dst, ssize_t dst_bytes, const parser_t *const parser,
 	 * Make sure the target object is the same size since there is no
 	 * way to dump value of __typeof__ as a value in C99.
 	 */
-	xassert((dst_bytes == NO_VAL) || (dst_bytes == parser->size));
+	xassert((dst_bytes == NO_VAL) || (dst_bytes == parser->size) ||
+		(parser->model == PARSER_MODEL_ALIAS));
 
 	if ((rc = load_prereqs(PARSING, parser, args)))
 		goto cleanup;
@@ -961,6 +985,12 @@ extern int parse(void *dst, ssize_t dst_bytes, const parser_t *const parser,
 		 parser->type_string, (uintptr_t) parser);
 
 	switch (parser->model) {
+	case PARSER_MODEL_REMOVED:
+		if (data_get_type(src) != DATA_TYPE_NULL)
+			on_warn(PARSING, parser->type, args, path, __func__,
+				"Ignoring value for removed parser");
+		rc = SLURM_SUCCESS;
+		break;
 	case PARSER_MODEL_FLAG_ARRAY:
 		verify_parser_not_sliced(parser);
 		rc = _parse_flag(dst, parser, src, args, parent_path);
@@ -969,7 +999,7 @@ extern int parse(void *dst, ssize_t dst_bytes, const parser_t *const parser,
 		xassert(parser->list_type > DATA_PARSER_TYPE_INVALID);
 		xassert(parser->list_type < DATA_PARSER_TYPE_MAX);
 		verify_parser_not_sliced(parser);
-		xassert((dst_bytes == NO_VAL) || (dst_bytes == sizeof(List)));
+		xassert((dst_bytes == NO_VAL) || (dst_bytes == sizeof(list_t *)));
 		xassert(!parser->parse);
 		rc = _parse_list(parser, dst, src, args, parent_path);
 		break;
@@ -1027,6 +1057,11 @@ extern int parse(void *dst, ssize_t dst_bytes, const parser_t *const parser,
 			_parse_check_openapi(parser, src, args, parent_path);
 
 		rc = parser->parse(parser, dst, src, args, parent_path);
+		break;
+	case PARSER_MODEL_ALIAS:
+		rc = parse(dst, dst_bytes,
+			   find_parser_by_type(parser->alias_type), src, args,
+			   parent_path);
 		break;
 	case PARSER_MODEL_ARRAY_LINKED_EXPLODED_FLAG_ARRAY_FIELD:
 	case PARSER_MODEL_ARRAY_LINKED_FIELD:
@@ -1124,10 +1159,15 @@ static void _dump_flag_bit_array_flag(args_t *args, void *src, data_t *dst,
 {
 	bool found;
 
+	if (bit->hidden)
+		return;
+
 	if (bit->type == FLAG_BIT_TYPE_BIT)
 		found = _match_flag_bit(parser, src, bit, *used_equal_bits);
 	else if (bit->type == FLAG_BIT_TYPE_EQUAL)
 		found = _match_flag_equal(parser, src, bit, used_equal_bits);
+	else if (bit->type == FLAG_BIT_TYPE_REMOVED)
+		found = false;
 	else
 		fatal_abort("%s: invalid bit_flag_t", __func__);
 
@@ -1169,6 +1209,8 @@ static void _dump_flag_bit_array_flag(args_t *args, void *src, data_t *dst,
 			type = "bit";
 		else if (bit->type == FLAG_BIT_TYPE_EQUAL)
 			type = "bit-equals";
+		else if (bit->type == FLAG_BIT_TYPE_REMOVED)
+			type = "removed";
 		else
 			type = "INVALID";
 
@@ -1230,7 +1272,7 @@ static int _foreach_dump_list(void *obj, void *arg)
 static int _dump_list(const parser_t *const parser, void *src, data_t *dst,
 		      args_t *args)
 {
-	List *list_ptr = src;
+	list_t **list_ptr = src;
 	foreach_list_t fargs = {
 		.magic = MAGIC_FOREACH_LIST,
 		.args = args,
@@ -1268,10 +1310,14 @@ static int _dump_pointer(const parser_t *const parser, void *src, data_t *dst,
 	const parser_t *pt = find_parser_by_type(parser->pointer_type);
 	void **ptr = src;
 
-	if (!*ptr && !is_complex_mode(args)) {
+	if (!*ptr) {
+		if (is_complex_mode(args)) {
+			xassert(data_get_type(dst) == DATA_TYPE_NULL);
+			return SLURM_SUCCESS;
+		}
+
 		/* Fully resolve pointer on NULL to use correct model */
-		while (pt->pointer_type)
-			pt = find_parser_by_type(pt->pointer_type);
+		pt = unalias_parser(pt);
 
 		if (parser->allow_null_pointer) {
 			xassert(data_get_type(dst) == DATA_TYPE_NULL);
@@ -1351,6 +1397,58 @@ static int _dump_nt_array(const parser_t *const parser, void *src, data_t *dst,
 	return rc;
 }
 
+static void _dump_removed(const parser_t *parser, data_t *dst, args_t *args)
+{
+	if (is_complex_mode(args)) {
+		data_set_null(dst);
+		return;
+	}
+
+	while ((parser->model == PARSER_MODEL_ARRAY_REMOVED_FIELD) ||
+	       parser->pointer_type) {
+		parser = unalias_parser(parser);
+
+		while (parser->model == PARSER_MODEL_ARRAY_REMOVED_FIELD)
+			parser = find_parser_by_type(parser->type);
+	}
+
+	xassert(parser->model != PARSER_MODEL_ARRAY_REMOVED_FIELD);
+	xassert(parser->model !=
+		PARSER_MODEL_ARRAY_LINKED_EXPLODED_FLAG_ARRAY_FIELD);
+	xassert(parser->model > PARSER_MODEL_INVALID);
+	xassert(parser->model < PARSER_MODEL_MAX);
+
+	switch (parser->obj_openapi) {
+	case OPENAPI_FORMAT_INT:
+	case OPENAPI_FORMAT_INT32:
+	case OPENAPI_FORMAT_INT64:
+		data_set_int(dst, 0);
+		break;
+	case OPENAPI_FORMAT_NUMBER:
+	case OPENAPI_FORMAT_FLOAT:
+	case OPENAPI_FORMAT_DOUBLE:
+		data_set_float(dst, 0);
+		break;
+	case OPENAPI_FORMAT_STRING:
+	case OPENAPI_FORMAT_PASSWORD:
+		data_set_string(dst, "");
+		break;
+	case OPENAPI_FORMAT_BOOL:
+		data_set_bool(dst, false);
+	case OPENAPI_FORMAT_OBJECT:
+		data_set_dict(dst);
+		break;
+	case OPENAPI_FORMAT_ARRAY:
+		data_set_list(dst);
+		break;
+	case OPENAPI_FORMAT_MAX:
+	case OPENAPI_FORMAT_INVALID:
+		/* Should never happen but avoid crashing clients */
+		xassert(false);
+		data_set_null(dst);
+	};
+}
+
 static int _dump_linked(args_t *args, const parser_t *const array,
 			const parser_t *const parser, void *src, data_t *dst)
 {
@@ -1399,33 +1497,7 @@ static int _dump_linked(args_t *args, const parser_t *const array,
 			 (uintptr_t) src, (uintptr_t) dst,
 			 array->key, (uintptr_t) dst);
 
-		switch (rparser->obj_openapi) {
-			case OPENAPI_FORMAT_INT:
-			case OPENAPI_FORMAT_INT32:
-			case OPENAPI_FORMAT_INT64:
-				data_set_int(dst, 0);
-				break;
-			case OPENAPI_FORMAT_NUMBER:
-			case OPENAPI_FORMAT_FLOAT:
-			case OPENAPI_FORMAT_DOUBLE:
-				data_set_float(dst, 0);
-				break;
-			case OPENAPI_FORMAT_STRING:
-			case OPENAPI_FORMAT_PASSWORD:
-				data_set_string(dst, "");
-				break;
-			case OPENAPI_FORMAT_BOOL:
-				data_set_bool(dst, false);
-			case OPENAPI_FORMAT_OBJECT:
-				data_set_dict(dst);
-				break;
-			case OPENAPI_FORMAT_ARRAY:
-				data_set_list(dst);
-				break;
-			case OPENAPI_FORMAT_MAX:
-			case OPENAPI_FORMAT_INVALID:
-				fatal_abort("invalid type");
-		};
+		_dump_removed(rparser, dst, args);
 
 		return SLURM_SUCCESS;
 	}
@@ -1439,6 +1511,10 @@ static int _dump_linked(args_t *args, const parser_t *const array,
 
 		for (int i = 0; i < parser->flag_bit_array_count; i++) {
 			const flag_bit_t *bit = &parser->flag_bit_array[i];
+
+			if (bit->hidden)
+				continue;
+
 			data_t *bit_dst = data_define_dict_path(dst, bit->name);
 
 			xassert(src);
@@ -1505,7 +1581,8 @@ extern int dump(void *src, ssize_t src_bytes, const parser_t *const parser,
 	 * Make sure the source object is the same size since there is no
 	 * way to dump value of __typeof__ as a value in C.
 	 */
-	xassert((src_bytes == NO_VAL) || (src_bytes == parser->size));
+	xassert((src_bytes == NO_VAL) || (src_bytes == parser->size) ||
+		(parser->model == PARSER_MODEL_ALIAS));
 
 	if (args->flags & FLAG_SPEC_ONLY) {
 		set_openapi_schema(dst, parser, args);
@@ -1516,6 +1593,10 @@ extern int dump(void *src, ssize_t src_bytes, const parser_t *const parser,
 		goto done;
 
 	switch (parser->model) {
+	case PARSER_MODEL_REMOVED:
+		_dump_removed(parser, dst, args);
+		rc = SLURM_SUCCESS;
+		break;
 	case PARSER_MODEL_FLAG_ARRAY:
 		verify_parser_not_sliced(parser);
 		xassert((data_get_type(dst) == DATA_TYPE_NULL) ||
@@ -1543,7 +1624,7 @@ extern int dump(void *src, ssize_t src_bytes, const parser_t *const parser,
 		verify_parser_not_sliced(parser);
 		xassert((data_get_type(dst) == DATA_TYPE_NULL) ||
 			(data_get_type(dst) == DATA_TYPE_LIST));
-		xassert((src_bytes == NO_VAL) || (src_bytes == sizeof(List)));
+		xassert((src_bytes == NO_VAL) || (src_bytes == sizeof(list_t *)));
 		xassert(!parser->dump);
 		rc = _dump_list(parser, src, dst, args);
 		break;
@@ -1578,6 +1659,10 @@ extern int dump(void *src, ssize_t src_bytes, const parser_t *const parser,
 
 		rc = parser->dump(parser, src, dst, args);
 		_check_dump(parser, dst, args);
+		break;
+	case PARSER_MODEL_ALIAS:
+		rc = dump(src, src_bytes,
+			  find_parser_by_type(parser->alias_type), dst, args);
 		break;
 	case PARSER_MODEL_ARRAY_LINKED_EXPLODED_FLAG_ARRAY_FIELD:
 	case PARSER_MODEL_ARRAY_LINKED_FIELD:

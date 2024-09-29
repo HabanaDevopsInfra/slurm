@@ -64,6 +64,7 @@ typedef struct step_format {
 } step_format_t;
 
 typedef struct squeue_job_rec {
+	uint32_t job_prio;
 	job_info_t *	job_ptr;
 	char *		part_name;
 	uint32_t	part_prio;
@@ -74,10 +75,12 @@ long job_time_used(job_info_t * job_ptr);
 extern void print_jobs_array(job_info_t *jobs, int size, list_t *format);
 extern void print_steps_array(job_step_info_t *steps, int size, list_t *format);
 
+extern void squeue_filter_jobs_for_json(job_info_msg_t *job_info);
+
 /*****************************************************************************
  * Job Line Format Options
  *****************************************************************************/
-int job_format_add_function(List list, int width, bool right_justify,
+int job_format_add_function(list_t *list, int width, bool right_justify,
 			    char *suffix,
 			    int (*function) (job_info_t *, int, bool, char*));
 #define job_format_add_prefix(list,wid,right,prefix) \
@@ -329,7 +332,7 @@ int _print_job_het_job_id_set(job_info_t * job, int width,
 /*****************************************************************************
  * Step Print Format Functions
  *****************************************************************************/
-int step_format_add_function(List list, int width, bool right_justify,
+int step_format_add_function(list_t *list, int width, bool right_justify,
 			     char * suffix,
 		int (*function) (job_step_info_t *, int, bool, char *));
 

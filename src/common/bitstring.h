@@ -44,8 +44,7 @@
  * A bitstr_t is an array of configurable size words.  The first two words
  * are for internal use.  Word 0 is a magic cookie used to validate that the
  * bitstr_t is properly initialized.  Word 1 is the number of valid bits in
- * the bitstr_t This limts the capacity of a bitstr_t to 4 gigabits if using
- * 32 bit words.
+ * the bitstr_t.
  *
  * bitstrings are zero origin
  *
@@ -138,16 +137,13 @@ void	bit_rotate(bitstr_t *b1, int32_t n);
 char	*bit_fmt(char *str, int32_t len, bitstr_t *b);
 char    *bit_fmt_full(bitstr_t *b);
 char    *bit_fmt_range(bitstr_t *b, int offset, int len);
-int	bit_unfmt(bitstr_t *b, char *str);
-int32_t	*bitfmt2int (char *bit_str_ptr);
-char *  inx2bitfmt (int32_t *inx);
+extern int bit_unfmt(bitstr_t *b, const char *str);
+extern int32_t *bitfmt2int(const char *bit_str_ptr);
 int     inx2bitstr(bitstr_t *b, int32_t *inx);
 int32_t *bitstr2inx(bitstr_t *b);
 char	*bit_fmt_hexmask(bitstr_t *b);
 char    *bit_fmt_hexmask_trim(bitstr_t *b);
 int 	bit_unfmt_hexmask(bitstr_t *b, const char *str);
-char	*bit_fmt_binmask(bitstr_t *b);
-void 	bit_unfmt_binmask(bitstr_t *b, const char *str);
 bitoff_t bit_ffs_from_bit(bitstr_t *b, bitoff_t bit);
 bitoff_t bit_fls(bitstr_t *b);
 bitoff_t bit_fls_from_bit(bitstr_t *b, bitoff_t bit);
@@ -158,6 +154,8 @@ int     bit_overlap_any(bitstr_t *b1, bitstr_t *b2);
 int     bit_equal(bitstr_t *b1, bitstr_t *b2);
 void    bit_copybits(bitstr_t *dest, bitstr_t *src);
 bitstr_t *bit_copy(bitstr_t *b);
+bitoff_t bit_nth_set(bitstr_t *b, bitoff_t n);
+void bit_pick_firstn(bitstr_t *b, bitoff_t n);
 bitstr_t *bit_pick_cnt(bitstr_t *b, bitoff_t nbits);
 bitoff_t bit_get_bit_num(bitstr_t *b, int32_t pos);
 

@@ -1,6 +1,6 @@
 # Makefile for gpu plugins
 
-SUBDIRS = common generic
+SUBDIRS = common generic nrt nvidia
 
 if BUILD_RSMI
 SUBDIRS += rsmi
@@ -17,5 +17,3 @@ endif
 if BUILD_HLML
 SUBDIRS += hlml
 endif
-
-SUBDIRS += nrt

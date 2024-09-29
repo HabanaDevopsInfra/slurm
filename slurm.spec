@@ -1,5 +1,5 @@
 Name:		slurm
-Version:	24.08.0
+Version:	24.11.0
 %define rel	0rc1
 Release:	%{rel}%{?dist}
 Summary:	Slurm Workload Manager
@@ -88,6 +88,7 @@ BuildRequires:  pkgconfig
 %endif
 
 Requires: munge
+Requires: bash-completion
 
 %{?systemd_requires}
 BuildRequires: systemd
@@ -140,7 +141,7 @@ BuildRequires: perl(ExtUtils::MakeMaker)
 BuildRequires: pkgconfig(lua) >= 5.1.0
 %endif
 
-%if %{with hwloc}
+%if %{with hwloc} && "%{_with_hwloc}" == "--with-hwloc"
 BuildRequires: hwloc-devel
 %endif
 
@@ -388,6 +389,7 @@ Provides a REST interface to Slurm.
 	%{?_with_pmix} \
 	%{?_with_freeipmi} \
 	%{?_with_hdf5} \
+	%{?_with_hwloc} \
 	%{?_with_shared_libslurm} \
 	%{!?_with_slurmrestd:--disable-slurmrestd} \
 	%{?_without_x11:--disable-x11} \
@@ -455,29 +457,31 @@ rm -f %{buildroot}/%{_perlarchlibdir}/perllocal.pod
 rm -f %{buildroot}/%{_perldir}/perllocal.pod
 rm -f %{buildroot}/%{_perldir}/auto/Slurmdb/.packlist
 rm -f %{buildroot}/%{_perldir}/auto/Slurmdb/Slurmdb.bs
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/sacct
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/sacctmgr
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/salloc
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/sattach
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/sbatch
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/sbcast
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/scancel
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/scontrol
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/scrontab
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/sdiag
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/sinfo
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/slurmrestd
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/sprio
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/squeue
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/sreport
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/srun
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/sshare
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/sstat
+rm -f %{buildroot}/%{_datadir}/bash-completion/completions/strigger
 
 # Build man pages that are generated directly by the tools
 rm -f %{buildroot}/%{_mandir}/man1/sjobexitmod.1
 %{buildroot}/%{_bindir}/sjobexitmod --roff > %{buildroot}/%{_mandir}/man1/sjobexitmod.1
 rm -f %{buildroot}/%{_mandir}/man1/sjstat.1
 %{buildroot}/%{_bindir}/sjstat --roff > %{buildroot}/%{_mandir}/man1/sjstat.1
-
-# Build conditional file list for main package
-LIST=./slurm.files
-touch $LIST
-test -f %{buildroot}/%{_libexecdir}/slurm/cr_checkpoint.sh   &&
-  echo %{_libexecdir}/slurm/cr_checkpoint.sh	        >> $LIST
-test -f %{buildroot}/%{_libexecdir}/slurm/cr_restart.sh      &&
-  echo %{_libexecdir}/slurm/cr_restart.sh	        >> $LIST
-test -f %{buildroot}/%{_sbindir}/capmc_suspend		&&
-  echo %{_sbindir}/capmc_suspend			>> $LIST
-test -f %{buildroot}/%{_sbindir}/capmc_resume		&&
-  echo %{_sbindir}/capmc_resume				>> $LIST
-
-test -f %{buildroot}/opt/modulefiles/slurm/%{version}-%{rel} &&
-  echo /opt/modulefiles/slurm/%{version}-%{rel} >> $LIST
-test -f %{buildroot}/opt/modulefiles/slurm/.version &&
-  echo /opt/modulefiles/slurm/.version >> $LIST
 
 LIST=./pam.files
 touch $LIST
@@ -506,7 +510,7 @@ touch $LIST
 rm -rf %{buildroot}
 #############################################################################
 
-%files -f slurm.files
+%files
 %defattr(-,root,root,0755)
 %{_datadir}/doc
 %{_bindir}/s*
@@ -525,6 +529,7 @@ rm -rf %{buildroot}
 %exclude %{_mandir}/man1/sjobexit*
 %exclude %{_mandir}/man1/sjstat*
 %dir %{_libdir}/slurm/src
+%{_datadir}/bash-completion/completions/slurm_completion.sh
 #############################################################################
 
 %files example-configs
@@ -646,11 +651,51 @@ rm -rf %{buildroot}
 
 %post
 /sbin/ldconfig
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,sacct}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,sacctmgr}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,salloc}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,sattach}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,sbatch}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,sbcast}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,scancel}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,scontrol}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,scrontab}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,sdiag}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,sinfo}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,slurmrestd}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,sprio}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,squeue}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,sreport}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,srun}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,sshare}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,sstat}
+ln -sf %{_datadir}/bash-completion/completions/{slurm_completion.sh,strigger}
 
 %preun
 
 %postun
 /sbin/ldconfig
+if [ $1 -eq 0 ]; then
+	rm -f %{_datadir}/bash-completion/completions/sacct
+	rm -f %{_datadir}/bash-completion/completions/sacctmgr
+	rm -f %{_datadir}/bash-completion/completions/salloc
+	rm -f %{_datadir}/bash-completion/completions/sattach
+	rm -f %{_datadir}/bash-completion/completions/sbatch
+	rm -f %{_datadir}/bash-completion/completions/sbcast
+	rm -f %{_datadir}/bash-completion/completions/scancel
+	rm -f %{_datadir}/bash-completion/completions/scontrol
+	rm -f %{_datadir}/bash-completion/completions/scrontab
+	rm -f %{_datadir}/bash-completion/completions/sdiag
+	rm -f %{_datadir}/bash-completion/completions/sinfo
+	rm -f %{_datadir}/bash-completion/completions/slurmrestd
+	rm -f %{_datadir}/bash-completion/completions/sprio
+	rm -f %{_datadir}/bash-completion/completions/squeue
+	rm -f %{_datadir}/bash-completion/completions/sreport
+	rm -f %{_datadir}/bash-completion/completions/srun
+	rm -f %{_datadir}/bash-completion/completions/sshare
+	rm -f %{_datadir}/bash-completion/completions/sstat
+	rm -f %{_datadir}/bash-completion/completions/strigger
+fi
 
 %post sackd
 %systemd_post sackd.service

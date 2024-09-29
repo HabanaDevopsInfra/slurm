@@ -38,8 +38,9 @@
 #include "select_cons_tres.h"
 
 #include "src/slurmctld/slurmctld.h"
-#include "src/slurmctld/gres_ctld.h"
 #include "src/slurmctld/licenses.h"
+
+#include "src/stepmgr/gres_stepmgr.h"
 
 bool select_state_initializing = true;
 
@@ -74,9 +75,6 @@ static int _handle_job_res(job_resources_t *job_resrcs_ptr,
 {
 	int c, c_off = 0;
 	bitstr_t **core_array;
-	bitstr_t *use_core_array;
-	uint32_t core_begin;
-	uint32_t core_end;
 	uint16_t cores_per_node;
 	node_record_t *node_ptr;
 
@@ -100,17 +98,13 @@ static int _handle_job_res(job_resources_t *job_resrcs_ptr,
 	     i++) {
 		cores_per_node = node_ptr->tot_cores;
 
-		core_begin = 0;
-		core_end = node_record_table_ptr[i]->tot_cores;
-		use_core_array = core_array[i];
-
 		/*
 		 * This segment properly handles the core counts when whole
 		 * nodes are allocated, including when explicitly requesting
 		 * specialized cores.
 		 */
 		if (job_resrcs_ptr->whole_node == 1) {
-			if (!use_core_array) {
+			if (!core_array[i]) {
 				if (type != HANDLE_JOB_RES_TEST)
 					error("core_array for node %d is NULL %d",
 					      i, type);
@@ -119,17 +113,15 @@ static int _handle_job_res(job_resources_t *job_resrcs_ptr,
 
 			switch (type) {
 			case HANDLE_JOB_RES_ADD:
-				bit_nset(use_core_array,
-					 core_begin, core_end-1);
-				r_ptr->row_set_count += (core_end - core_begin);
+				bit_set_all(core_array[i]);
+				r_ptr->row_set_count += cores_per_node;
 				break;
 			case HANDLE_JOB_RES_REM:
-				bit_nclear(use_core_array,
-					   core_begin, core_end-1);
-				r_ptr->row_set_count -= (core_end - core_begin);
+				bit_clear_all(core_array[i]);
+				r_ptr->row_set_count -= cores_per_node;
 				break;
 			case HANDLE_JOB_RES_TEST:
-				if (bit_ffs(use_core_array) != -1)
+				if (bit_ffs(core_array[i]) != -1)
 					return 0;
 				break;
 			}
@@ -139,7 +131,7 @@ static int _handle_job_res(job_resources_t *job_resrcs_ptr,
 		for (c = 0; c < cores_per_node; c++) {
 			if (!bit_test(job_resrcs_ptr->core_bitmap, c_off + c))
 				continue;
-			if (!use_core_array) {
+			if (!core_array[i]) {
 				if (type != HANDLE_JOB_RES_TEST)
 					error("core_array for node %d is NULL %d",
 					      i, type);
@@ -147,15 +139,15 @@ static int _handle_job_res(job_resources_t *job_resrcs_ptr,
 			}
 			switch (type) {
 			case HANDLE_JOB_RES_ADD:
-				bit_set(use_core_array, core_begin + c);
+				bit_set(core_array[i], c);
 			        r_ptr->row_set_count++;
 				break;
 			case HANDLE_JOB_RES_REM:
-				bit_clear(use_core_array, core_begin + c);
+				bit_clear(core_array[i], c);
 				r_ptr->row_set_count--;
 				break;
 			case HANDLE_JOB_RES_TEST:
-				if (bit_test(use_core_array, core_begin + c))
+				if (bit_test(core_array[i], c))
 					return 0;    /* Core conflict on node */
 				break;
 			}
@@ -172,28 +164,24 @@ static void _log_tres_state(node_use_record_t *node_usage,
 #if _DEBUG
 	node_record_t *node_ptr;
 	part_res_record_t *p_ptr;
-	part_row_data_t *row;
-	char *core_str;
 	int i;
 
-	for (i = 0; (node_ptr = next_node, &i)); i++) {
-		info("Node:%s State:%s AllocMem:%"PRIu64" of %"PRIu64,
-		     node_ptr[i]->name,
-		     _node_state_str(node_usage[i].node_state),
+	for (i = 0; (node_ptr = next_node(&i)); i++) {
+		list_t *gres_list;
+		info("Node:%s AllocMem:%"PRIu64" of %"PRIu64,
+		     node_ptr->name,
 		     node_usage[i].alloc_memory,
-		     node_ptr[i]->real_memory);
+		     node_ptr->real_memory);
+		if (node_usage[node_ptr->index].gres_list)
+			gres_list = select_node_usage[node_ptr->index].
+					gres_list;
+		else
+			gres_list = node_ptr->gres_list;
+		if (gres_list)
+			gres_node_state_log(gres_list, node_ptr->name);
 	}
-
 	for (p_ptr = part_record_ptr; p_ptr; p_ptr = p_ptr->next) {
-		info("Part:%s Rows:%u", p_ptr->part_ptr->name, p_ptr->num_rows);
-		if (!(row = p_ptr->row))	/* initial/unused state */
-			continue;
-		for (i = 0; i < p_ptr->num_rows; i++) {
-			core_str = _build_core_str(row[i].row_bitmap);
-			info("  Row:%d Jobs:%u Cores:%s",
-			     i, row[i].num_jobs, core_str);
-			xfree(core_str);
-		}
+		part_data_dump_res(p_ptr);
 	}
 #endif
 }
@@ -281,7 +269,7 @@ extern int job_res_add_job(job_record_t *job_ptr, job_res_job_action_t action)
 	struct job_resources *job = job_ptr->job_resrcs;
 	node_record_t *node_ptr;
 	part_res_record_t *p_ptr;
-	List node_gres_list;
+	list_t *node_gres_list;
 	int i, n;
 	bitstr_t *core_bitmap;
 	bool new_alloc = true;
@@ -313,15 +301,16 @@ extern int job_res_add_job(job_record_t *job_ptr, job_res_job_action_t action)
 				node_gres_list = node_ptr->gres_list;
 			core_bitmap = copy_job_resources_node(job, n);
 			if (job_ptr->details &&
-			    (job_ptr->details->whole_node == 1))
-				gres_ctld_job_alloc_whole_node(
+			    (job_ptr->details->whole_node &
+			     WHOLE_NODE_REQUIRED))
+				gres_stepmgr_job_alloc_whole_node(
 					job_ptr->gres_list_req,
 					&job_ptr->gres_list_alloc,
 					node_gres_list, job->nhosts,
 					i, n, job_ptr->job_id,
 					node_ptr->name, core_bitmap, new_alloc);
 			else
-				gres_ctld_job_alloc(
+				gres_stepmgr_job_alloc(
 					job_ptr->gres_list_req,
 					&job_ptr->gres_list_alloc,
 					node_gres_list, job->nhosts,
@@ -347,11 +336,11 @@ extern int job_res_add_job(job_record_t *job_ptr, job_res_job_action_t action)
 	}
 
 	if (action != JOB_RES_ACTION_RESUME) {
-		gres_ctld_job_build_details(job_ptr->gres_list_alloc,
-					    job_ptr->nodes,
-					    &job_ptr->gres_detail_cnt,
-					    &job_ptr->gres_detail_str,
-					    &job_ptr->gres_used);
+		gres_stepmgr_job_build_details(job_ptr->gres_list_alloc,
+					       job_ptr->nodes,
+					       &job_ptr->gres_detail_cnt,
+					       &job_ptr->gres_detail_str,
+					       &job_ptr->gres_used);
 	}
 
 	/* add cores */
@@ -370,6 +359,10 @@ extern int job_res_add_job(job_record_t *job_ptr, job_res_job_action_t action)
 			      part_name);
 			return SLURM_ERROR;
 		}
+
+		if (p_ptr->rebuild_rows)
+			part_data_build_row_bitmaps(p_ptr, NULL);
+
 		if (!p_ptr->row) {
 			p_ptr->row = xcalloc(p_ptr->num_rows,
 					     sizeof(part_row_data_t));
@@ -403,6 +396,10 @@ extern int job_res_add_job(job_record_t *job_ptr, job_res_job_action_t action)
 			if (job->cpus[n] == 0)
 				continue;  /* node lost by job resize */
 			select_node_usage[i].node_state += job->node_req;
+			if (!select_node_usage[i].jobs)
+				select_node_usage[i].jobs = list_create(NULL);
+			if (action == JOB_RES_ACTION_NORMAL)
+				list_append(select_node_usage[i].jobs, job_ptr);
 		}
 		if (slurm_conf.debug_flags & DEBUG_FLAG_SELECT_TYPE) {
 			info("DEBUG: (after):");
@@ -479,17 +476,18 @@ extern int job_res_rm_job(part_res_record_t *part_record_ptr,
 			continue;  /* node lost by job resize */
 
 		if (action != JOB_RES_ACTION_RESUME) {
-			List node_gres_list;
+			list_t *node_gres_list;
 
 			if (node_usage[i].gres_list)
 				node_gres_list = node_usage[i].gres_list;
 			else
 				node_gres_list = node_ptr->gres_list;
 
-			gres_ctld_job_dealloc(job_ptr->gres_list_alloc,
-					      node_gres_list,
-					      n, job_ptr->job_id,
-					      node_ptr->name, old_job, false);
+			gres_stepmgr_job_dealloc(job_ptr->gres_list_alloc,
+						 node_gres_list,
+						 n, job_ptr->job_id,
+						 node_ptr->name, old_job,
+						 false);
 			gres_node_state_log(node_gres_list, node_ptr->name);
 
 			if (node_usage[i].alloc_memory <
@@ -560,8 +558,11 @@ extern int job_res_rm_job(part_res_record_t *part_record_ptr,
 			}
 		}
 		if (n) {
-			/* job was found and removed, so refresh the bitmaps */
-			part_data_build_row_bitmaps(p_ptr, job_ptr);
+			/* job was found and removed, so bitmaps need be rebuild */
+			if (p_ptr->num_rows == 1)
+				part_data_build_row_bitmaps(p_ptr, job_ptr);
+			else
+				p_ptr->rebuild_rows = true;
 			/*
 			 * Adjust the node_state of all nodes affected by
 			 * the removal of this job. If all cores are now
@@ -588,6 +589,12 @@ extern int job_res_rm_job(part_res_record_t *part_record_ptr,
 					node_usage[i].node_state =
 						NODE_CR_AVAILABLE;
 				}
+				if ((action == JOB_RES_ACTION_NORMAL) &&
+				    node_usage[i].jobs)
+					list_delete_first(
+						node_usage[i].jobs,
+						slurm_find_ptr_in_list,
+						job_ptr);
 			}
 		}
 	}

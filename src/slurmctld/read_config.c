@@ -56,6 +56,7 @@
 #include "src/common/hostlist.h"
 #include "src/common/list.h"
 #include "src/common/macros.h"
+#include "src/common/port_mgr.h"
 #include "src/common/read_config.h"
 #include "src/common/slurm_rlimits_info.h"
 #include "src/common/strnatcmp.h"
@@ -83,27 +84,28 @@
 #include "src/slurmctld/licenses.h"
 #include "src/slurmctld/locks.h"
 #include "src/slurmctld/node_scheduler.h"
-#include "src/slurmctld/port_mgr.h"
 #include "src/slurmctld/power_save.h"
 #include "src/slurmctld/proc_req.h"
 #include "src/slurmctld/read_config.h"
 #include "src/slurmctld/reservation.h"
 #include "src/slurmctld/slurmctld.h"
-#include "src/slurmctld/srun_comm.h"
 #include "src/slurmctld/trigger_mgr.h"
+
+#include "src/stepmgr/srun_comm.h"
+#include "src/stepmgr/stepmgr.h"
 
 #define FEATURE_MAGIC	0x34dfd8b5
 
 /* Global variables */
-List active_feature_list;	/* list of currently active features_records */
-List avail_feature_list;	/* list of available features_records */
+list_t *active_feature_list;	/* list of currently active features_records */
+list_t *avail_feature_list;	/* list of available features_records */
 bool node_features_updated = true;
 bool slurmctld_init_db = true;
 
 static void _acct_restore_active_jobs(void);
-static void _add_config_feature(List feature_list, char *feature,
+static void _add_config_feature(list_t *feature_list, char *feature,
 				bitstr_t *node_bitmap);
-static void _add_config_feature_inx(List feature_list, char *feature,
+static void _add_config_feature_inx(list_t *feature_list, char *feature,
 				    int node_inx);
 static void _build_bitmaps(void);
 static void _gres_reconfig(void);
@@ -204,12 +206,7 @@ static int _sort_nodes_by_rank(const void *a, const void *b)
 	if (!n2)
 		return -1;
 
-	if (n1->node_rank < n2->node_rank)
-		return -1;
-	else if (n1->node_rank > n2->node_rank)
-		return 1;
-
-	return 0;
+	return slurm_sort_uint32_list_asc(&n1->node_rank, &n2->node_rank);
 }
 
 /*
@@ -372,7 +369,9 @@ static void _init_bitmaps(void)
 	FREE_NULL_BITMAP(cloud_node_bitmap);
 	FREE_NULL_BITMAP(future_node_bitmap);
 	FREE_NULL_BITMAP(idle_node_bitmap);
-	FREE_NULL_BITMAP(power_node_bitmap);
+	FREE_NULL_BITMAP(power_down_node_bitmap);
+	FREE_NULL_BITMAP(power_up_node_bitmap);
+	FREE_NULL_BITMAP(reconfig_node_bitmap);
 	FREE_NULL_BITMAP(rs_node_bitmap);
 	FREE_NULL_BITMAP(share_node_bitmap);
 	FREE_NULL_BITMAP(up_node_bitmap);
@@ -383,7 +382,9 @@ static void _init_bitmaps(void)
 	cloud_node_bitmap = bit_alloc(node_record_count);
 	future_node_bitmap = bit_alloc(node_record_count);
 	idle_node_bitmap = bit_alloc(node_record_count);
-	power_node_bitmap = bit_alloc(node_record_count);
+	power_down_node_bitmap = bit_alloc(node_record_count);
+	power_up_node_bitmap = bit_alloc(node_record_count);
+	reconfig_node_bitmap = bit_alloc(node_record_count);
 	rs_node_bitmap = bit_alloc(node_record_count);
 	share_node_bitmap = bit_alloc(node_record_count);
 	up_node_bitmap = bit_alloc(node_record_count);
@@ -557,6 +558,8 @@ static void _build_bitmaps(void)
 		drain_flag = IS_NODE_DRAIN(node_ptr) |
 			     IS_NODE_FAIL(node_ptr);
 		job_cnt = node_ptr->run_job_cnt + node_ptr->comp_job_cnt;
+		if (!IS_NODE_FUTURE(node_ptr))
+			bit_set(power_up_node_bitmap, node_ptr->index);
 
 		if ((IS_NODE_IDLE(node_ptr) && (job_cnt == 0)) ||
 		    IS_NODE_DOWN(node_ptr))
@@ -578,10 +581,13 @@ static void _build_bitmaps(void)
 				make_node_avail(node_ptr);
 			bit_set(up_node_bitmap, node_ptr->index);
 		}
-		if (IS_NODE_POWERED_DOWN(node_ptr))
-			bit_set(power_node_bitmap, node_ptr->index);
+		if (IS_NODE_POWERED_DOWN(node_ptr)) {
+			bit_set(power_down_node_bitmap, node_ptr->index);
+			bit_clear(power_up_node_bitmap, node_ptr->index);
+		}
 		if (IS_NODE_POWERING_DOWN(node_ptr)) {
-			bit_set(power_node_bitmap, node_ptr->index);
+			bit_set(power_down_node_bitmap, node_ptr->index);
+			bit_clear(power_up_node_bitmap, node_ptr->index);
 			bit_clear(avail_node_bitmap, node_ptr->index);
 		}
 		if (IS_NODE_FUTURE(node_ptr))
@@ -682,7 +688,7 @@ static void _handle_all_downnodes(void)
 }
 
 /*
- * Convert a comma delimited string of account names into a List containing
+ * Convert a comma delimited string of account names into a list containing
  * pointers to those associations.
  */
 extern list_t *accounts_list_build(char *accounts, bool locked)
@@ -797,7 +803,7 @@ static int _build_single_partitionline_info(slurm_conf_partition_t *part)
 		fatal("%s: duplicate entry for partition %s",
 		      __func__, part->name);
 
-	part_ptr = create_part_record(part->name);
+	part_ptr = create_ctld_part_record(part->name);
 
 	if (part->default_flag) {
 		if (default_part_name &&
@@ -818,7 +824,7 @@ static int _build_single_partitionline_info(slurm_conf_partition_t *part)
 		part_ptr->preempt_mode = part->preempt_mode;
 
 	if (part->disable_root_jobs == NO_VAL8) {
-		if (slurm_conf.conf_flags & CTL_CONF_DRJ)
+		if (slurm_conf.conf_flags & CONF_FLAG_DRJ)
 			part_ptr->flags |= PART_FLAG_NO_ROOT;
 	} else if (part->disable_root_jobs) {
 		part_ptr->flags |= PART_FLAG_NO_ROOT;
@@ -837,6 +843,8 @@ static int _build_single_partitionline_info(slurm_conf_partition_t *part)
 
 	if (part->exclusive_user)
 		part_ptr->flags |= PART_FLAG_EXCLUSIVE_USER;
+	if (part->exclusive_topo)
+		part_ptr->flags |= PART_FLAG_EXCLUSIVE_TOPO;
 	if (part->hidden_flag)
 		part_ptr->flags |= PART_FLAG_HIDDEN;
 	if (part->power_down_on_idle)
@@ -1263,7 +1271,7 @@ void _sync_jobs_to_conf(void)
 	list_itr_t *job_iterator;
 	job_record_t *job_ptr;
 	part_record_t *part_ptr;
-	List part_ptr_list = NULL;
+	list_t *part_ptr_list = NULL;
 	bool job_fail = false;
 	time_t now = time(NULL);
 	bool gang_flag = false;
@@ -1496,8 +1504,10 @@ extern int read_slurm_conf(int recover)
 	char *old_select_type = xstrdup(slurm_conf.select_type);
 	char *old_switch_type = xstrdup(slurm_conf.switch_type);
 	char *state_save_dir = xstrdup(slurm_conf.state_save_location);
+	char *tmp_ptr = NULL;
 	uint16_t old_select_type_p = slurm_conf.select_type_param;
 	bool cgroup_mem_confinement = false;
+	uint16_t reconfig_flags = slurm_conf.reconfig_flags;
 
 	/* initialization */
 	START_TIMER;
@@ -1520,6 +1530,10 @@ extern int read_slurm_conf(int recover)
 
 	if (topology_g_init() != SLURM_SUCCESS)
 		fatal("Failed to initialize topology plugin");
+
+	if (xstrcasestr(slurm_conf.slurmctld_params, "enable_stepmgr") &&
+	    !(slurm_conf.prolog_flags & PROLOG_FLAG_CONTAIN))
+		fatal("STEP_MGR not supported without PrologFlags=contain");
 
 	/* Build node and partition information based upon slurm.conf file */
 	build_all_nodeline_info(false, slurmctld_tres_cnt);
@@ -1562,9 +1576,6 @@ extern int read_slurm_conf(int recover)
 		(slurm_conf.preempt_mode & PREEMPT_MODE_GANG)) != SLURM_SUCCESS) {
 		fatal("Failed to initialize the various schedulers");
 	}
-
-	if (switch_init(1) != SLURM_SUCCESS)
-		fatal("Failed to initialize switch plugin");
 
 	if (default_part_loc == NULL)
 		error("%s: default partition not set.", __func__);
@@ -1625,9 +1636,10 @@ extern int read_slurm_conf(int recover)
 	} else if (recover == 1) {	/* Load job & node state files */
 		load_job_ret = load_all_job_state();
 	} else if (recover > 1) {	/* Load node, part & job state files */
-		(void) load_all_part_state();
+		reconfig_flags |= RECONFIG_KEEP_PART_INFO;
 		load_job_ret = load_all_job_state();
 	}
+	(void) load_all_part_state(reconfig_flags);
 
 	/*
 	 * _build_node_config_bitmaps() must be called before
@@ -1681,7 +1693,7 @@ extern int read_slurm_conf(int recover)
 	(void) _sync_nodes_to_jobs();
 	(void) sync_job_files();
 
-	reserve_port_config(slurm_conf.mpi_params);
+	reserve_port_config(slurm_conf.mpi_params, job_list);
 
 	if (license_update(slurm_conf.licenses) != SLURM_SUCCESS)
 		fatal("Invalid Licenses value: %s", slurm_conf.licenses);
@@ -1796,6 +1808,12 @@ extern int read_slurm_conf(int recover)
 
 	consolidate_config_list(true, true);
 	cloud_dns = xstrcasestr(slurm_conf.slurmctld_params, "cloud_dns");
+	if ((tmp_ptr = xstrcasestr(slurm_conf.slurmctld_params,
+				   "max_powered_nodes="))) {
+		max_powered_nodes =
+			strtol(tmp_ptr + strlen("max_powered_nodes="),
+			       NULL, 10);
+	}
 
 	slurm_conf.last_update = time(NULL);
 end_it:
@@ -1819,7 +1837,7 @@ end_it:
  *	avail_feature_list
  * feature IN - name of the feature to add
  * node_bitmap IN - bitmap of nodes with named feature */
-static void _add_config_feature(List feature_list, char *feature,
+static void _add_config_feature(list_t *feature_list, char *feature,
 				bitstr_t *node_bitmap)
 {
 	node_feature_t *feature_ptr;
@@ -1851,7 +1869,7 @@ static void _add_config_feature(List feature_list, char *feature,
  *	avail_feature_list
  * feature IN - name of the feature to add
  * node_inx IN - index of the node with named feature */
-static void _add_config_feature_inx(List feature_list, char *feature,
+static void _add_config_feature_inx(list_t *feature_list, char *feature,
 				    int node_inx)
 {
 	node_feature_t *feature_ptr;
@@ -2004,11 +2022,11 @@ extern void build_feature_list_ne(void)
 
 /*
  * Update active_feature_list or avail_feature_list
- * feature_list IN - List to update: active_feature_list or avail_feature_list
+ * feature_list IN - list to update: active_feature_list or avail_feature_list
  * new_features IN - New active_features
  * node_bitmap IN - Nodes with the new active_features value
  */
-extern void update_feature_list(List feature_list, char *new_features,
+extern void update_feature_list(list_t *feature_list, char *new_features,
 				bitstr_t *node_bitmap)
 {
 	node_feature_t *feature_ptr;
@@ -2058,16 +2076,18 @@ static void _gres_reconfig(void)
 		 * time, which can take a while for a node in the cloud
 		 * to boot.
 		 */
-		gres_g_node_config_load(
-			node_ptr->config_ptr->cpus, node_ptr->name,
-			node_ptr->gres_list, NULL, NULL);
+		if (gres_g_node_config_load(node_ptr->config_ptr->cpus,
+					    node_ptr->name, node_ptr->gres_list,
+					    NULL, NULL) != SLURM_SUCCESS)
+			continue; /* No need to validate if load failed */
+
 		gres_node_config_validate(
 			node_ptr->name, node_ptr->config_ptr->gres,
 			&node_ptr->gres, &node_ptr->gres_list,
 			node_ptr->config_ptr->threads,
 			node_ptr->config_ptr->cores,
 			node_ptr->config_ptr->tot_sockets,
-			slurm_conf.conf_flags & CTL_CONF_OR, NULL);
+			slurm_conf.conf_flags & CONF_FLAG_OR, NULL);
 	}
 }
 
@@ -2392,7 +2412,7 @@ static int _sync_nodes_to_active_job(job_record_t *job_ptr)
 	job_ptr->node_cnt = bit_set_count(node_bitmap);
 	for (int i = 0; (node_ptr = next_node_bitmap(node_bitmap, &i)); i++) {
 		if ((job_ptr->details &&
-		     (job_ptr->details->whole_node == WHOLE_NODE_USER)) ||
+		     (job_ptr->details->whole_node & WHOLE_NODE_USER)) ||
 		    (job_ptr->part_ptr &&
 		     (job_ptr->part_ptr->flags & PART_FLAG_EXCLUSIVE_USER))) {
 			node_ptr->owner_job_cnt++;
@@ -2502,7 +2522,7 @@ static void _restore_job_accounting(void)
 	job_record_t *job_ptr;
 	list_itr_t *job_iterator;
 	bool valid = true;
-	List license_list;
+	list_t *license_list = NULL;
 
 	assoc_mgr_clear_used_info();
 

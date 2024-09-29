@@ -49,6 +49,7 @@
 typedef enum {
 	TOPO_DATA_TOPOLOGY_PTR,
 	TOPO_DATA_REC_CNT,
+	TOPO_DATA_EXCLUSIVE_TOPO,
 } topology_data_t;
 
 
@@ -61,6 +62,7 @@ typedef struct topology_eval {
 	bool enforce_binding; /* Enforce GPU Binding or not */
 	int (*eval_nodes)(struct topology_eval *topo_eval);
 	bool first_pass; /* First pass through eval_nodes() or not */
+	bool gres_per_job; /* if gres_per_job was requested */
 	job_record_t *job_ptr; /* pointer to the job requesting resources */
 	uint32_t max_nodes; /* maximum number of nodes requested */
 	gres_mc_data_t *mc_ptr; /* job's GRES multi-core options */
@@ -115,6 +117,7 @@ extern int topology_g_build_config(void);
  */
 extern int topology_g_eval_nodes(topology_eval_t *topo_eval);
 
+extern int topology_g_whole_topo(bitstr_t *node_mask);
 /*
  * topology_g_generate_node_ranking  -  populate node_rank fields
  * NOTE: This operation is only supported by those topology plugins for

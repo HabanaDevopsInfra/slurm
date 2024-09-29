@@ -47,6 +47,8 @@
 #include <sys/ioctl.h>
 #include <termios.h>
 
+#include "slurm/slurm.h"
+
 #include "src/common/read_config.h"
 #include "src/common/slurm_time.h"
 #include "src/common/xstring.h"
@@ -58,7 +60,7 @@
 
 typedef struct {
 	int job_ids_count;
-	uint32_t *job_ids;
+	slurm_selected_step_t *job_ids;
 	int index;
 } job_state_args_t;
 
@@ -74,7 +76,7 @@ int max_line_size;
 static int _get_info(bool clear_old, bool log_cluster_name, int argc,
 		     char **argv);
 static int  _get_window_width( void );
-static int _multi_cluster(List clusters, int argc, char **argv);
+static int _multi_cluster(list_t *clusters, int argc, char **argv);
 static int _print_job(bool clear_old, bool log_cluster_name, int argc,
 		      char **argv);
 static int _print_job_steps(bool clear_old, int argc, char **argv);
@@ -121,7 +123,7 @@ main (int argc, char **argv)
 		exit (0);
 }
 
-static int _multi_cluster(List clusters, int argc, char **argv)
+static int _multi_cluster(list_t *clusters, int argc, char **argv)
 {
 	list_itr_t *itr;
 	bool log_cluster_name = false, first = true;
@@ -183,8 +185,12 @@ static int _foreach_add_job(void *x, void *arg)
 {
 	job_state_args_t *args = arg;
 	squeue_job_step_t *job_step_id = x;
+	slurm_selected_step_t *id = &args->job_ids[args->index];
 
-	args->job_ids[args->index] = job_step_id->step_id.job_id;
+	*id = (slurm_selected_step_t) SLURM_SELECTED_STEP_INITIALIZER;
+	/* FIXME: squeue_job_step_t doesn't include HetComponent */
+	id->array_task_id = job_step_id->array_id;
+	id->step_id = job_step_id->step_id;
 	args->index++;
 
 	return SLURM_SUCCESS;
@@ -235,11 +241,6 @@ static int _query_job_states(int argc, char **argv)
 		goto cleanup;
 	}
 
-	job_msg = xmalloc(sizeof(*job_msg));
-	job_msg->record_count = jsr->jobs_count;
-	job_msg->job_array = xcalloc(job_msg->record_count,
-				     sizeof(*job_msg->job_array));
-
 	if (!params.format && !params.format_long)
 		params.format = "%.18i %.2t";
 
@@ -253,22 +254,30 @@ static int _query_job_states(int argc, char **argv)
 			goto cleanup;
 	}
 
-	for (int i = 0; i < jsr->jobs_count; i++) {
-		job_state_response_job_t *src = &jsr->jobs[i];
-		slurm_job_info_t *job = &job_msg->job_array[i];
+	job_msg = xmalloc(sizeof(*job_msg));
+	if (jsr && (jsr->jobs_count > 0)) {
+		job_msg->record_count = jsr->jobs_count;
+		job_msg->job_array = xcalloc(job_msg->record_count,
+					     sizeof(*job_msg->job_array));
 
-		job->job_id = src->job_id;
+		for (int i = 0; i < jsr->jobs_count; i++) {
+			job_state_response_job_t *src = &jsr->jobs[i];
+			slurm_job_info_t *job = &job_msg->job_array[i];
 
-		if (src->array_job_id) {
-			_populate_array_job_states(src, job);
-		} else if ((job->het_job_id = src->het_job_id)) {
-			job->het_job_offset = (src->job_id - job->het_job_id);
-			job->array_task_id = NO_VAL;
-		} else {
-			job->array_task_id = NO_VAL;
+			job->job_id = src->job_id;
+
+			if (src->array_job_id) {
+				_populate_array_job_states(src, job);
+			} else if ((job->het_job_id = src->het_job_id)) {
+				job->het_job_offset =
+					(src->job_id - job->het_job_id);
+				job->array_task_id = NO_VAL;
+			} else {
+				job->array_task_id = NO_VAL;
+			}
+
+			job->job_state = src->state;
 		}
-
-		job->job_state = src->state;
 	}
 
 	print_jobs_array(job_msg->job_array, job_msg->record_count,
@@ -325,7 +334,7 @@ static int _print_job(bool clear_old, bool log_cluster_name, int argc,
 		}
 		if (error_code ==  SLURM_SUCCESS)
 			slurm_free_job_info_msg( old_job_ptr );
-		else if (slurm_get_errno () == SLURM_NO_CHANGE_IN_DATA) {
+		else if (errno == SLURM_NO_CHANGE_IN_DATA) {
 			error_code = SLURM_SUCCESS;
 			new_job_ptr = old_job_ptr;
 		}
@@ -350,6 +359,7 @@ static int _print_job(bool clear_old, bool log_cluster_name, int argc,
 
 	if (params.mimetype) {
 		int rc;
+		squeue_filter_jobs_for_json(new_job_ptr);
 		openapi_resp_job_info_msg_t resp = {
 			.jobs = new_job_ptr,
 			.last_backfill = new_job_ptr->last_backfill,
@@ -424,7 +434,7 @@ static int _print_job_steps(bool clear_old, int argc, char **argv)
 						 &new_step_ptr, show_flags);
 		if (error_code ==  SLURM_SUCCESS)
 			slurm_free_job_step_info_response_msg( old_step_ptr );
-		else if (slurm_get_errno () == SLURM_NO_CHANGE_IN_DATA) {
+		else if (errno == SLURM_NO_CHANGE_IN_DATA) {
 			error_code = SLURM_SUCCESS;
 			new_step_ptr = old_step_ptr;
 		}

@@ -19,7 +19,7 @@ def setup():
     atf.run_command(f"touch {gpu_file + '1'}")
     atf.run_command(f"touch {gpu_file + '2'}")
     atf.require_config_parameter(
-        "NodeName", f"node2 Name=gpu Cores=0-1 File={gpu_file}[1-2]", source="gres"
+        "NodeName", f"node1 Name=gpu Cores=0-1 File={gpu_file}[1-2]", source="gres"
     )
     atf.require_slurm_running()
 
@@ -30,12 +30,12 @@ def test_gpu_socket_sharing():
     output = atf.run_command_output(
         "srun --gres-flags=enforce-binding --ntasks-per-socket=1 \
                     --cpus-per-task=1 --ntasks-per-node=2 -N1 \
-                    --gpus-per-task=1 scontrol show nodes node2 -d",
+                    --gpus-per-task=1 scontrol show nodes node1 -d",
         timeout=2,
         fatal=True,
     )
     assert (
-        re.search("GresUsed=gpu.*:2", output) is not None
+        re.search(r"GresUsed=gpu.*:2", output) is not None
     ), "Expect 2 gpus used for job"
 
 
@@ -45,14 +45,14 @@ def test_gpu_socket_sharing_no_alloc():
     output = atf.run_command(
         "srun --gres-flags=enforce-binding --ntasks-per-socket=1 \
                     --cpus-per-task=2 --ntasks-per-node=2 -N1 \
-                    --gpus-per-task=1 scontrol show nodes node2 -d",
+                    --gpus-per-task=1 scontrol show nodes node1 -d",
         timeout=1,
         fatal=False,
     )
     assert output["exit_code"] != 0, "Expect command to timeout"
     assert (
         re.search(
-            "srun: job [0-9]+ queued and waiting for resources", str(output["stderr"])
+            r"srun: job [0-9]+ queued and waiting for resources", str(output["stderr"])
         )
         is not None
     ), "Expect command to wait on resources"

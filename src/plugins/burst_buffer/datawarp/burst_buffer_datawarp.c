@@ -817,7 +817,7 @@ static void _recover_bb_state(void)
 	char *state_file = NULL, *data = NULL;
 	int data_allocated, data_read = 0;
 	uint16_t protocol_version = NO_VAL16;
-	uint32_t data_size = 0, rec_count = 0, name_len = 0;
+	uint32_t data_size = 0, rec_count = 0;
 	uint32_t id = 0, user_id = 0;
 	uint64_t size = 0;
 	int i, state_fd;
@@ -869,13 +869,13 @@ static void _recover_bb_state(void)
 	safe_unpack32(&rec_count, buffer);
 	for (i = 0; i < rec_count; i++) {
 		if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
-			safe_unpackstr_xmalloc(&account,   &name_len, buffer);
+			safe_unpackstr(&account, buffer);
 			safe_unpack_time(&create_time, buffer);
 			safe_unpack32(&id, buffer);
-			safe_unpackstr_xmalloc(&name,      &name_len, buffer);
-			safe_unpackstr_xmalloc(&partition, &name_len, buffer);
-			safe_unpackstr_xmalloc(&pool,      &name_len, buffer);
-			safe_unpackstr_xmalloc(&qos,       &name_len, buffer);
+			safe_unpackstr(&name, buffer);
+			safe_unpackstr(&partition, buffer);
+			safe_unpackstr(&pool, buffer);
+			safe_unpackstr(&qos, buffer);
 			safe_unpack32(&user_id, buffer);
 			if (bb_state.bb_config.flags & BB_FLAG_EMULATE_CRAY)
 				safe_unpack64(&size, buffer);
@@ -2535,7 +2535,6 @@ extern int init(void)
 	_test_config();
 	log_flag(BURST_BUF, "");
 	bb_alloc_cache(&bb_state);
-	run_command_init();
 	slurm_thread_create(&bb_state.bb_thread, _bb_agent, NULL);
 	slurm_mutex_unlock(&bb_state.bb_mutex);
 
@@ -2550,7 +2549,6 @@ extern int fini(void)
 {
 	int pc, last_pc = 0;
 
-	run_command_shutdown();
 	while ((pc = run_command_count()) > 0) {
 		if ((last_pc != 0) && (last_pc != pc)) {
 			info("waiting for %d running processes",
@@ -3347,10 +3345,10 @@ extern time_t bb_p_job_get_est_start(job_record_t *job_ptr)
 /*
  * Attempt to allocate resources and begin file staging for pending jobs.
  */
-extern int bb_p_job_try_stage_in(List job_queue)
+extern int bb_p_job_try_stage_in(list_t *job_queue)
 {
 	bb_job_queue_rec_t *job_rec;
-	List job_candidates;
+	list_t *job_candidates;
 	list_itr_t *job_iter;
 	job_record_t *job_ptr;
 	bb_job_t *bb_job;

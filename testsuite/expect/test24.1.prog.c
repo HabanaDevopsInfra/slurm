@@ -51,7 +51,7 @@ char *time_format_string = "Minutes";
 time_t last_job_update = (time_t) 0;
 uint16_t running_cache = RUNNING_CACHE_STATE_NOTRUNNING;
 
-List   job_list = NULL;		/* job_record list */
+list_t *job_list = NULL;		/* job_record list */
 static pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* this will leak memory, but we don't care really */
@@ -349,6 +349,7 @@ int main (int argc, char **argv)
 	/* now init the priorities of the associations */
 	if (priority_g_init() != SLURM_SUCCESS)
 		fatal("failed to initialize priority plugin");
+	priority_g_thread_start();
 	/* on some systems that don't have multiple cores we need to
 	 * sleep to make sure the thread gets started. */
 	sleep(1);

@@ -714,7 +714,7 @@ end_modify:
 }
 
 extern int as_mysql_add_qos(mysql_conn_t *mysql_conn, uint32_t uid,
-			    List qos_list)
+			    list_t *qos_list)
 {
 	list_itr_t *itr = NULL;
 	int rc = SLURM_SUCCESS;
@@ -836,11 +836,11 @@ extern int as_mysql_add_qos(mysql_conn_t *mysql_conn, uint32_t uid,
 	return rc;
 }
 
-extern List as_mysql_modify_qos(mysql_conn_t *mysql_conn, uint32_t uid,
-				slurmdb_qos_cond_t *qos_cond,
-				slurmdb_qos_rec_t *qos)
+extern list_t *as_mysql_modify_qos(mysql_conn_t *mysql_conn, uint32_t uid,
+				   slurmdb_qos_cond_t *qos_cond,
+				   slurmdb_qos_rec_t *qos)
 {
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	int rc = SLURM_SUCCESS;
 	char *object = NULL;
 	char *vals = NULL, *extra = NULL, *query = NULL, *name_char = NULL;
@@ -967,7 +967,7 @@ extern List as_mysql_modify_qos(mysql_conn_t *mysql_conn, uint32_t uid,
 			     qos->max_tres_mins_pj, row[MQOS_MTMPJ],
 			     NULL, "max_tres_mins_pj", &vals, qos_rec->id, 0);
 		mod_tres_str(&qos_rec->max_tres_run_mins_pa,
-			     qos->max_tres_run_mins_pa, row[MQOS_MTRM],
+			     qos->max_tres_run_mins_pa, row[MQOS_MTRMA],
 			     NULL, "max_tres_run_mins_pa", &vals,
 			     qos_rec->id, 0);
 		mod_tres_str(&qos_rec->max_tres_run_mins_pu,
@@ -1010,6 +1010,8 @@ extern List as_mysql_modify_qos(mysql_conn_t *mysql_conn, uint32_t uid,
 				} else if (new_preempt[0] == '+') {
 					bit_set(qos_rec->preempt_bitstr,
 						atol(new_preempt+1));
+				} else if (new_preempt[0] == '\0') {
+					bit_clear_all(qos_rec->preempt_bitstr);
 				} else {
 					if (!cleared) {
 						cleared = 1;
@@ -1075,11 +1077,11 @@ extern List as_mysql_modify_qos(mysql_conn_t *mysql_conn, uint32_t uid,
 	return ret_list;
 }
 
-extern List as_mysql_remove_qos(mysql_conn_t *mysql_conn, uint32_t uid,
-				slurmdb_qos_cond_t *qos_cond)
+extern list_t *as_mysql_remove_qos(mysql_conn_t *mysql_conn, uint32_t uid,
+				   slurmdb_qos_cond_t *qos_cond)
 {
 	list_itr_t *itr = NULL;
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	int rc = SLURM_SUCCESS;
 	char *object = NULL;
 	char *extra = NULL, *query = NULL,
@@ -1088,7 +1090,7 @@ extern List as_mysql_remove_qos(mysql_conn_t *mysql_conn, uint32_t uid,
 	char *user_name = NULL;
 	MYSQL_RES *result = NULL;
 	MYSQL_ROW row;
-	List cluster_list_tmp = NULL;
+	list_t *cluster_list_tmp = NULL;
 
 	if (!qos_cond) {
 		error("we need something to change");
@@ -1136,10 +1138,10 @@ extern List as_mysql_remove_qos(mysql_conn_t *mysql_conn, uint32_t uid,
 		else
 			xstrfmtcat(assoc_char, " || id_qos='%s'", row[0]);
 		xstrfmtcat(extra,
-			   ", qos=replace(qos, ',%s,', '')"
-			   ", delta_qos=replace(delta_qos, ',+%s,', '')"
-			   ", delta_qos=replace(delta_qos, ',-%s,', '')",
-			   row[0], row[0], row[0]);
+			   ", qos=replace(qos, ',%s,', if(qos=',%s,', '', ','))"
+			   ", delta_qos=replace(delta_qos, ',+%s,', if(delta_qos=',+%s,', '', ','))"
+			   ", delta_qos=replace(delta_qos, ',-%s,', if(delta_qos=',-%s,', '', ','))",
+			   row[0], row[0], row[0], row[0], row[0], row[0]);
 
 		qos_rec = xmalloc(sizeof(slurmdb_qos_rec_t));
 		/* we only need id when removing no real need to init */
@@ -1211,13 +1213,13 @@ extern List as_mysql_remove_qos(mysql_conn_t *mysql_conn, uint32_t uid,
 	return ret_list;
 }
 
-extern List as_mysql_get_qos(mysql_conn_t *mysql_conn, uid_t uid,
-			     slurmdb_qos_cond_t *qos_cond)
+extern list_t *as_mysql_get_qos(mysql_conn_t *mysql_conn, uid_t uid,
+				slurmdb_qos_cond_t *qos_cond)
 {
 	char *query = NULL;
 	char *extra = NULL;
 	char *tmp = NULL;
-	List qos_list = NULL;
+	list_t *qos_list = NULL;
 	int i=0;
 	MYSQL_RES *result = NULL;
 	MYSQL_ROW row;
@@ -1310,7 +1312,7 @@ extern List as_mysql_get_qos(mysql_conn_t *mysql_conn, uid_t uid,
 		goto empty;
 	}
 
-	if (qos_cond->with_deleted)
+	if (qos_cond->flags & QOS_COND_FLAG_WITH_DELETED)
 		xstrcat(extra, "where (deleted=0 || deleted=1)");
 	else
 		xstrcat(extra, "where deleted=0");

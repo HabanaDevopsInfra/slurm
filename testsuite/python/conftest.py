@@ -37,6 +37,18 @@ def pytest_addoption(parser):
         dest="auto_config",
         help="the slurm configuration will not be altered",
     )
+    parser.addoption(
+        "--no-color",
+        action="store_true",
+        dest="no_color",
+        help="the pytest logs won't include colors",
+    )
+    parser.addoption(
+        "--allow-slurmdbd-modify",
+        action="store_true",
+        dest="allow_slurmdbd_modify",
+        help="allow running in local-config even if require_accounting(modify=True)",
+    )
 
 
 def color_log_level(level, **color_kwargs):
@@ -93,17 +105,20 @@ def color_log_level(level, **color_kwargs):
 
 @pytest.fixture(scope="session", autouse=True)
 def session_setup(request):
-    # Set the auto-config property from the option
+    # Set the auto-config and other properties from the opetions
     atf.properties["auto-config"] = request.config.getoption("--auto-config")
-
-    # Customize logging level colors
-    color_log_level(logging.CRITICAL, red=True, bold=True)
-    color_log_level(logging.ERROR, red=True)
-    color_log_level(logging.WARNING, yellow=True)
-    color_log_level(logging.INFO, green=True)
-    color_log_level(logging.NOTE, cyan=True)
-    color_log_level(logging.DEBUG, blue=True, bold=True)
-    color_log_level(logging.TRACE, purple=True, bold=True)
+    atf.properties["allow-slurmdbd-modify"] = request.config.getoption(
+        "--allow-slurmdbd-modify"
+    )
+    if not request.config.getoption("--no-color"):
+        # Customize logging level colors
+        color_log_level(logging.CRITICAL, red=True, bold=True)
+        color_log_level(logging.ERROR, red=True)
+        color_log_level(logging.WARNING, yellow=True)
+        color_log_level(logging.INFO, green=True)
+        color_log_level(logging.NOTE, cyan=True)
+        color_log_level(logging.DEBUG, blue=True, bold=True)
+        color_log_level(logging.TRACE, purple=True, bold=True)
 
 
 def update_tmp_path_exec_permissions():
@@ -139,9 +154,11 @@ def tmp_path_setup(request):
 @pytest.fixture(scope="module", autouse=True)
 def module_setup(request, tmp_path_factory):
     atf.properties["slurm-started"] = False
+    atf.properties["slurmrestd-started"] = False
     atf.properties["configurations-modified"] = set()
     atf.properties["accounting-database-modified"] = False
     atf.properties["orig-environment"] = dict(os.environ)
+    atf.properties["orig-pypath"] = list(sys.path)
 
     # Creating a module level tmp_path mimicing what tmp_path does
     name = request.node.name
@@ -196,6 +213,7 @@ def module_teardown():
     # Restore the prior environment
     os.environ.clear()
     os.environ.update(atf.properties["orig-environment"])
+    sys.path = atf.properties["orig-pypath"]
 
     if failures:
         pytest.fail(failures[0])

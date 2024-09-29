@@ -316,17 +316,15 @@ static void *_thread_gpu_run(void *no_data)
 	abs.tv_nsec = tvnow.tv_usec * 1000;
 
 	//loop until slurm stop
+	slurm_mutex_lock(&gpu_mutex);
 	while (!flag_energy_accounting_shutdown) {
-		slurm_mutex_lock(&gpu_mutex);
-
 		_thread_update_node_energy();
 
 		/* Sleep until the next time. */
 		abs.tv_sec += DEFAULT_GPU_FREQ;
 		slurm_cond_timedwait(&gpu_cond, &gpu_mutex, &abs);
-
-		slurm_mutex_unlock(&gpu_mutex);
 	}
+	slurm_mutex_unlock(&gpu_mutex);
 
 	log_flag(ENERGY, "gpu-thread: ended");
 
@@ -394,8 +392,8 @@ static void _add_energy(acct_gather_energy_t *energy_tot,
 	if (!energy_tot->poll_time ||
 	    (energy_tot->poll_time > energy_new->poll_time))
 		energy_tot->poll_time = energy_new->poll_time;
-	log_flag(ENERGY, "%s: gpu: %d, current_watts: %u, consumed %"PRIu64" Joules %"PRIu64" new, ave watts %u",
-		 __func__, gpu_num, energy_new->current_watts,
+	log_flag(ENERGY, "gpu: %d, current_watts: %u, consumed %"PRIu64" Joules %"PRIu64" new, ave watts %u",
+		 gpu_num, energy_new->current_watts,
 		 energy_new->consumed_energy, energy_new->base_consumed_energy,
 		 energy_new->ave_watts);
 }
@@ -429,9 +427,9 @@ static void _get_node_energy_up(acct_gather_energy_t *energy)
 	// If both of these are true, then GPUs will be constrained
 	if (constrained_devices && task_cgroup) {
 		cgroups_active = true;
-		log_flag(ENERGY, "%s: cgroups are configured.", __func__);
+		log_flag(ENERGY, "cgroups are configured.");
 	} else {
-		log_flag(ENERGY, "%s: cgroups are NOT configured.", __func__);
+		log_flag(ENERGY, "cgroups are NOT configured.");
 	}
 
 	// sum the energy of all gpus for this job
@@ -444,8 +442,8 @@ static void _get_node_energy_up(acct_gather_energy_t *energy)
 		}
 		_add_energy(energy, &gpus[i].energy, i);
 	}
-	log_flag(ENERGY, "%s: current_watts: %u, consumed %"PRIu64" Joules %"PRIu64" new, ave watts %u",
-		 __func__, energy->current_watts, energy->consumed_energy,
+	log_flag(ENERGY, "current_watts: %u, consumed %"PRIu64" Joules %"PRIu64" new, ave watts %u",
+		 energy->current_watts, energy->consumed_energy,
 		 energy->base_consumed_energy, energy->ave_watts);
 }
 
@@ -460,8 +458,8 @@ static void _get_node_energy(acct_gather_energy_t *energy)
 	memset(energy, 0, sizeof(acct_gather_energy_t));
 	for (i = 0; i < gpus_len; i++)
 		_add_energy(energy, &gpus[i].energy, i);
-	log_flag(ENERGY, "%s: current_watts: %u, consumed %"PRIu64" Joules %"PRIu64" new, ave watts %u",
-		 __func__, energy->current_watts, energy->consumed_energy,
+	log_flag(ENERGY, "current_watts: %u, consumed %"PRIu64" Joules %"PRIu64" new, ave watts %u",
+		 energy->current_watts, energy->consumed_energy,
 		 energy->base_consumed_energy, energy->ave_watts);
 }
 
@@ -482,11 +480,23 @@ static int _get_joules_task(uint16_t delta)
 
 	xassert(context_id != -1);
 
+	/* If there are no gres then there is no energy to get, just return. */
+	if (!gres_get_gres_cnt())
+		return SLURM_SUCCESS;
+
 	if (slurm_get_node_energy(conf->node_name, context_id, delta, &gpu_cnt,
 				  &energies)) {
-		error("%s: can't get info from slurmd", __func__);
+		if (errno == ESLURMD_TOO_MANY_RPCS)
+			log_flag(ENERGY, "energy RPC limit reached on slurmd, request dropped");
+		else
+			error("%s: can't get info from slurmd", __func__);
 		return SLURM_ERROR;
 	}
+
+	/* If there are no gpus then there is no energy to get, just return. */
+	if (!gpu_cnt)
+		return SLURM_SUCCESS;
+
 	if (stepd_first) {
 		gpus_len = gpu_cnt;
 		gpus = xcalloc(sizeof(gpu_status_t), gpus_len);
@@ -537,8 +547,8 @@ static int _get_joules_task(uint16_t delta)
 			+ new->base_consumed_energy;
 		memcpy(old, new, sizeof(acct_gather_energy_t));
 
-		log_flag(ENERGY, "%s: consumed %"PRIu64" Joules (received %"PRIu64"(%u watts) from slurmd)",
-			 __func__, new->consumed_energy,
+		log_flag(ENERGY, "consumed %"PRIu64" Joules (received %"PRIu64"(%u watts) from slurmd)",
+			 new->consumed_energy,
 			 new->base_consumed_energy, new->current_watts);
 	}
 
@@ -619,13 +629,13 @@ extern int acct_gather_energy_p_get_data(enum acct_energy_type data_type,
 	xassert(running_in_slurmd_stepd());
 	switch (data_type) {
 	case ENERGY_DATA_NODE_ENERGY_UP:
-		slurm_mutex_lock(&gpu_mutex);
 		if (running_in_slurmd()) {
-			if (_thread_init() == SLURM_SUCCESS) {
-				_thread_update_node_energy();
-				_get_node_energy(energy);
-			}
+			/* Signal the thread to update node energy */
+			slurm_cond_signal(&gpu_cond);
+			slurm_mutex_lock(&gpu_mutex);
+			_get_node_energy(energy);
 		} else {
+			slurm_mutex_lock(&gpu_mutex);
 			_get_joules_task(10);
 			_get_node_energy_up(energy);
 		}
@@ -657,11 +667,12 @@ extern int acct_gather_energy_p_get_data(enum acct_energy_type data_type,
 		slurm_mutex_unlock(&gpu_mutex);
 		break;
 	case ENERGY_DATA_JOULES_TASK:
-		slurm_mutex_lock(&gpu_mutex);
 		if (running_in_slurmd()) {
-			if (_thread_init() == SLURM_SUCCESS)
-				_thread_update_node_energy();
+			/* Signal the thread to update node energy */
+			slurm_cond_signal(&gpu_cond);
+			slurm_mutex_lock(&gpu_mutex);
 		} else {
+			slurm_mutex_lock(&gpu_mutex);
 			_get_joules_task(10);
 		}
 		for (i = 0; i < gpus_len; ++i)
@@ -750,13 +761,16 @@ extern void acct_gather_energy_p_conf_set(int context_id_in,
 	if (!flag_init) {
 		flag_init = true;
 		if (running_in_slurmd()) {
-			gpu_g_get_device_count((unsigned int *)&gpus_len);
+			if (gres_get_gres_cnt())
+				gpu_g_get_device_count(
+					(unsigned int *) &gpus_len);
 			if (gpus_len) {
 				gpus = xcalloc(sizeof(gpu_status_t), gpus_len);
 				slurm_thread_create(&thread_gpu_id_launcher,
 						    _thread_launcher, NULL);
+				log_flag(ENERGY, "%s thread launched",
+					 plugin_name);
 			}
-			log_flag(ENERGY, "%s thread launched", plugin_name);
 		} else
 			_get_joules_task(0);
 
@@ -767,7 +781,7 @@ extern void acct_gather_energy_p_conf_set(int context_id_in,
 	return;
 }
 
-extern void acct_gather_energy_p_conf_values(List *data)
+extern void acct_gather_energy_p_conf_values(list_t **data)
 {
 	return;
 }

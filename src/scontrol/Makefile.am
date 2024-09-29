@@ -1,7 +1,6 @@
 # Makefile for scontrol
 
 AUTOMAKE_OPTIONS = foreign
-CLEANFILES = core.*
 
 AM_CPPFLAGS = -I$(top_srcdir)
 
@@ -18,6 +17,7 @@ scontrol_SOURCES =	\
 	info_node.c	\
 	info_part.c	\
 	info_res.c	\
+	power_node.c	\
 	reboot_node.c	\
 	scontrol.c	\
 	scontrol.h	\

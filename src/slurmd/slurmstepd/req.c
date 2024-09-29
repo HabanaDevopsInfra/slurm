@@ -55,6 +55,7 @@
 #include "src/common/macros.h"
 #include "src/common/parse_time.h"
 #include "src/common/proc_args.h"
+#include "src/common/slurm_protocol_pack.h"
 #include "src/common/stepd_api.h"
 #include "src/common/strlcpy.h"
 #include "src/common/timers.h"
@@ -80,6 +81,9 @@
 #include "src/slurmd/slurmstepd/slurmstepd_job.h"
 #include "src/slurmd/slurmstepd/step_terminate_monitor.h"
 #include "src/slurmd/slurmstepd/ulimits.h"
+
+#include "src/stepmgr/srun_comm.h"
+#include "src/stepmgr/stepmgr.h"
 
 static void *_handle_accept(void *arg);
 static int _handle_request(int fd, stepd_step_rec_t *step,
@@ -110,7 +114,7 @@ static int _handle_list_pids(int fd, stepd_step_rec_t *step);
 static int _handle_reconfig(int fd, stepd_step_rec_t *step, uid_t uid);
 static int _handle_get_ns_fd(int fd, stepd_step_rec_t *step);
 static bool _msg_socket_readable(eio_obj_t *obj);
-static int _msg_socket_accept(eio_obj_t *obj, List objs);
+static int _msg_socket_accept(eio_obj_t *obj, list_t *objs);
 
 struct io_operations msg_socket_ops = {
 	.readable = &_msg_socket_readable,
@@ -131,6 +135,8 @@ typedef struct {
 	pid_t pid;
 } extern_pid_t;
 
+
+pthread_mutex_t stepmgr_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_mutex_t message_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t message_cond = PTHREAD_COND_INITIALIZER;
@@ -368,8 +374,7 @@ _msg_socket_readable(eio_obj_t *obj)
 	return true;
 }
 
-static int
-_msg_socket_accept(eio_obj_t *obj, List objs)
+static int _msg_socket_accept(eio_obj_t *obj, list_t *objs)
 {
 	stepd_step_rec_t *step = obj->arg;
 	int fd;
@@ -482,6 +487,355 @@ rwfail:
 	return NULL;
 }
 
+static int _handle_stepmgr_relay_msg(int fd,
+				     uid_t uid,
+				     slurm_msg_t *msg,
+				     uint16_t msg_type,
+				     bool reply)
+{
+	int rc;
+	buf_t *buffer;
+	char *data = NULL;
+	uint16_t protocol_version;
+	uint32_t client_fd;
+	uint32_t data_size;
+
+	safe_read(fd, &protocol_version, sizeof(uint16_t));
+	client_fd = receive_fd_over_socket(fd);
+	safe_read(fd, &data_size, sizeof(uint32_t));
+	data = xmalloc(data_size);
+	safe_read(fd, data, data_size);
+
+	slurm_msg_t_init(msg);
+	msg->conn_fd = client_fd;
+	msg->msg_type = msg_type;
+	msg->protocol_version = protocol_version;
+
+	buffer = create_buf(data, data_size);
+	rc = unpack_msg(msg, buffer);
+	FREE_NULL_BUFFER(buffer);
+	if (rc) {
+		goto done;
+	}
+
+	if (!_slurm_authorized_user(uid)) {
+		error("Security violation, %s RPC from uid=%u",
+		      rpc_num2string(msg->msg_type), uid);
+		rc = ESLURM_USER_ID_MISSING;
+		goto done;
+	}
+
+	if (!job_step_ptr) {
+		error("%s on a non-step mgr stepd",
+		      rpc_num2string(msg->msg_type));
+		rc = ESLURM_USER_ID_MISSING; /* or bad in this case */
+		goto done;
+	}
+
+done:
+	if (rc) {
+		if (reply)
+			slurm_send_rc_msg(msg, rc);
+		slurm_free_msg_members(msg);
+	}
+
+	return rc;
+
+rwfail:
+	xfree(data);
+	return SLURM_ERROR;
+}
+
+static int _handle_step_create(int fd, stepd_step_rec_t *step, uid_t uid)
+{
+	int rc;
+	slurm_msg_t msg;
+	job_step_create_request_msg_t *req_step_msg;
+
+	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg,
+					    REQUEST_JOB_STEP_CREATE, true)))
+		goto done;
+
+	req_step_msg = msg.data;
+	slurm_mutex_lock(&stepmgr_mutex);
+	msg.auth_uid = req_step_msg->user_id = job_step_ptr->user_id;
+	msg.auth_ids_set = true;
+
+	/* step_create_from_msg responds to the client */
+	step_create_from_msg(&msg, NULL, NULL);
+
+	slurm_mutex_unlock(&stepmgr_mutex);
+
+	slurm_free_msg_members(&msg);
+
+	return SLURM_SUCCESS;
+
+done:
+	return SLURM_ERROR;
+}
+
+static int _handle_job_step_get_info(int fd, stepd_step_rec_t *step, uid_t uid)
+{
+	int rc;
+	buf_t *buffer;
+	slurm_msg_t msg;
+	job_step_info_request_msg_t *request;
+	pack_step_args_t args =  {0};
+
+	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg,
+					    REQUEST_JOB_STEP_INFO, true)))
+		goto done;
+
+	request = msg.data;
+
+	buffer = init_buf(BUF_SIZE);
+
+	slurm_mutex_lock(&stepmgr_mutex);
+	args.step_id = &request->step_id,
+	args.steps_packed = 0,
+	args.buffer = buffer,
+	args.proto_version = msg.protocol_version,
+	args.job_step_list = job_step_ptr->step_list,
+	args.pack_job_step_list_func = pack_ctld_job_step_info,
+
+	pack_job_step_info_response_msg(&args);
+	slurm_mutex_unlock(&stepmgr_mutex);
+
+	(void) send_msg_response(&msg, RESPONSE_JOB_STEP_INFO, buffer);
+	FREE_NULL_BUFFER(buffer);
+
+	slurm_send_rc_msg(&msg, SLURM_SUCCESS);
+	slurm_free_msg_members(&msg);
+
+done:
+	return rc;
+}
+
+static int _handle_cancel_job_step(int fd, stepd_step_rec_t *step, uid_t uid)
+{
+	int rc;
+	slurm_msg_t msg;
+	job_step_kill_msg_t *request;
+
+	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg,
+					    REQUEST_CANCEL_JOB_STEP, true)))
+		goto done;
+
+	request = msg.data;
+
+	slurm_mutex_lock(&stepmgr_mutex);
+	rc = job_step_signal(&request->step_id, request->signal,
+			     request->flags, uid);
+	slurm_mutex_unlock(&stepmgr_mutex);
+
+	slurm_send_rc_msg(&msg, rc);
+	slurm_free_msg_members(&msg);
+
+done:
+	return rc;
+}
+
+static int _handle_srun_job_complete(int fd, stepd_step_rec_t *step, uid_t uid)
+{
+	int rc;
+	slurm_msg_t msg;
+	/*
+	 * We currently don't need anything in the message
+	 * srun_job_complete_msg_t *request;
+	 */
+
+	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg, SRUN_JOB_COMPLETE,
+					    false)))
+		goto done;
+
+	slurm_mutex_lock(&stepmgr_mutex);
+	srun_job_complete(job_step_ptr);
+	slurm_mutex_unlock(&stepmgr_mutex);
+
+	slurm_free_msg_members(&msg);
+
+done:
+	return rc;
+}
+
+static int _handle_srun_node_fail(int fd, stepd_step_rec_t *step, uid_t uid)
+{
+	int rc;
+	slurm_msg_t msg;
+	srun_node_fail_msg_t *request;
+
+	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg, SRUN_NODE_FAIL,
+					    false)))
+		goto done;
+
+	request = msg.data;
+	slurm_mutex_lock(&stepmgr_mutex);
+	srun_node_fail(job_step_ptr, request->nodelist);
+	slurm_mutex_unlock(&stepmgr_mutex);
+
+	slurm_free_msg_members(&msg);
+
+done:
+	return rc;
+}
+
+static int _handle_srun_timeout(int fd, stepd_step_rec_t *step, uid_t uid)
+{
+	int rc;
+	slurm_msg_t msg;
+	/*
+	 * We currently don't need anything in the message
+	 * srun_timeout_msg_t *request;
+	 */
+
+	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg, SRUN_TIMEOUT,
+					    false)))
+		goto done;
+
+	slurm_mutex_lock(&stepmgr_mutex);
+	srun_timeout(job_step_ptr);
+	slurm_mutex_unlock(&stepmgr_mutex);
+
+	slurm_free_msg_members(&msg);
+
+done:
+	return rc;
+}
+
+
+static int _handle_update_step(int fd, stepd_step_rec_t *step, uid_t uid)
+{
+	int rc;
+	slurm_msg_t msg;
+	step_update_request_msg_t *request;
+
+	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg,
+					    REQUEST_UPDATE_JOB_STEP, true)))
+		goto done;
+
+	request = msg.data;
+
+	slurm_mutex_lock(&stepmgr_mutex);
+	rc = update_step(request, uid);
+	slurm_mutex_unlock(&stepmgr_mutex);
+
+	slurm_send_rc_msg(&msg, rc);
+	slurm_free_msg_members(&msg);
+
+done:
+	return rc;
+}
+
+static int _handle_step_layout(int fd, stepd_step_rec_t *step, uid_t uid)
+{
+	int rc;
+	slurm_msg_t msg;
+	slurm_step_id_t *request;
+	slurm_step_layout_t *step_layout = NULL;
+
+	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg, REQUEST_STEP_LAYOUT,
+					    true)))
+		goto done;
+
+	request = msg.data;
+
+	slurm_mutex_lock(&stepmgr_mutex);
+	rc = stepmgr_get_step_layouts(job_step_ptr, request, &step_layout);
+	slurm_mutex_unlock(&stepmgr_mutex);
+	if (!rc) {
+		(void) send_msg_response(&msg, RESPONSE_STEP_LAYOUT,
+					 step_layout);
+		slurm_step_layout_destroy(step_layout);
+	}
+
+	slurm_send_rc_msg(&msg, rc);
+	slurm_free_msg_members(&msg);
+
+done:
+	return rc;
+}
+
+static int _handle_job_sbcast_cred(int fd, stepd_step_rec_t *step, uid_t uid)
+{
+	int rc;
+	slurm_msg_t msg;
+	step_alloc_info_msg_t *request;
+	job_sbcast_cred_msg_t *job_info_resp_msg = NULL;
+
+	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg,
+					    REQUEST_JOB_SBCAST_CRED, true)))
+		goto done;
+
+	request = msg.data;
+
+	slurm_mutex_lock(&stepmgr_mutex);
+	rc = stepmgr_get_job_sbcast_cred_msg(job_step_ptr, &request->step_id,
+					     NULL, msg.protocol_version,
+					     &job_info_resp_msg);
+	slurm_mutex_unlock(&stepmgr_mutex);
+	if (rc)
+		goto resp;
+
+	(void) send_msg_response(&msg, RESPONSE_JOB_SBCAST_CRED,
+				 job_info_resp_msg);
+
+	slurm_free_sbcast_cred_msg(job_info_resp_msg);
+
+resp:
+	slurm_send_rc_msg(&msg, rc);
+	slurm_free_msg_members(&msg);
+
+done:
+	return rc;
+}
+
+static void _het_job_alloc_list_del(void *x)
+{
+	resource_allocation_response_msg_t *job_info_resp_msg = x;
+	slurm_free_resource_allocation_response_msg(job_info_resp_msg);
+}
+
+static int _handle_het_job_alloc_info(int fd, stepd_step_rec_t *step, uid_t uid)
+{
+	int rc;
+	slurm_msg_t msg;
+	job_alloc_info_msg_t *request;
+	resource_allocation_response_msg_t *job_info_resp_msg = NULL;
+	list_t *resp_list = NULL;
+
+	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg,
+					    REQUEST_HET_JOB_ALLOC_INFO, true)))
+		goto done;
+
+	request = msg.data;
+
+	if (request->job_id != job_step_ptr->job_id) {
+		error("attempting to get job information for jobid %u from a different stepmgr jobid %u: %s RPC from uid=%u",
+		      request->job_id, job_step_ptr->job_id,
+		      rpc_num2string(msg.msg_type), uid);
+		rc = ESLURM_INVALID_JOB_ID;
+		goto resp;
+	}
+
+	slurm_mutex_lock(&stepmgr_mutex);
+
+	resp_list = list_create(_het_job_alloc_list_del);
+	job_info_resp_msg = build_job_info_resp(job_step_ptr);
+	list_append(resp_list, job_info_resp_msg);
+
+	slurm_mutex_unlock(&stepmgr_mutex);
+
+	(void) send_msg_response(&msg, RESPONSE_HET_JOB_ALLOCATION, resp_list);
+
+	FREE_NULL_LIST(resp_list);
+
+resp:
+	slurm_send_rc_msg(&msg, rc);
+	slurm_free_msg_members(&msg);
+
+done:
+	return rc;
+}
 
 int _handle_request(int fd, stepd_step_rec_t *step, uid_t uid, pid_t remote_pid)
 {
@@ -563,6 +917,13 @@ int _handle_request(int fd, stepd_step_rec_t *step, uid_t uid, pid_t remote_pid)
 		debug("Handling REQUEST_STEP_RECONFIGURE");
 		rc = _handle_reconfig(fd, step, uid);
 		break;
+	case REQUEST_JOB_STEP_CREATE:
+		debug("Handling REQUEST_STEP_CREATE");
+		rc = _handle_step_create(fd, step, uid);
+		break;
+	case REQUEST_JOB_STEP_INFO:
+		rc = _handle_job_step_get_info(fd, step, uid);
+		break;
 	case REQUEST_JOB_NOTIFY:
 		debug("Handling REQUEST_JOB_NOTIFY");
 		rc = _handle_notify_job(fd, step, uid);
@@ -590,6 +951,32 @@ int _handle_request(int fd, stepd_step_rec_t *step, uid_t uid, pid_t remote_pid)
 	case REQUEST_GETHOST:
 		debug("Handling REQUEST_GETHOST");
 		rc = _handle_gethost(fd, step, remote_pid);
+		break;
+	case REQUEST_CANCEL_JOB_STEP:
+		debug("Handling REQUEST_CANCEL_JOB_STEP");
+		rc = _handle_cancel_job_step(fd, step, uid);
+		break;
+	case SRUN_JOB_COMPLETE:
+		_handle_srun_job_complete(fd, step, uid);
+		break;
+	case SRUN_NODE_FAIL:
+		_handle_srun_node_fail(fd, step, uid);
+		break;
+	case SRUN_TIMEOUT:
+		_handle_srun_timeout(fd, step, uid);
+		break;
+	case REQUEST_UPDATE_JOB_STEP:
+		debug("Handling REQUEST_CANCEL_JOB_STEP");
+		rc = _handle_update_step(fd, step, uid);
+		break;
+	case REQUEST_STEP_LAYOUT:
+		_handle_step_layout(fd, step, uid);
+		break;
+	case REQUEST_JOB_SBCAST_CRED:
+		_handle_job_sbcast_cred(fd, step, uid);
+		break;
+	case REQUEST_HET_JOB_ALLOC_INFO:
+		_handle_het_job_alloc_info(fd, step, uid);
 		break;
 	default:
 		error("Unrecognized request: %d", req);
@@ -1098,12 +1485,12 @@ static int _handle_get_ns_fd(int fd, stepd_step_rec_t *step)
 
 	/*
 	 * We need to send the ns_fd as an int first to let the receiver know if
-	 * we have a valid fd or not as recv_fd_over_pipe() will always try to
-	 * set up the fd no matter if it is valid or not.
+	 * we have a valid fd or not as receive_fd_over_socket() will always
+	 * try to set up the fd no matter if it is valid or not.
 	 */
 	safe_write(fd, &ns_fd, sizeof(ns_fd));
 	if (ns_fd > 0)
-		send_fd_over_pipe(fd, ns_fd);
+		send_fd_over_socket(fd, ns_fd);
 
 	debug("sent fd: %d", ns_fd);
 	debug("leaving %s", __func__);
@@ -1334,7 +1721,7 @@ static int _handle_getpw(int fd, stepd_step_rec_t *step, pid_t remote_pid)
 
 	len = 1;
 	safe_write(fd, &len, sizeof(int));
-	safe_write(fd, "x", len);
+	safe_write(fd, "*", len);
 
 	safe_write(fd, &step->uid, sizeof(uid_t));
 	safe_write(fd, &step->gid, sizeof(gid_t));
@@ -1371,7 +1758,7 @@ static int _send_one_struct_group(int fd, stepd_step_rec_t *step, int offset)
 
 	len = 1;
 	safe_write(fd, &len, sizeof(int));
-	safe_write(fd, "x", len);
+	safe_write(fd, "*", len);
 
 	safe_write(fd, &step->gids[offset], sizeof(gid_t));
 
@@ -1723,7 +2110,8 @@ _handle_completion(int fd, stepd_step_rec_t *step, uid_t uid)
 	char *buf = NULL;
 	int len;
 	buf_t *buffer = NULL;
-	bool lock_set = false;
+	bool lock_set = false, do_stepmgr = false;
+	uint32_t step_id;
 
 	debug("_handle_completion for %ps", &step->step_id);
 
@@ -1742,6 +2130,8 @@ _handle_completion(int fd, stepd_step_rec_t *step, uid_t uid)
 	safe_read(fd, &first, sizeof(int));
 	safe_read(fd, &last, sizeof(int));
 	safe_read(fd, &step_rc, sizeof(int));
+	safe_read(fd, &step_id, sizeof(uint32_t));
+	safe_read(fd, &do_stepmgr, sizeof(bool));
 
 	/*
 	 * We must not use getinfo over a pipe with slurmd here
@@ -1761,6 +2151,33 @@ _handle_completion(int fd, stepd_step_rec_t *step, uid_t uid)
 			       PROTOCOL_TYPE_SLURM, buffer, 1) != SLURM_SUCCESS)
 		goto rwfail;
 	FREE_NULL_BUFFER(buffer);
+
+	if (job_step_ptr && do_stepmgr) {
+		int rem = 0;
+		uint32_t max_rc;
+		slurm_step_id_t temp_id = {
+			.job_id = job_step_ptr->job_id,
+			.step_het_comp = NO_VAL,
+			.step_id = step_id
+		};
+
+		step_complete_msg_t req = {
+			.range_first = first,
+			.range_last = last,
+			.step_id = temp_id,
+			.step_rc = step_rc,
+			.jobacct = jobacct
+		};
+
+		step_partial_comp(&req, uid, true, &rem, &max_rc);
+
+		safe_write(fd, &rc, sizeof(int));
+		safe_write(fd, &errnum, sizeof(int));
+
+		jobacctinfo_destroy(jobacct);
+
+		return SLURM_SUCCESS;
+	}
 
 	/*
 	 * Record the completed nodes

@@ -2,6 +2,7 @@ SUBDIRS =		\
 	api		\
 	bcast		\
 	common		\
+	conmgr		\
 	database	\
 	interfaces	\
 	lua		\
@@ -28,6 +29,7 @@ SUBDIRS =		\
 	srun		\
 	sshare		\
 	sstat		\
+	stepmgr 	\
 	strigger	\
 	sview
 

@@ -103,7 +103,9 @@ static const char *tags[] = {
 	NULL
 };
 
-#define OP_FLAGS (OP_BIND_DATA_PARSER | OP_BIND_OPENAPI_RESP_FMT)
+#define OP_FLAGS                                          \
+	(OP_BIND_DATA_PARSER | OP_BIND_OPENAPI_RESP_FMT | \
+	 OP_BIND_REQUIRE_SLURMDBD)
 
 const openapi_path_binding_t openapi_paths[] = {
 	{
@@ -671,19 +673,38 @@ const openapi_path_binding_t openapi_paths[] = {
 		},
 		.flags = OP_FLAGS,
 	},
+	{
+		.path = "/slurmdb/{data_parser}/ping/",
+		.callback = op_handler_ping,
+		.methods = (openapi_path_binding_method_t[]) {
+			{
+				.method = HTTP_REQUEST_GET,
+				.tags = tags,
+				.summary = "ping test",
+				.response = {
+					.type = DATA_PARSER_OPENAPI_SLURMDBD_PING_RESP,
+					.description = "results of ping test",
+				},
+			},
+			{0}
+		},
+		.flags = OP_FLAGS,
+	},
 	{0}
 };
 
-extern int db_query_list_funcname(ctxt_t *ctxt, List *list,
+extern int db_query_list_funcname(ctxt_t *ctxt, list_t **list,
 				  db_list_query_func_t func, void *cond,
 				  const char *func_name, const char *caller,
 				  bool ignore_empty_result)
 {
-	List l;
+	list_t *l;
 	int rc = SLURM_SUCCESS;
 
 	xassert(!*list);
-	xassert(ctxt->db_conn);
+
+	if (!ctxt->db_conn)
+		return ESLURM_DB_CONNECTION;
 
 	errno = 0;
 	l = func(ctxt->db_conn, cond);
@@ -724,7 +745,7 @@ extern int db_query_list_funcname(ctxt_t *ctxt, List *list,
 	return rc;
 }
 
-extern int db_query_rc_funcname(ctxt_t *ctxt, List list,
+extern int db_query_rc_funcname(ctxt_t *ctxt, list_t *list,
 				db_rc_query_func_t func, const char *func_name,
 				const char *caller)
 {
@@ -741,7 +762,7 @@ extern int db_modify_rc_funcname(ctxt_t *ctxt, void *cond, void *obj,
 				 db_rc_modify_func_t func,
 				 const char *func_name, const char *caller)
 {
-	List changed;
+	list_t *changed;
 	int rc = SLURM_SUCCESS;
 
 	errno = 0;
@@ -825,16 +846,13 @@ cleanup:
 	return dst;
 }
 
-const data_t *slurm_openapi_p_get_specification(openapi_spec_flags_t *flags)
-{
-	return NULL;
-}
-
 extern void slurm_openapi_p_init(void)
 {
 	/* Check to see if we are running a supported accounting plugin */
-	if (!slurm_with_slurmdbd()) {
-		fatal("%s: slurm not configured with slurmdbd", __func__);
+	if (!is_spec_generation_only(false) && !slurm_with_slurmdbd()) {
+		debug("%s: refusing to load. Slurm not configured with slurmdbd",
+		      __func__);
+		return;
 	}
 }
 
@@ -845,6 +863,13 @@ extern void slurm_openapi_p_fini(void)
 extern int slurm_openapi_p_get_paths(const openapi_path_binding_t **paths_ptr,
 				     const openapi_resp_meta_t **meta_ptr)
 {
+	/* Check to see if we are running a supported accounting plugin */
+	if (!is_spec_generation_only(false) && !slurm_with_slurmdbd()) {
+		debug("%s: refusing to load. Slurm not configured with slurmdbd",
+		      __func__);
+		return ESLURM_NOT_SUPPORTED;
+	}
+
 	*paths_ptr = openapi_paths;
 	*meta_ptr = &plugin_meta;
 	return SLURM_SUCCESS;

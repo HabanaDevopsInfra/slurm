@@ -53,6 +53,8 @@
 
 #include "src/slurmd/slurmd/slurmd.h"
 
+#define FEATURE_FLAG_NO_REBOOT SLURM_BIT(0)
+
 /*
  * These are defined here so when we link with something other than
  * the slurmctld we will have these symbols defined.  They will get
@@ -70,8 +72,8 @@ const uint32_t plugin_version = SLURM_VERSION_NUMBER;
 
 static uid_t *allowed_uid = NULL;
 static int allowed_uid_cnt = 0;
-static List helper_features = NULL;
-static List helper_exclusives = NULL;
+static list_t *helper_features = NULL;
+static list_t *helper_exclusives = NULL;
 static uint32_t boot_time = (5 * 60);
 static uint32_t exec_time = 10;
 
@@ -88,11 +90,13 @@ typedef struct {
 typedef struct {
 	const char *name;
 	const char *helper;
+	uint64_t flags;
 } plugin_feature_t;
 
 static s_p_options_t feature_options[] = {
 	 {"Feature", S_P_STRING},
 	 {"Helper", S_P_STRING},
+	 {"Flags", S_P_STRING},
 	 {NULL},
 };
 
@@ -160,12 +164,14 @@ static int _list_make_str(void *x, void *y)
 	return 0;
 }
 
-static plugin_feature_t *_feature_create(const char *name, const char *helper)
+static plugin_feature_t *_feature_create(const char *name, const char *helper,
+					 uint64_t flags)
 {
 	plugin_feature_t *feature = xmalloc(sizeof(*feature));
 
 	feature->name = xstrdup(name);
 	feature->helper = xstrdup(helper);
+	feature->flags = flags;
 
 	return feature;
 }
@@ -208,12 +214,12 @@ static int _feature_set_state(const plugin_feature_t *feature)
 	return rc;
 }
 
-static List _feature_get_state(const plugin_feature_t *feature)
+static list_t *_feature_get_state(const plugin_feature_t *feature)
 {
 	char *tmp, *saveptr;
 	char *output = NULL;
 	int rc = 0;
-	List result = list_create(xfree_ptr);
+	list_t *result = list_create(xfree_ptr);
 	run_command_args_t run_command_args = {
 		.max_wait = (exec_time * 1000),
 		.script_path = feature->helper,
@@ -236,7 +242,17 @@ cleanup:
 	return result;
 }
 
-static int _feature_register(const char *name, const char *helper)
+static char * _feature_flag2str(uint64_t flags) {
+	if (flags & FEATURE_FLAG_NO_REBOOT)
+		return "rebootless";
+	else if (!flags)
+		return "(none)";
+	else
+		return "unknown";
+}
+
+static int _feature_register(const char *name, const char *helper,
+			     uint64_t flags)
 {
 	const plugin_feature_t *existing;
 	plugin_feature_t *feature = NULL;
@@ -258,9 +274,10 @@ static int _feature_register(const char *name, const char *helper)
 		}
 	}
 
-	feature = _feature_create(name, helper);
+	feature = _feature_create(name, helper, flags);
 
-	info("Adding new feature \"%s\"", feature->name);
+	info("Adding new feature \"%s\" Flags=%s",
+	     feature->name, _feature_flag2str(feature->flags));
 	list_append(helper_features, feature);
 
 	return SLURM_SUCCESS;
@@ -268,7 +285,7 @@ static int _feature_register(const char *name, const char *helper)
 
 static int _exclusive_register(const char *listp)
 {
-	List data_list = list_create(xfree_ptr);
+	list_t *data_list = list_create(xfree_ptr);
 	char *input = xstrdup(listp);
 	char *entry, *saveptr;
 
@@ -295,9 +312,14 @@ static int _parse_feature(void **data, slurm_parser_enum_t type,
 			  const char *line, char **leftover)
 {
 	s_p_hashtbl_t *tbl = NULL;
+	char *tmp_flags = NULL;
 	char *path = NULL;
 	int rc = -1;
 	char *tmp_name;
+	char *tmp_str = NULL;
+	char *last = NULL;
+	char *tok = NULL;
+	uint64_t flags = 0;
 
 	tbl = s_p_hashtbl_create(feature_options);
 	if (!s_p_parse_line(tbl, *leftover, leftover))
@@ -311,10 +333,24 @@ static int _parse_feature(void **data, slurm_parser_enum_t type,
 	}
 
 	s_p_get_string(&path, "Helper", tbl);
+	if (s_p_get_string(&tmp_flags, "Flags", tbl)) {
+		tmp_str = xstrdup(tmp_flags);
+		tok = strtok_r(tmp_str, ",", &last);
+		while (tok) {
+			if (!xstrcasecmp(tok, "rebootless"))
+				flags |= FEATURE_FLAG_NO_REBOOT;
+			else
+				error("helpers.conf: Ignoring invalid Flags=%s",
+				      tok);
+			tok = strtok_r(NULL, ",", &last);
+		}
+	}
 
 	/* In slurmctld context, we can have path == NULL */
-	*data = _feature_create(tmp_name, path);
+	*data = _feature_create(tmp_name, path, flags);
 	xfree(path);
+	xfree(tmp_str);
+	xfree(tmp_flags);
 
 	rc = 1;
 
@@ -379,13 +415,14 @@ static int _handle_config_features(plugin_feature_t **features, int count)
 		     tok = strtok_r(NULL, ",", &saveptr)) {
 
 			if (!_is_feature_valid(tok)) {
-				slurm_seterrno(ESLURM_INVALID_FEATURE);
+				errno = ESLURM_INVALID_FEATURE;
 				xfree(tmp_name);
 				return SLURM_ERROR;
 			}
 
 			/* In slurmctld context, we can have path == NULL */
-			if (_feature_register(tok, feature->helper)) {
+			if (_feature_register(tok, feature->helper,
+					      feature->flags)) {
 				xfree(tmp_name);
 				return SLURM_ERROR;
 			}
@@ -635,7 +672,7 @@ static int _get_list_excl_count(void *x, void *y)
 
 static int _count_exclusivity(void *x, void *y)
 {
-	List exclusive_list = (List) x;
+	list_t *exclusive_list = x;
 
 	excl_count_t args = {
 		.job_features = (char *)y,
@@ -664,7 +701,7 @@ static int _foreach_feature(void *x, void *y)
 
 static int _has_exclusive_features(void *x, void *arg)
 {
-	List feature_list = x;
+	list_t *feature_list = x;
 	char *str = NULL;
 	int rc = 0;
 
@@ -681,7 +718,7 @@ static int _has_exclusive_features(void *x, void *arg)
 
 extern int node_features_p_job_valid(char *job_features, list_t *feature_list)
 {
-	List feature_sets;
+	list_t *feature_sets;
 	int rc;
 
 	if (!job_features)
@@ -718,11 +755,12 @@ extern int node_features_p_job_valid(char *job_features, list_t *feature_list)
 	return SLURM_SUCCESS;
 }
 
-extern int node_features_p_node_set(char *active_features)
+extern int node_features_p_node_set(char *active_features, bool *need_reboot)
 {
 	char *tmp, *saveptr;
 	char *input = NULL;
 	const plugin_feature_t *feature = NULL;
+	bool reboot = false;
 	int rc = SLURM_ERROR;
 
 	input = xstrdup(active_features);
@@ -734,11 +772,16 @@ extern int node_features_p_node_set(char *active_features)
 			continue;
 		}
 
+		if (!(feature->flags & FEATURE_FLAG_NO_REBOOT))
+			reboot = true;
+
 		if (_feature_set_state(feature) != SLURM_SUCCESS) {
 			active_features[0] = '\0';
 			goto fini;
 		}
 	}
+
+	*need_reboot = reboot;
 
 	rc = SLURM_SUCCESS;
 
@@ -750,7 +793,7 @@ fini:
 static int _foreach_filter_modes(void *x, void *y)
 {
 	char *feature = (char *)x;
-	List filtered = (List)y;
+	list_t *filtered = y;
 
 	/* Verify this mode is legitimate to filter out garbage */
 	if (list_find_first(helper_features, _cmp_features, feature))
@@ -762,7 +805,7 @@ static int _foreach_filter_modes(void *x, void *y)
 static int _foreach_check_duplicates(void *x, void *y)
 {
 	char *feature = (char *)x;
-	List filtered = (List)y;
+	list_t *filtered = y;
 
 	if (!list_find_first(filtered, _cmp_str, feature))
 		list_append(filtered, xstrdup(feature));
@@ -772,16 +815,16 @@ static int _foreach_check_duplicates(void *x, void *y)
 
 typedef struct {
 	char **avail_modes;
-	List all_current;
+	list_t *all_current;
 } _foreach_modes_t;
 
 static int _foreach_helper_get_modes(void *x, void *y)
 {
 	char **avail_modes = ((_foreach_modes_t *)y)->avail_modes;
-	List all_current = ((_foreach_modes_t *)y)->all_current;
+	list_t *all_current = ((_foreach_modes_t *)y)->all_current;
 	plugin_feature_t *feature = (plugin_feature_t *)x;
 
-	List current = _feature_get_state(feature);
+	list_t *current = _feature_get_state(feature);
 
 	xstrfmtcat(*avail_modes, "%s%s", (*avail_modes ? "," : ""), feature->name);
 
@@ -800,8 +843,8 @@ static int _foreach_helper_get_modes(void *x, void *y)
 
 extern void node_features_p_node_state(char **avail_modes, char **current_mode)
 {
-	List all_current = NULL;
-	List filtered_modes = NULL;
+	list_t *all_current = NULL;
+	list_t *filtered_modes = NULL;
 	_foreach_modes_t args;
 
 	if (!avail_modes || !current_mode)
@@ -837,7 +880,7 @@ extern void node_features_p_node_state(char **avail_modes, char **current_mode)
 extern char *node_features_p_node_xlate(char *new_features, char *orig_features,
 					char *avail_features, int node_inx)
 {
-	List features = NULL;
+	list_t *features = NULL;
 	char *feature = NULL;
 	char *input = NULL;
 	char *merged = NULL;
@@ -917,7 +960,7 @@ static char *_make_helper_str(const plugin_feature_t *feature)
 	return str;
 }
 
-static char *_make_exclusive_str(List exclusive)
+static char *_make_exclusive_str(list_t *exclusive)
 {
 	char *str = NULL;
 
@@ -949,27 +992,20 @@ static char *_make_uid_str(uid_t *uid_array, int uid_cnt)
 static int _make_features_config(void *x, void *y)
 {
 	plugin_feature_t *feature = (plugin_feature_t *)x;
-	List data = (List)y;
-	config_key_pair_t *key_pair;
+	list_t *data = y;
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("Feature");
-	key_pair->value = _make_helper_str(feature);
-	list_append(data, key_pair);
+	add_key_pair_own(data, "Feature", _make_helper_str(feature));
 
 	return 0;
 }
 
 static int _make_exclusive_config(void *x, void *y)
 {
-	List exclusive = (List) x;
-	List data = (List) y;
-	config_key_pair_t *key_pair;
+	list_t *exclusive = x;
+	list_t *data = y;
 
-	key_pair = xmalloc(sizeof(*key_pair));
-	key_pair->name = xstrdup("MutuallyExclusive");
-	key_pair->value = _make_exclusive_str(exclusive);
-	list_append(data, key_pair);
+	add_key_pair_own(data, "MutuallyExclusive",
+			 _make_exclusive_str(exclusive));
 
 	return 0;
 }
@@ -977,8 +1013,7 @@ static int _make_exclusive_config(void *x, void *y)
 /* Get node features plugin configuration */
 extern void node_features_p_get_config(config_plugin_params_t *p)
 {
-	config_key_pair_t *key_pair;
-	List data;
+	list_t *data;
 
 	xassert(p);
 	xstrcat(p->name, plugin_type);
@@ -988,20 +1023,12 @@ extern void node_features_p_get_config(config_plugin_params_t *p)
 
 	list_for_each(helper_exclusives, _make_exclusive_config, data);
 
-	key_pair = xmalloc(sizeof(*key_pair));
-	key_pair->name = xstrdup("AllowUserBoot");
-	key_pair->value = _make_uid_str(allowed_uid, allowed_uid_cnt);
-	list_append(data, key_pair);
+	add_key_pair_own(data, "AllowUserBoot",
+			 _make_uid_str(allowed_uid, allowed_uid_cnt));
 
-	key_pair = xmalloc(sizeof(*key_pair));
-	key_pair->name = xstrdup("BootTime");
-	key_pair->value = xstrdup_printf("%u", boot_time);
-	list_append(data, key_pair);
+	add_key_pair(data, "BootTime", "%u", boot_time);
 
-	key_pair = xmalloc(sizeof(*key_pair));
-	key_pair->name = xstrdup("ExecTime");
-	key_pair->value = xstrdup_printf("%u", exec_time);
-	list_append(data, key_pair);
+	add_key_pair(data, "ExecTime", "%u", exec_time);
 }
 
 extern bitstr_t *node_features_p_get_node_bitmap(void)

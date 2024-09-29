@@ -72,7 +72,7 @@
 /* Change TRIGGER_STATE_VERSION value when changing the state save format */
 #define TRIGGER_STATE_VERSION        "PROTOCOL_VERSION"
 
-List trigger_list;
+list_t *trigger_list = NULL;
 uint32_t next_trigger_id = 1;
 static pthread_mutex_t trigger_mutex = PTHREAD_MUTEX_INITIALIZER;
 bitstr_t *trigger_down_front_end_bitmap = NULL;
@@ -606,24 +606,6 @@ extern void trigger_reconfig(void)
 	lock_slurmctld(node_read_lock);
 	slurm_mutex_lock(&trigger_mutex);
 	trigger_node_reconfig = true;
-	if (trigger_down_front_end_bitmap)
-		bit_realloc(trigger_down_front_end_bitmap, node_record_count);
-	if (trigger_up_front_end_bitmap)
-		bit_realloc(trigger_up_front_end_bitmap, node_record_count);
-	if (trigger_down_nodes_bitmap)
-		bit_realloc(trigger_down_nodes_bitmap, node_record_count);
-	if (trigger_drained_nodes_bitmap)
-		bit_realloc(trigger_drained_nodes_bitmap, node_record_count);
-	if (trigger_fail_nodes_bitmap)
-		bit_realloc(trigger_fail_nodes_bitmap, node_record_count);
-	if (trigger_up_nodes_bitmap)
-		bit_realloc(trigger_up_nodes_bitmap, node_record_count);
-	if (trigger_draining_nodes_bitmap)
-		trigger_draining_nodes_bitmap = bit_realloc(
-			trigger_draining_nodes_bitmap, node_record_count);
-	if (trigger_resume_nodes_bitmap)
-		trigger_resume_nodes_bitmap = bit_realloc(
-			trigger_resume_nodes_bitmap, node_record_count);
 	slurm_mutex_unlock(&trigger_mutex);
 	unlock_slurmctld(node_read_lock);
 }

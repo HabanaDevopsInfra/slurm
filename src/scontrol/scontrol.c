@@ -63,7 +63,7 @@
 
 /* Global externs from scontrol.h */
 char *command_name;
-List clusters = NULL;
+list_t *clusters = NULL;
 char *cluster_names = NULL;
 int all_flag = 0;	/* display even hidden partitions */
 int detail_flag = 0;	/* display additional details */
@@ -309,6 +309,14 @@ int main(int argc, char **argv)
 	FREE_NULL_LIST(clusters);
 	slurm_conf_destroy();
 	serializer_g_fini();
+
+	slurm_free_front_end_info_msg(old_front_end_info_ptr);
+	slurm_free_job_info_msg(old_job_info_ptr);
+	slurm_free_node_info_msg(old_node_info_ptr);
+	slurm_free_partition_info_msg(old_part_info_ptr);
+	slurm_free_reservation_info_msg(old_res_info_ptr);
+	slurm_free_ctl_conf(old_slurm_ctl_conf_ptr);
+
 #endif /* MEMORY_LEAK_DEBUG */
 
 	exit(exit_code);
@@ -450,7 +458,7 @@ static void _write_config(char *file_name)
 				&slurm_ctl_conf_ptr);
 		if (error_code == SLURM_SUCCESS) {
 			slurm_free_ctl_conf(old_slurm_ctl_conf_ptr);
-		} else if (slurm_get_errno () == SLURM_NO_CHANGE_IN_DATA) {
+		} else if (errno == SLURM_NO_CHANGE_IN_DATA) {
 			slurm_ctl_conf_ptr = old_slurm_ctl_conf_ptr;
 			error_code = SLURM_SUCCESS;
 			if (quiet_flag == -1) {
@@ -515,13 +523,20 @@ static void _print_config(char *config_param, int argc, char **argv)
 	int error_code;
 	slurm_ctl_conf_info_msg_t  *slurm_ctl_conf_ptr = NULL;
 
+	/*
+	 * There isn't a parser for slurm.conf but there is one for ping, which
+	 * gets printed as part of this funciton. So to make sure the ouput is
+	 * not mixing output types disable json/yaml ouput for ping.
+	 */
+	mime_type = NULL;
+
 	if (old_slurm_ctl_conf_ptr) {
 		error_code = slurm_load_ctl_conf (
 				old_slurm_ctl_conf_ptr->last_update,
 				&slurm_ctl_conf_ptr);
 		if (error_code == SLURM_SUCCESS)
 			slurm_free_ctl_conf(old_slurm_ctl_conf_ptr);
-		else if (slurm_get_errno () == SLURM_NO_CHANGE_IN_DATA) {
+		else if (errno == SLURM_NO_CHANGE_IN_DATA) {
 			slurm_ctl_conf_ptr = old_slurm_ctl_conf_ptr;
 			error_code = SLURM_SUCCESS;
 			if (quiet_flag == -1) {
@@ -781,6 +796,82 @@ void _process_reboot_command(const char *tag, int argc, char **argv)
 		exit_code = 1;
 		if (quiet_flag != 1)
 			slurm_perror ("scontrol_reboot_nodes error");
+	}
+}
+
+void _process_power_command(const char *tag, int argc, char **argv)
+{
+	int error_code = SLURM_SUCCESS;
+	bool power_up;
+	bool asap = false;
+	bool force = false;
+	int min_argv = 3;
+	int max_argv = 4;
+
+	/* at least 'power' should have been supplied */
+	xassert(argc);
+
+	if ((argc <= max_argv) && (argc >= min_argv)) {
+		int idx = 1;
+
+		/* up or down subcommand */
+		if (!xstrcasecmp(argv[idx], "UP")) {
+			power_up = true;
+		} else if (!xstrcasecmp(argv[idx], "DOWN")) {
+			power_up = false;
+		} else {
+			exit_code = 1;
+			fprintf(stderr, "unexpected argument: %s\n",
+				argv[idx]);
+			goto done;
+		}
+		idx++;
+
+		/*
+		 * Optional asap|force if powerering down. Silently ignore
+		 * asap|force if powering up as there's no such option.
+		 */
+		if (argc == max_argv) {
+			if (!xstrcasecmp(argv[idx], "ASAP")) {
+				asap = true;
+			} else if (!xstrcasecmp(argv[idx], "FORCE")) {
+				force = true;
+			} else {
+				exit_code = 1;
+				fprintf(stderr, "unrecognized optional command:%s\n",
+					argv[idx]);
+				goto done;
+			}
+
+			if ((force || asap) && power_up) {
+				exit_code = 1;
+				fprintf(stderr, "The '%s' argument is not valid for power up requests\n",
+					argv[idx]);
+				goto done;
+			}
+
+			idx++;
+		}
+
+		/* call with nodelist */
+		error_code = scontrol_power_nodes(argv[idx], power_up, asap,
+						  force);
+
+	} else if (argc < min_argv) {
+		exit_code = 1;
+		fprintf(stderr, "too few arguments for keyword:%s\n",
+			argv[0]);
+	} else if (argc > max_argv) {
+		exit_code = 1;
+		fprintf(stderr, "too many arguments for keyword:%s\n",
+			argv[0]);
+	}
+
+done:
+	if (error_code) {
+		exit_code = 1;
+		if (quiet_flag != 1)
+			slurm_perror("scontrol_power_nodes error");
 	}
 }
 
@@ -1201,6 +1292,8 @@ static int _process_command (int argc, char **argv)
 				 tag);
 		} else
 			_print_ping(argc, argv);
+	} else if (!xstrncasecmp(tag, "power", MAX(tag_len, 2))) {
+		_process_power_command(tag, argc, argv);
 	} else if (!xstrncasecmp(tag, "\\q", 2) ||
 		   !xstrncasecmp(tag, "quiet", MAX(tag_len, 4))) {
 		if (argc > 1) {
@@ -1945,7 +2038,8 @@ static void _update_it(int argc, char **argv)
 
 	if (error_code) {
 		exit_code = 1;
-		slurm_perror ("slurm_update error");
+		if (errno)
+			slurm_perror ("slurm_update error");
 	}
 	/* The slurm error message is already
 	 * printed for each array task in

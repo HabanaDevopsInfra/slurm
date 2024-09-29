@@ -50,18 +50,18 @@ typedef struct {
 static int _compare_support(const void *v1, const void *v2)
 {
 	sort_support_t *s1, *s2;
+	int rc;
 
 	s1 = (sort_support_t *) v1;
 	s2 = (sort_support_t *) v2;
 
-	if (s1->jstart < s2->jstart)
-		return -1;
-	else if (s1->jstart > s2->jstart)
-		return 1;
-	else if (s1->tmpjobs->ncpus < s2->tmpjobs->ncpus)
-		return -1;
-	else if (s1->tmpjobs->ncpus > s2->tmpjobs->ncpus)
-		return 1;
+	rc = slurm_sort_int_list_asc(&s1->jstart, &s2->jstart);
+	if (rc)
+		return rc;
+
+	rc = slurm_sort_uint32_list_asc(&s1->tmpjobs->ncpus, &s2->tmpjobs->ncpus);
+	if (rc)
+		return rc;
 
 	return 0;
 }
@@ -133,6 +133,8 @@ extern void part_data_build_row_bitmaps(part_res_record_t *p_ptr,
 	int x;
 	part_row_data_t *this_row, *orig_row;
 	sort_support_t *ss;
+
+	p_ptr->rebuild_rows = false;
 
 	if (!p_ptr->row)
 		return;
@@ -320,7 +322,7 @@ extern void part_data_build_row_bitmaps(part_res_record_t *p_ptr,
 /* (re)create the global select_part_record array */
 extern void part_data_create_array(void)
 {
-	List part_rec_list = NULL;
+	list_t *part_rec_list = NULL;
 	list_itr_t *part_iterator;
 	part_record_t *p_ptr;
 	part_res_record_t *this_ptr, *last_ptr = NULL;
@@ -349,6 +351,7 @@ extern void part_data_create_array(void)
 			this_ptr->num_rows = 1;
 		/* we'll leave the 'row' array blank for now */
 		this_ptr->row = NULL;
+		this_ptr->rebuild_rows = false;
 		list_append(part_rec_list, this_ptr);
 	}
 	list_iterator_destroy(part_iterator);
@@ -452,10 +455,16 @@ extern part_res_record_t *part_data_dup_res(
 		if (node_map && orig_ptr->part_ptr->node_bitmap &&
 		    bit_overlap_any(node_map,
 				    orig_ptr->part_ptr->node_bitmap)) {
+			if (orig_ptr->rebuild_rows) {
+				/* This shouldn't happen. */
+				part_data_rebuild_rows(orig_ptr);
+			}
 			new_ptr->num_rows = orig_ptr->num_rows;
 			new_ptr->row = part_data_dup_row(orig_ptr->row,
 							 orig_ptr->num_rows);
-		}
+			new_ptr->rebuild_rows = orig_ptr->rebuild_rows;
+		} else
+			new_ptr->rebuild_rows = true;
 		if (orig_ptr->next) {
 			new_ptr->next = xmalloc(sizeof(part_res_record_t));
 			new_ptr = new_ptr->next;
@@ -518,4 +527,13 @@ extern part_row_data_t *part_data_dup_row(part_row_data_t *orig_row,
 		       (sizeof(struct job_resources *) * new_row[i].num_jobs));
 	}
 	return new_row;
+}
+
+/* rebuild select_part_record rows*/
+extern void part_data_rebuild_rows(part_res_record_t *part_ptr)
+{
+	for (; part_ptr; part_ptr = part_ptr->next) {
+		if (part_ptr->rebuild_rows)
+			part_data_build_row_bitmaps(part_ptr, NULL);
+	}
 }

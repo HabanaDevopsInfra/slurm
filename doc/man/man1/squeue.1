@@ -1,4 +1,4 @@
-.TH squeue "1" "Slurm Commands" "January 2024" "Slurm Commands"
+.TH squeue "1" "Slurm Commands" "June 2024" "Slurm Commands"
 
 .SH "NAME"
 squeue \- view information about jobs located in the Slurm scheduling queue.
@@ -36,12 +36,19 @@ array index values printed using a regular expression).
 
 .TP
 \fB\-M\fR, \fB\-\-clusters\fR=<\fIcluster_name\fR>
-Clusters to issue commands to.  Multiple cluster names may be comma separated.
+Clusters to issue commands to. Multiple cluster names may be comma separated.
 A value of '\fIall\fR' will query to run on all clusters.
 Note that the \fBslurmdbd\fR must be up for this option to work properly, unless
 running in a federation with either \fBFederationParameters=fed_display\fR
 configured or the \fB\-\-federation\fR option set.
 This option implicitly sets the \fB\-\-local\fR option.
+.IP
+
+.TP
+\fB\-\-expand\-patterns\fR
+Expand any filename patterns from in \f3StdOut\fP, \f3StdErr\fP and \f3StdIn\fP.
+Fields that map to a range of values will use the first value of the range. For
+example "%t" for task id will be replaced by "0".
 .IP
 
 .TP
@@ -152,7 +159,7 @@ default value of zero.
 .TP
 \fB%C\fR
 Number of CPUs (processors) requested by the job or allocated to
-it if already running.  As a job is completing this number will
+it if already running. As a job is completing this number will
 reflect the current number of CPUs allocated.
 (Valid for jobs only)
 .IP
@@ -380,7 +387,7 @@ See the \fBJOB REASON CODES\fR section below for more information.
 
 .TP
 \fB%R\fR
-For pending jobs: the reason a job is waiting for execution
+For pending jobs: the reason a job has not been started by the scheduler
 is printed within parenthesis.
 For terminated jobs with failure: an explanation as to why the
 job failed is printed within parenthesis.
@@ -894,7 +901,7 @@ The number of tasks per socket allocated to the job.
 .TP
 \fBNumCPUs\fR
 Number of CPUs (processors) requested by the job or allocated to
-it if already running.  As a job is completing, this number will
+it if already running. As a job is completing, this number will
 reflect the current number of CPUs allocated.
 (Valid for jobs and job steps)
 .IP
@@ -1359,7 +1366,7 @@ Equivalent to \fB\-\-user=<my username>\fR.
 
 .TP
 \fB\-n\fR, \fB\-\-name\fR=<\fIname_list\fR>
-Request jobs or job steps having one of the specified names.  The
+Request jobs or job steps having one of the specified names. The
 list consists of a comma separated list of job names.
 .IP
 
@@ -1388,8 +1395,9 @@ Opposite of \fB\-\-me\fR; only display jobs that are not from the invoking user.
 .IP
 
 .TP
-\fB\-\-only-job-state\fR
-Only query for the job state.
+\fB\-\-only\-job\-state\fR
+Only query for the job state. Query utilizes RPC that only retains JobID
+and State information, reducing work required by slurmctld to respond.
 .IP
 
 .TP
@@ -1458,7 +1466,7 @@ Slurm is configured to use the backfill scheduling plugin.
 
 .TP
 \fB\-t\fR, \fB\-\-states\fR=<\fIstate_list\fR>
-Specify the states of jobs to view.  Accepts a comma separated list of
+Specify the states of jobs to view. Accepts a comma separated list of
 state names or "all". If "all" is specified then jobs of all states will be
 reported. If no state is specified then pending, running, and completing
 jobs are reported. See the \fBJOB STATE CODES\fR section below for a list of
@@ -1468,14 +1476,8 @@ equivalent).
 .IP
 
 .TP
-\fB\-\-state\-only\fR
-Limit query to only grab job state. Query utilizes RPC that only retains JobID
-and State information reducing work required by slurmctld to respond.
-.IP
-
-.TP
 \fB\-s\fR, \fB\-\-steps\fR[=<\fIstep_list\fR>]
-Specify the job steps to view.  This flag indicates that a comma separated list
+Specify the job steps to view. This flag indicates that a comma separated list
 of job steps to view follows without an equal sign (see examples).
 The job step format is "job_id[_array_id].step_id". Defaults to all job
 steps. Since this option's argument is optional, for proper parsing
@@ -1509,20 +1511,20 @@ Print version information and exit.
 
 .TP
 \f3\-\-yaml\fP, \f3\-\-yaml\fP=\fIlist\fR, \f3\-\-yaml\fP=<\fIdata_parser\fR>
-Dump information as JSON using the default data_parser plugin or explicit
+Dump information as YAML using the default data_parser plugin or explicit
 data_parser with parameters. All information is dumped, even if it would
 normally not be. Sorting and formatting arguments passed to other options are
 ignored; however, filtering arguments are still used.
 .IP
 
 .SH "JOB REASON CODES"
-These codes identify the reason that a job is waiting for execution.
-A job may be waiting for more than one reason, in which case only
-one of those reasons is displayed.
+These codes identify the reason that a job has not been started by the scheduler.
+There may be multiple reasons why a job cannot start yet, in which case only the
+reason that was encountered by the attempted scheduling method will be displayed.
 
 The Reasons listed below are some of the more common ones you might see.
-For a full list of Reason codes see our Resource Limits page:
-<https://slurm.schedmd.com/resource_limits.html>
+For a full list of Reason codes refer to this page page:
+<https://slurm.schedmd.com/job_reason_codes.html>
 
 .TP 22
 \fBAssocGrp*Limit\fR
@@ -1730,7 +1732,8 @@ Waiting for the scheduler to determine the appropriate reason.
 Jobs typically pass through several states in the course of their
 execution.
 The typical states are PENDING, RUNNING, SUSPENDED, COMPLETING, and COMPLETED.
-An explanation of each state follows.
+The following states are recognized by squeue. A full list of possible states
+is available at <https://slurm.schedmd.com/job_state_codes.html>.
 
 .TP 20
 \fBBF  BOOT_FAIL\fR
@@ -2063,7 +2066,7 @@ any later version.
 .LP
 Slurm is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
 details.
 .SH "SEE ALSO"
 \fBscancel\fR(1), \fBscontrol\fR(1), \fBsinfo\fR(1), \fBsrun\fR(1),

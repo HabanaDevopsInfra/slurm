@@ -16,8 +16,6 @@ libcommon_la_SOURCES =				\
 	callerid.h				\
 	cbuf.c					\
 	cbuf.h					\
-	conmgr.c				\
-	conmgr.h				\
 	core_array.c				\
 	core_array.h				\
 	cpu_frequency.c				\
@@ -40,6 +38,7 @@ libcommon_la_SOURCES =				\
 	fetch_config.h				\
 	forward.c				\
 	forward.h				\
+	front_end.h				\
 	global_defaults.c			\
 	group_cache.c				\
 	group_cache.h				\
@@ -59,6 +58,8 @@ libcommon_la_SOURCES =				\
 	job_features.h				\
 	job_options.c				\
 	job_options.h				\
+	job_record.c				\
+	job_record.h				\
 	job_resources.c				\
 	job_resources.h				\
 	job_state_reason.c			\
@@ -68,6 +69,8 @@ libcommon_la_SOURCES =				\
 	log.c					\
 	log.h					\
 	macros.h				\
+	msg_type.c				\
+	msg_type.h				\
 	net.c					\
 	net.h					\
 	node_conf.c				\
@@ -86,10 +89,16 @@ libcommon_la_SOURCES =				\
 	parse_time.h				\
 	parse_value.c				\
 	parse_value.h				\
+	part_record.c				\
+	part_record.h				\
+	persist_conn.c				\
+	persist_conn.h				\
 	plugin.c				\
 	plugin.h				\
 	plugrack.c				\
 	plugrack.h				\
+	port_mgr.c				\
+	port_mgr.h				\
 	print_fields.c				\
 	print_fields.h				\
 	proc_args.c				\
@@ -110,19 +119,17 @@ libcommon_la_SOURCES =				\
 	slurm_errno.c				\
 	slurm_opt.c				\
 	slurm_opt.h				\
-	slurm_persist_conn.c			\
-	slurm_persist_conn.h			\
 	slurm_protocol_api.c			\
 	slurm_protocol_api.h			\
 	slurm_protocol_common.h			\
 	slurm_protocol_defs.c			\
 	slurm_protocol_defs.h			\
-	slurm_protocol_interface.h		\
 	slurm_protocol_pack.c			\
 	slurm_protocol_pack.h			\
 	slurm_protocol_util.c			\
 	slurm_protocol_util.h			\
 	slurm_protocol_socket.c			\
+	slurm_protocol_socket.h			\
 	slurm_resolv.c				\
 	slurm_resolv.h				\
 	slurm_resource_info.c			\
@@ -165,14 +172,14 @@ libcommon_la_SOURCES =				\
 	util-net.h				\
 	working_cluster.c			\
 	working_cluster.h			\
-	workq.c					\
-	workq.h					\
 	write_labelled_message.c		\
 	write_labelled_message.h		\
 	x11_util.c				\
 	x11_util.h				\
 	xassert.c				\
 	xassert.h				\
+	xahash.c				\
+	xahash.h				\
 	xhash.c					\
 	xhash.h					\
 	xmalloc.c				\

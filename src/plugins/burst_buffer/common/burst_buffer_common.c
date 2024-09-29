@@ -95,7 +95,7 @@ static uid_t *_parse_users(char *buf)
 		return user_array;
 	tmp = xstrdup(buf);
 	array_size = 1;
-	user_array = xmalloc(sizeof(uid_t) * array_size);
+	user_array = xcalloc(array_size, sizeof(uid_t));
 	tok = strtok_r(tmp, ",", &save_ptr);
 	while (tok) {
 		if ((uid_from_string(tok, user_array + inx) == -1) ||
@@ -139,9 +139,9 @@ static char *_print_users(uid_t *buf)
 /* Allocate burst buffer hash tables */
 extern void bb_alloc_cache(bb_state_t *state_ptr)
 {
-	state_ptr->bb_ahash = xmalloc(sizeof(bb_alloc_t *) * BB_HASH_SIZE);
-	state_ptr->bb_jhash = xmalloc(sizeof(bb_job_t *)   * BB_HASH_SIZE);
-	state_ptr->bb_uhash = xmalloc(sizeof(bb_user_t *)  * BB_HASH_SIZE);
+	state_ptr->bb_ahash = xcalloc(BB_HASH_SIZE, sizeof(bb_alloc_t *));
+	state_ptr->bb_jhash = xcalloc(BB_HASH_SIZE, sizeof(bb_job_t *));
+	state_ptr->bb_uhash = xcalloc(BB_HASH_SIZE, sizeof(bb_user_t *));
 }
 
 /* Clear all cached burst buffer records, freeing all memory. */
@@ -350,6 +350,10 @@ char *_handle_replacement(job_record_t *job_ptr)
 			case 'a':	/* '%a' => array task id */
 				xstrfmtcat(replaced, "%u",
 					   job_ptr->array_task_id);
+				break;
+			case 'b':	/* '%b' => array task id modulo 10 */
+				xstrfmtcat(replaced, "%u",
+					   job_ptr->array_task_id % 10);
 				break;
 			case 'd':	/* '%d' => workdir */
 				xstrcat(replaced, job_ptr->details->work_dir);
@@ -825,7 +829,7 @@ extern void bb_pack_state(bb_state_t *state_ptr, buf_t *buffer,
 	int i;
 
 
-	if (protocol_version >= SLURM_24_08_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_24_05_PROTOCOL_VERSION) {
 		packstr(config_ptr->allow_users_str, buffer);
 		packstr(config_ptr->create_buffer,   buffer);
 		packstr(config_ptr->default_pool,    buffer);
@@ -1775,7 +1779,7 @@ extern int bb_test_size_limit(job_record_t *job_ptr, bb_job_t *bb_job,
 	int i, j, k, rc = BB_CAN_START_NOW;
 	bool avail_ok, do_preempt, preempt_ok;
 	time_t now = time(NULL);
-	List preempt_list = NULL;
+	list_t *preempt_list = NULL;
 	list_itr_t *preempt_iter;
 	bb_state_t bb_state = *bb_state_ptr;
 
@@ -2039,7 +2043,7 @@ extern void bb_update_system_comment(job_record_t *job_ptr, char *operation,
 		slurmdb_job_cond_t job_cond;
 		slurmdb_job_rec_t job_rec;
 		slurm_selected_step_t selected_step;
-		List ret_list;
+		list_t *ret_list;
 
 		memset(&job_cond, 0, sizeof(slurmdb_job_cond_t));
 		memset(&job_rec, 0, sizeof(slurmdb_job_rec_t));

@@ -49,7 +49,6 @@
 typedef struct {
 	int (*init)(void);
 	int (*fini)(void);
-	data_t *(*get_oas)(openapi_spec_flags_t *flags);
 	int (*get_paths)(const openapi_path_binding_t **paths_ptr,
 			 const openapi_resp_meta_t **meta_ptr);
 } funcs_t;
@@ -60,7 +59,6 @@ typedef struct {
 static const char *syms[] = {
 	"slurm_openapi_p_init",
 	"slurm_openapi_p_fini",
-	"slurm_openapi_p_get_specification",
 	"slurm_openapi_p_get_paths",
 };
 
@@ -100,21 +98,6 @@ typedef struct {
 } path_t;
 
 typedef struct {
-	entry_method_t *method;
-	entry_t *entries;
-	path_t *path;
-	const char *str_path;
-	data_t *spec;
-} populate_methods_t;
-
-typedef struct {
-	const data_t *path;        /* path requested to match */
-	const data_t *path_list;   /* dictionary of all paths under server */
-	const data_t *server_path; /* path from servers object */
-	const data_t *found;
-} match_path_string_t;
-
-typedef struct {
 	const data_t *dpath;
 	path_t *path;
 	data_t *params;
@@ -123,23 +106,11 @@ typedef struct {
 	int tag;
 } match_path_from_data_t;
 
-typedef struct {
-	data_t *src_paths;
-	data_t *dst_paths;
-	openapi_spec_flags_t flags;
-} merge_path_server_t;
-
-typedef struct {
-	const char *name;
-	bool found;
-} list_find_dict_name_t;
-
 #define MAGIC_MERGE_PATH 0x22b2ae44
 typedef struct {
 	int magic; /* MAGIC_MERGE_PATH */
 	data_t *paths;
 	data_t *server_path;
-	openapi_spec_flags_t flags;
 } merge_path_t;
 
 #define MAGIC_MERGE_ID_PATH 0x22b2aeae
@@ -172,8 +143,6 @@ typedef struct {
 
 static list_t *paths = NULL;
 static int path_tag_counter = 0;
-static data_t **specs = NULL;
-static openapi_spec_flags_t *spec_flags = NULL;
 static plugins_t *plugins = NULL;
 static data_parser_t **parsers = NULL; /* symlink to parser array */
 
@@ -293,7 +262,7 @@ static const openapi_path_binding_method_t openapi_methods[] = {
 
 static int _op_handler_openapi(openapi_ctxt_t *ctxt);
 
-#define OP_FLAGS (OP_BIND_HIDDEN_OAS)
+#define OP_FLAGS (OP_BIND_HIDDEN_OAS | OP_BIND_NO_SLURMDBD)
 
 /*
  * Paths to generate OpenAPI specification
@@ -326,6 +295,17 @@ static const openapi_path_binding_t openapi_paths[] = {
 	{0}
 };
 
+static const http_status_code_t *response_status_codes = NULL;
+/*
+ * Default to "default" and 200 as openapi generator breaks with only "default"
+ * response code.
+ */
+static const http_status_code_t default_response_status_codes[] = {
+	HTTP_STATUS_CODE_SUCCESS_OK,
+	HTTP_STATUS_CODE_DEFAULT,
+	HTTP_STATUS_NONE
+};
+
 static char *_entry_to_string(entry_t *entry);
 
 static const char *_get_entry_type_string(entry_type_t type)
@@ -347,21 +327,6 @@ static int _resolve_parser_index(data_parser_t *parser)
 			return i;
 
 	fatal_abort("Unable to find parser. This should never happen!");
-}
-
-static const data_t *_resolve_ref(const data_t *spec, const data_t *dref)
-{
-	const char *ref;
-
-	if (!dref)
-		return NULL;
-
-	ref = data_get_string_const(dref);
-
-	if (ref[0] == '#')
-		ref = &ref[1];
-
-	return data_resolve_dict_path_const(spec, ref);
 }
 
 static void _free_entry_list(entry_t *entry, int tag,
@@ -408,6 +373,7 @@ static void _list_delete_path_t(void *x)
 	}
 
 	xfree(path->methods);
+	xfree(path->path);
 	path->magic = ~MAGIC_PATH;
 	xfree(path);
 }
@@ -477,10 +443,7 @@ again:
 	return entries;
 
 fail:
-	for (entry = entries; entry <= entries + count; entry++)
-		xfree(entry->entry);
-
-	xfree(entries);
+	_free_entry_list(entries, -1, NULL);
 	xfree(buffer);
 	if (count_ptr)
 		*count_ptr = -1;
@@ -527,212 +490,6 @@ extern void print_path_tag_methods(int tag)
 		error("%s: Tag %d not found in paths", __func__, tag);
 }
 
-static bool _match_server_path(const data_t *server_path, const data_t *path,
-			       const data_t *match_path)
-{
-	bool found;
-	const data_t *join[3] = {0};
-	data_t *joined_path;
-
-	join[0] = server_path;
-	join[1] = path;
-	joined_path = data_list_join(join, true);
-	found = data_check_match(joined_path, match_path, false);
-
-	if (get_log_level() >= LOG_LEVEL_DEBUG5) {
-		char *joined_path_str = NULL, *mpath_str = NULL;
-
-		serialize_g_data_to_string(&joined_path_str, NULL, joined_path,
-					   MIME_TYPE_JSON, SER_FLAGS_COMPACT);
-		serialize_g_data_to_string(&mpath_str, NULL, match_path,
-					   MIME_TYPE_JSON, SER_FLAGS_COMPACT);
-
-		debug5("%s: match:%s server_path:%s match_path:%s",
-		       __func__, (found ? "T" : "F"),
-		       joined_path_str, mpath_str);
-
-		xfree(joined_path_str);
-		xfree(mpath_str);
-	}
-
-	FREE_NULL_DATA(joined_path);
-
-	return found;
-}
-
-static data_for_each_cmd_t _match_server_override(const data_t *data,
-						  void *arg)
-{
-	const data_t **fargs = (const data_t **) arg;
-	const data_t *surl;
-	data_t *spath;
-	data_for_each_cmd_t rc = DATA_FOR_EACH_CONT;
-
-	surl = data_resolve_dict_path_const(data, "url");
-
-	if (!surl) {
-		char *d = NULL;
-
-		serialize_g_data_to_string(&d, NULL, data, MIME_TYPE_JSON,
-					   SER_FLAGS_COMPACT);
-
-		fatal("%s: server %s lacks url field required per OASv3.0.3 section 4.7.5",
-		      __func__, d);
-	}
-
-	spath = parse_url_path(data_get_string_const(surl), true, true);
-
-	if (_match_server_path(spath, fargs[1], fargs[0])) {
-		fargs[2] = data;
-		rc = DATA_FOR_EACH_STOP;
-	}
-
-	FREE_NULL_DATA(spath);
-
-	return rc;
-}
-
-static data_for_each_cmd_t _match_path_string(const char *key,
-					      const data_t *data,
-					      void *arg)
-{
-	match_path_string_t *args = arg;
-	data_t *mpath;
-	data_for_each_cmd_t rc = DATA_FOR_EACH_CONT;
-	const data_t *servers = data_key_get_const(data, "servers");
-
-	mpath = parse_url_path(key, true, true);
-
-	if (servers) {
-		/*
-		 * Alternative server specified per OASv3.0.3 section 4.7.9.1
-		 * which overrides the global servers settings
-		 */
-		const data_t *fargs[3] = {0};
-		fargs[0] = args->path;
-		fargs[1] = mpath;
-
-		if (data_list_for_each_const(servers, _match_server_override,
-					     &fargs) < 0)
-			fatal_abort("%s: unexpected for each failure",
-				    __func__);
-
-		if (fargs[2]) {
-			args->found = data;
-			rc = DATA_FOR_EACH_STOP;
-		}
-	} else if (_match_server_path(args->server_path, mpath, args->path)) {
-		args->found = data;
-		rc = DATA_FOR_EACH_STOP;
-	}
-
-	FREE_NULL_DATA(mpath);
-	return rc;
-}
-
-static data_for_each_cmd_t _match_server_path_string(const data_t *data,
-						     void *arg)
-{
-	match_path_string_t *args = arg;
-	const data_t *surl;
-	data_t *spath = NULL;
-	data_for_each_cmd_t rc = DATA_FOR_EACH_CONT;
-
-	surl = data_resolve_dict_path_const(data, "url");
-
-	if (!surl) {
-		char *d = NULL;
-
-		serialize_g_data_to_string(&d, NULL, data, MIME_TYPE_JSON,
-					   SER_FLAGS_COMPACT);
-
-		fatal("%s: server %s lacks url field required per OASv3.0.3 section 4.7.5",
-		      __func__, d);
-	}
-
-	args->server_path = spath = parse_url_path(data_get_string_const(surl),
-						   true, true);
-
-	if ((data_dict_for_each_const(args->path_list, _match_path_string, arg)
-	     < 0) || args->found)
-		rc = DATA_FOR_EACH_STOP;
-
-	FREE_NULL_DATA(spath);
-	args->server_path = NULL;
-
-	return rc;
-}
-
-static const data_t *_find_spec_path(const char *str_path, data_t **spec)
-{
-	match_path_string_t args = {0};
-	data_t *path = parse_url_path(str_path, true, true);
-	args.path = path;
-
-	for (size_t i = 0; i < plugins->count; i++) {
-		const data_t *servers =
-			data_resolve_dict_path_const(specs[i], "/servers");
-		args.path_list =
-			data_resolve_dict_path_const(specs[i], "/paths");
-
-		if (!args.path_list ||
-		    (data_get_type(args.path_list) != DATA_TYPE_DICT) ||
-		    !servers)
-			continue;
-
-		if (data_list_for_each_const(servers, _match_server_path_string,
-					     &args) < 0)
-			continue;
-
-		if (args.found) {
-			*spec = specs[i];
-			break;
-		}
-	}
-
-	FREE_NULL_DATA(path);
-	return args.found;
-}
-
-static data_for_each_cmd_t _populate_parameters(const data_t *data, void *arg)
-{
-	populate_methods_t *args = arg;
-	entry_t *entry;
-	const char *key = NULL;
-	const data_t *dname, *dref;
-
-	if ((dref = data_key_get_const(data, "$ref")))
-		data = _resolve_ref(args->spec, dref);
-
-	dname = data_key_get_const(data, "name");
-
-	if (!dname || !(key = data_get_string_const(dname)) || !key[0]) {
-		/* parameter doesn't have a name! */
-		fatal("%s: path %s parameter has invalid name",
-		      __func__, args->str_path);
-	}
-
-	for (entry = args->entries; entry->type; entry++)
-		if (entry->type == OPENAPI_PATH_ENTRY_MATCH_PARAMETER &&
-		    !xstrcasecmp(entry->name, key)) {
-			char *buffer = NULL;
-			if (!data_retrieve_dict_path_string(data, "schema/type",
-							    &buffer)) {
-				entry->parameter =
-					openapi_string_to_type(buffer);
-				if (entry->parameter == OPENAPI_TYPE_INVALID)
-					fatal("%s: invalid type for %s",
-					      __func__, key);
-			} else
-				fatal("%s: missing schema type for %s",
-				      __func__, key);
-			xfree(buffer);
-			return DATA_FOR_EACH_CONT;
-		}
-
-	return DATA_FOR_EACH_CONT;
-}
-
 static void _clone_entries(entry_t **dst_ptr, entry_t *src, int count)
 {
 	entry_t *dst = xcalloc((count + 1), sizeof(*dst));
@@ -748,71 +505,6 @@ static void _clone_entries(entry_t **dst_ptr, entry_t *src, int count)
 		dst->type = src->type;
 		dst->parameter = src->parameter;
 	}
-}
-
-static data_for_each_cmd_t _populate_methods(const char *key,
-					     const data_t *data,
-					     void *arg)
-{
-	populate_methods_t *args = arg;
-	populate_methods_t nargs = *args;
-	entry_method_t *method = args->method;
-	const data_t *para, *ref;
-	int count = 0;
-	entry_t *entry;
-	http_request_method_t method_type;
-
-	if (!xstrcasecmp(key, "servers"))
-		return DATA_FOR_EACH_CONT;
-
-	if ((method_type = get_http_method(key)) == HTTP_REQUEST_INVALID)
-		fatal("%s: path %s has invalid HTTP method %s",
-		      __func__, args->str_path, key);
-
-	method->method = method_type;
-
-	if (data_get_type(data) != DATA_TYPE_DICT)
-		fatal("%s: path %s has unexpected data type %s instead of dictionary",
-		      __func__, args->str_path, data_get_type_string(data));
-
-	for (entry = args->entries; entry->type; entry++)
-		count++;
-
-	if (!method->entries) {
-		/* Copy spec entry list into method entry list */
-		_clone_entries(&method->entries, args->entries, count);
-	}
-
-	/* point to new entries clone */
-	nargs.entries = method->entries;
-
-	para = data_key_get_const(data, "parameters");
-	if (!para || ((data_get_type(para) == DATA_TYPE_DICT) &&
-		      (ref = data_key_get_const(para, OPENAPI_REF_TAG)))) {
-		/* increment to next method entry */
-		args->method++;
-		return DATA_FOR_EACH_CONT;
-	}
-	if (data_get_type(para) != DATA_TYPE_LIST)
-		fatal("%s: path %s parameters field is unexpected type %s",
-		      __func__, args->str_path, data_get_type_string(para));
-	if (data_list_for_each_const(para, _populate_parameters, &nargs) < 0)
-		fatal("%s: path %s parameters failed parsing",
-		      __func__, args->str_path);
-
-	/* increment to next method entry */
-	args->method++;
-
-	if (get_log_level() >= LOG_LEVEL_DEBUG5)
-		for (entry = method->entries; entry->type; entry++) {
-			debug5("%s: add path %s entry: method=%s tag=%d entry=%s name=%s parameter=%s entry_type=%s",
-			       __func__, args->str_path, key, args->path->tag,
-			       entry->entry, entry->name,
-			       openapi_type_to_string(entry->parameter),
-			       _get_entry_type_string(entry->type));
-		}
-
-	return DATA_FOR_EACH_CONT;
 }
 
 static void _check_openapi_path_binding(const openapi_path_binding_t *op_path)
@@ -849,20 +541,55 @@ static void _check_openapi_path_binding(const openapi_path_binding_t *op_path)
 #endif /* !NDEBUG */
 }
 
+static bool _data_parser_supports_type(data_parser_t *parser,
+				       data_parser_type_t type)
+{
+	openapi_type_t oapi_type;
+
+	oapi_type = data_parser_g_resolve_openapi_type(parser, type, NULL);
+	xassert(oapi_type >= OPENAPI_TYPE_INVALID);
+	xassert(oapi_type < OPENAPI_TYPE_MAX);
+
+	return (oapi_type != OPENAPI_TYPE_INVALID);
+}
+
+static bool _data_parser_supports_method(data_parser_t *parser,
+					 const openapi_path_binding_method_t *m)
+{
+	/* check that parser supports each possible type if set */
+
+	if ((m->response.type != DATA_PARSER_TYPE_INVALID) &&
+	    !_data_parser_supports_type(parser, m->response.type))
+		return false;
+
+	if ((m->parameters != DATA_PARSER_TYPE_INVALID) &&
+	    !_data_parser_supports_type(parser, m->parameters))
+		return false;
+
+	if ((m->query != DATA_PARSER_TYPE_INVALID) &&
+	    !_data_parser_supports_type(parser, m->query))
+		return false;
+
+	if ((m->body.type != DATA_PARSER_TYPE_INVALID) &&
+	    !_data_parser_supports_type(parser, m->body.type))
+		return false;
+
+	return true;
+}
+
 extern int register_path_binding(const char *in_path,
 				 const openapi_path_binding_t *op_path,
 				 const openapi_resp_meta_t *meta,
-				 data_parser_t *parser)
+				 data_parser_t *parser, int *tag_ptr)
 {
 	entry_t *entries = NULL;
 	int tag = -1, methods_count = 0, entries_count = 0;
 	path_t *p = NULL;
 	const char *path = (in_path ? in_path : op_path->path);
 
-	debug4("%s: binding %s for %s",
-	       __func__,
-	       (parser ? data_parser_get_plugin_version(parser) :
-		"data_parser/none"), path);
+	debug4("%s: attempting to bind %s with %s",
+	       __func__, (parser ? data_parser_get_plugin_version(parser) :
+			  "data_parser/none"), path);
 
 	xassert(!!in_path == !!(op_path->flags & OP_BIND_DATA_PARSER));
 	_check_openapi_path_binding(op_path);
@@ -870,10 +597,20 @@ extern int register_path_binding(const char *in_path,
 	if (!(entries = _parse_openapi_path(path, &entries_count)))
 		fatal("%s: parse_openapi_path(%s) failed", __func__, path);
 
-	for (methods_count = 0;
-	     op_path->methods[methods_count].method != HTTP_REQUEST_INVALID;
-	     methods_count++)
-		/* do nothing */;
+	for (int i = 0; op_path->methods[i].method != HTTP_REQUEST_INVALID;
+	     i++) {
+		if (!_data_parser_supports_method(parser, &op_path->methods[i]))
+			continue;
+
+		methods_count++;
+	}
+
+	if (!methods_count) {
+		debug5("%s: skip binding %s with %s",
+		       __func__, path, data_parser_get_plugin(parser));
+		_free_entry_list(entries, -1, NULL);
+		return ESLURM_NOT_SUPPORTED;
+	}
 
 	tag = path_tag_counter++;
 
@@ -885,13 +622,24 @@ extern int register_path_binding(const char *in_path,
 	p->parser = parser;
 	p->path = xstrdup(path);
 
-	for (int i = 0;; i++) {
+	for (int i = 0, mi = 0;; i++) {
 		const openapi_path_binding_method_t *m = &op_path->methods[i];
-		entry_method_t *t = &p->methods[i];
+		entry_method_t *t = &p->methods[mi];
 		entry_t *e;
 
 		if (m->method == HTTP_REQUEST_INVALID)
 			break;
+
+		/*
+		 * Skip method if data_parser does not support any of the in/out
+		 * types which would just cause slurmrestd to abort() later.
+		 */
+		if (!_data_parser_supports_method(parser, m)) {
+			debug5("%s: skip binding \"%s %s\" with %s",
+			       __func__, get_http_method_string(m->method),
+			       path, data_parser_get_plugin(parser));
+			continue;
+		}
 
 		t->method = m->method;
 		t->bound = m;
@@ -915,77 +663,14 @@ extern int register_path_binding(const char *in_path,
 			       e->name, openapi_type_to_string(e->parameter),
 			       _get_entry_type_string(e->type));
 		}
+
+		/* only move to next method if populated */
+		mi++;
 	}
 
 	list_append(paths, p);
-	return tag;
-}
-
-extern int register_path_tag(const char *str_path)
-{
-	int rc = -1;
-	path_t *path = NULL;
-	const data_t *spec_entry;
-	populate_methods_t args = {
-		.str_path = str_path,
-	};
-	entry_t *entries = _parse_openapi_path(str_path, NULL);
-
-	if (!entries)
-		fatal("%s: _parse_openapi_path(%s) failed", __func__, str_path);
-
-	spec_entry = _find_spec_path(str_path, &args.spec);
-	if (!spec_entry)
-		fatal("%s: _find_spec_path(%s) failed", __func__, str_path);
-
-	if (data_get_type(spec_entry) != DATA_TYPE_DICT) {
-		debug4("%s: ignoring %s at %s",
-		       __func__, data_get_type_string(spec_entry),
-		       str_path);
-		goto cleanup;
-	}
-
-	path = xmalloc(sizeof(*path));
-	path->magic = MAGIC_PATH;
-	path->tag = path_tag_counter++;
-	path->methods = xcalloc((data_get_dict_length(spec_entry) + 1),
-				sizeof(*path->methods));
-
-	args.method = path->methods;
-	args.entries = entries;
-	args.path = path;
-	if (data_dict_for_each_const(spec_entry, _populate_methods, &args) < 0)
-		fatal("%s: _populate_methods() failed", __func__);
-
-	list_append(paths, path);
-
-	rc = path->tag;
-
-cleanup:
-	_free_entry_list(entries, (path ? path->tag : -1), NULL);
-	entries = NULL;
-
-	return rc;
-}
-
-static int _rm_path_by_tag(void *x, void *tptr)
-{
-	path_t *path = (path_t *)x;
-	const int tag = *(int*)tptr;
-
-	xassert(path->magic == MAGIC_PATH);
-
-	if (path->tag != tag)
-		return 0;
-
-	debug5("%s: removing tag %d", __func__, path->tag);
-
-	return 1;
-}
-
-extern void unregister_path_tag(int tag)
-{
-	list_delete_all(paths, _rm_path_by_tag, &tag);
+	*tag_ptr = tag;
+	return SLURM_SUCCESS;
 }
 
 /*
@@ -1069,10 +754,10 @@ static data_for_each_cmd_t _match_path(const data_t *data, void *y)
 		if (data_get_type(data) != DATA_TYPE_STRING)
 			return DATA_FOR_EACH_FAIL;
 
-		match = !xstrcmp(data_get_string_const(data), entry->entry);
+		match = !xstrcmp(data_get_string(data), entry->entry);
 
 		debug5("%s: string attempt match %s to %s: %s",
-		       __func__, entry->entry, data_get_string_const(data),
+		       __func__, entry->entry, data_get_string(data),
 		       (match ? "SUCCESS" : "FAILURE"));
 
 		if (!match)
@@ -1211,41 +896,6 @@ extern int find_path_tag(const data_t *dpath, data_t *params,
 	return args.tag;
 }
 
-static data_for_each_cmd_t _foreach_remove_template(const char *key,
-						    data_t *data, void *arg)
-{
-	/* remove every path with {data_parser} */
-
-	if (!xstrstr(key, OPENAPI_DATA_PARSER_PARAM))
-		return DATA_FOR_EACH_CONT;
-	else
-		return DATA_FOR_EACH_DELETE;
-}
-
-static int _apply_data_parser_specs(int plugin_id)
-{
-	data_t *paths, *spec = specs[plugin_id];
-
-	if (parsers) {
-		for (int i = 0; parsers[i]; i++) {
-			int rc;
-
-			if ((rc = data_parser_g_specify(parsers[i], spec)) &&
-			    (rc != ESLURM_NOT_SUPPORTED)) {
-				error("%s: parser specification failed: %s",
-				      __func__, slurm_strerror(rc));
-				return rc;
-			}
-		}
-	}
-
-	/* scrub the paths with {data_parser} */
-	paths = data_resolve_dict_path(spec, OPENAPI_PATHS_PATH);
-	(void) data_dict_for_each(paths, _foreach_remove_template, NULL);
-
-	return SLURM_SUCCESS;
-}
-
 static int _bind_paths(const openapi_path_binding_t *paths,
 		       const openapi_resp_meta_t *meta)
 {
@@ -1262,12 +912,18 @@ static int _bind_paths(const openapi_path_binding_t *paths,
 }
 
 extern int init_openapi(const char *plugin_list, plugrack_foreach_t listf,
-			data_parser_t **parsers_ptr)
+			data_parser_t **parsers_ptr,
+			const http_status_code_t *resp_status_codes)
 {
 	int rc;
 
-	if (specs)
+	if (paths)
 		fatal("%s called twice", __func__);
+
+	if (resp_status_codes)
+		response_status_codes = resp_status_codes;
+	else
+		response_status_codes = default_response_status_codes;
 
 	paths = list_create(_list_delete_path_t);
 
@@ -1297,33 +953,19 @@ extern int init_openapi(const char *plugin_list, plugrack_foreach_t listf,
 		fatal("No OpenAPI plugins loaded.");
 
 	parsers = parsers_ptr;
-	specs = xcalloc((plugins->count + 1), sizeof(*specs));
-	spec_flags = xcalloc((plugins->count + 1), sizeof(*spec_flags));
 
 	for (size_t i = 0; i < plugins->count; i++) {
 		const funcs_t *funcs = plugins->functions[i];
+		const openapi_path_binding_t *paths;
+		const openapi_resp_meta_t *meta;
 
-		spec_flags[i] = OAS_FLAG_NONE;
-		if ((specs[i] = funcs->get_oas(&(spec_flags[i])))) {
-			debug2("%s: loaded plugin %s with flags 0x%"PRIx64,
-			       __func__, plugins->types[i], spec_flags[i]);
+		if ((rc = funcs->get_paths(&paths, &meta)))
+			fatal("Failure loading plugin path bindings: %s",
+			      slurm_strerror(rc));
 
-			if (spec_flags[i] & OAS_FLAG_SET_DATA_PARSER_SPEC)
-				_apply_data_parser_specs(i);
-		} else {
-			const openapi_path_binding_t *paths;
-			const openapi_resp_meta_t *meta;
-
-			rc = funcs->get_paths(&paths, &meta);
-
-			if (rc && (rc != ESLURM_NOT_SUPPORTED))
-				fatal("Failure loading plugin path bindings: %s",
-				      slurm_strerror(rc));
-
-			if ((rc = _bind_paths(paths, meta)))
-				fatal("Unable to bind openapi specification paths: %s",
-				      slurm_strerror(rc));
-		}
+		if ((rc = _bind_paths(paths, meta)))
+			fatal("Unable to bind openapi specification paths: %s",
+			      slurm_strerror(rc));
 	}
 
 	/* Call init() after all plugins are fully loaded */
@@ -1337,43 +979,16 @@ extern int init_openapi(const char *plugin_list, plugrack_foreach_t listf,
 
 extern void destroy_openapi(void)
 {
-	if (!specs)
+	if (!paths)
 		return;
 
 	for (size_t i = 0; i < plugins->count; i++) {
 		const funcs_t *funcs = plugins->functions[i];
 		funcs->fini();
-		FREE_NULL_DATA(specs[i]);
 	}
 
 	FREE_NULL_PLUGINS(plugins);
 	FREE_NULL_LIST(paths);
-	xfree(specs);
-	xfree(spec_flags);
-}
-
-static data_for_each_cmd_t _merge_schema(const char *key, data_t *data,
-					 void *arg)
-{
-	data_t *cs = arg;
-	data_t *e;
-
-	if (data_get_type(data) != DATA_TYPE_DICT) {
-		error("%s: expected schema[%s] as type dictionary but got type %s",
-		      __func__, key, data_get_type_string(data));
-		return DATA_FOR_EACH_FAIL;
-	}
-
-	xassert(cs && (data_get_type(cs) == DATA_TYPE_DICT));
-	e = data_key_set(cs, key);
-
-	if (data_get_type(e) != DATA_TYPE_NULL)
-		debug("%s: overwriting component schema %s",
-		      __func__, key);
-
-	(void) data_copy(e, data);
-
-	return DATA_FOR_EACH_CONT;
 }
 
 static data_for_each_cmd_t _merge_operationId_strings(data_t *data, void *arg)
@@ -1402,30 +1017,9 @@ static data_for_each_cmd_t _merge_operationId_strings(data_t *data, void *arg)
 	return DATA_FOR_EACH_CONT;
 }
 
-static data_for_each_cmd_t _foreach_strip_dots(data_t *data, void *arg)
-{
-	char *src = xstrdup(data_get_string(data));
-	char *dst = src;
-
-	xassert(src && src[0]);
-
-	for (char *i = src; *i; i++) {
-		if (*i == '.')
-			continue;
-
-		*dst = *i;
-		dst++;
-	}
-
-	*dst = '\0';
-	xassert(src && src[0]);
-	data_set_string_own(data, src);
-	return DATA_FOR_EACH_CONT;
-}
-
 static data_for_each_cmd_t _foreach_strip_params(data_t *data, void *arg)
 {
-	char *item = data_get_string(data);
+	const char *item = data_get_string(data);
 	data_t **last_ptr = arg;
 	int len = strlen(item);
 
@@ -1467,211 +1061,6 @@ static data_for_each_cmd_t _foreach_strip_params(data_t *data, void *arg)
 	return DATA_FOR_EACH_DELETE;
 }
 
-/*
- * Merge plugin id with operationIds in paths.
- * All operationIds must be globaly unique.
- */
-static data_for_each_cmd_t _differentiate_path_operationId(const char *key,
-							   data_t *data,
-							   void *arg)
-{
-	data_t *merge[6] = {0}, *merged = NULL;
-	id_merge_path_t *args = arg;
-	data_t *op = NULL;
-
-	xassert(args->magic == MAGIC_MERGE_ID_PATH);
-	xassert(args->merge_args->magic == MAGIC_MERGE_PATH);
-
-	if (data_get_type(data) != DATA_TYPE_DICT)
-		return DATA_FOR_EACH_CONT;
-
-	if (args->merge_args->flags & OAS_FLAG_MANGLE_OPID) {
-		data_t *server_path;
-
-		if (!(op = data_key_get(data, "operationId"))) {
-			debug2("%s: [%s %s] unexpected missing operationId",
-			       __func__, key, args->path);
-			return DATA_FOR_EACH_CONT;
-		}
-
-		/* force operationId to be a string */
-		if (data_convert_type(op, DATA_TYPE_STRING) !=
-		    DATA_TYPE_STRING) {
-			error("%s: [%s %s] unexpected type for operationId: %s",
-			      __func__, key, args->path,
-			      data_get_type_string(op));
-			return DATA_FOR_EACH_FAIL;
-		}
-
-		server_path = data_copy(NULL, args->server_path);
-		(void) data_list_for_each(server_path, _foreach_strip_dots,
-					  NULL);
-
-		merge[0] = server_path;
-		merge[1] = data_copy(NULL, op);
-	} else if (args->merge_args->flags & OAS_FLAG_SET_OPID) {
-		data_t *last = NULL;
-		data_t *path = parse_url_path(args->path, false, true);
-
-		(void) data_list_for_each(path, _foreach_strip_params, &last);
-
-		op = data_key_set(data, "operationId");
-
-		merge[0] = args->server_path;
-		merge[1] = data_list_dequeue(path); /* slurm vs slurmdb */
-		merge[2] = data_list_dequeue(path); /* v0.0.XX */
-		merge[3] = data_set_string(data_new(), key);
-		merge[4] = path;
-	}
-
-	merged = data_list_join((const data_t **) merge, true);
-	if (data_list_for_each(merged, _merge_operationId_strings, args) < 0) {
-		FREE_NULL_DATA(merged);
-		return DATA_FOR_EACH_FAIL;
-	}
-
-	for (int i = 0; i < ARRAY_SIZE(merge); i++)
-		if (merge[i] != args->server_path)
-			FREE_NULL_DATA(merge[i]);
-
-	debug5("%s: [%s %s] setting OperationId %s -> %s",
-	       __func__, key, args->path, (op && (data_get_type(op) ==
-					    DATA_TYPE_STRING) ?
-					   data_get_string(op) : "\"\""),
-	       args->operation);
-
-	data_set_string_own(op, args->operation);
-	args->operation = NULL;
-	FREE_NULL_DATA(merged);
-
-	return DATA_FOR_EACH_CONT;
-}
-
-static data_for_each_cmd_t _find_first_server(data_t *data, void *arg)
-{
-	data_t **srv = arg;
-	data_t *url;
-
-	if (data_get_type(data) != DATA_TYPE_DICT)
-		return DATA_FOR_EACH_FAIL;
-
-	url = data_key_get(data, "url");
-
-	if (data_convert_type(url, DATA_TYPE_STRING) == DATA_TYPE_STRING) {
-		*srv = parse_url_path(data_get_string(url), false, false);
-		return DATA_FOR_EACH_STOP;
-	}
-
-	return DATA_FOR_EACH_FAIL;
-}
-
-static data_for_each_cmd_t _merge_path(const char *key, data_t *data, void *arg)
-{
-	merge_path_t *args = arg;
-	data_t *e, *servers;
-	data_t *merge[3] = { 0 }, *merged = NULL;
-	data_for_each_cmd_t rc = DATA_FOR_EACH_CONT;
-	id_merge_path_t id_merge = {
-		.magic = MAGIC_MERGE_ID_PATH,
-		.merge_args = args,
-	};
-	bool free_0 = false; /* free merge[0] ? */
-	char *path = NULL;
-
-	xassert(args->magic == MAGIC_MERGE_PATH);
-
-	if (data_get_type(data) != DATA_TYPE_DICT) {
-		rc = DATA_FOR_EACH_FAIL;
-		goto cleanup;
-	}
-
-	/* merge the paths together cleanly */
-	if (!(servers = data_key_get(data, "servers"))) {
-		merge[0] = id_merge.server_path = args->server_path;
-		merge[1] = parse_url_path(key, false, true);
-	} else {
-		/* servers is specified: only cleanup the path */
-		/* only handling 1 server for now */
-		xassert(data_get_list_length(servers) == 1);
-
-		(void) data_list_for_each(servers, _find_first_server,
-					  &merge[0]);
-		id_merge.server_path = merge[0];
-		free_0 = true;
-		xassert(merge[0]);
-
-		merge[1] = parse_url_path(key, false, true);
-	}
-
-	merged = data_list_join((const data_t **)merge, true);
-
-	if (data_list_join_str(&path, merged, "/")) {
-		rc = DATA_FOR_EACH_FAIL;
-		goto cleanup;
-	}
-
-	id_merge.path = path;
-
-	e = data_key_set(args->paths, path);
-	if (data_get_type(e) != DATA_TYPE_NULL) {
-		/*
-		 * path is going to be overwritten which should only happen for
-		 * /openapi/ paths which is fully expected.
-		 */
-		debug("%s: overwriting path %s", __func__, path);
-	}
-
-	data_set_dict(e);
-	(void) data_copy(e, data);
-
-	if ((args->flags & (OAS_FLAG_SET_OPID | OAS_FLAG_MANGLE_OPID)) &&
-	    data_dict_for_each(e, _differentiate_path_operationId, &id_merge) <
-		    0) {
-		rc = DATA_FOR_EACH_FAIL;
-		goto cleanup;
-	}
-
-cleanup:
-	if (free_0)
-		FREE_NULL_DATA(merge[0]);
-	FREE_NULL_DATA(merge[1]);
-	FREE_NULL_DATA(merged);
-	xfree(path);
-
-	return rc;
-}
-
-static data_for_each_cmd_t _merge_path_server(data_t *data, void *arg)
-{
-	merge_path_server_t *args = arg;
-	merge_path_t p_args = {
-		.magic = MAGIC_MERGE_PATH,
-		.paths = args->dst_paths,
-		.flags = args->flags,
-	};
-	data_t *url;
-
-	if (data_get_type(data) != DATA_TYPE_DICT)
-		return DATA_FOR_EACH_FAIL;
-
-	if (!(url = data_key_get(data, "url")))
-		return DATA_FOR_EACH_FAIL;
-
-	if (data_convert_type(url, DATA_TYPE_STRING) != DATA_TYPE_STRING)
-		return DATA_FOR_EACH_FAIL;
-
-	p_args.server_path = parse_url_path(data_get_string_const(url),
-					    false, false);
-
-	if (args->src_paths &&
-	    (data_dict_for_each(args->src_paths, _merge_path, &p_args) < 0))
-		fatal("%s: unable to merge paths", __func__);
-
-	FREE_NULL_DATA(p_args.server_path);
-
-	return DATA_FOR_EACH_CONT;
-}
-
 /* Caller must xfree() returned string */
 static char *_get_method_operationId(openapi_spec_t *spec, path_t *path,
 				     const openapi_path_binding_method_t
@@ -1683,7 +1072,6 @@ static char *_get_method_operationId(openapi_spec_t *spec, path_t *path,
 	merge_path_t merge_args = {
 		.magic = MAGIC_MERGE_PATH,
 		.paths = spec->paths,
-		.flags = OAS_FLAG_NONE,
 	};
 	id_merge_path_t merge_id_args = {
 		.magic = MAGIC_MERGE_ID_PATH,
@@ -1742,8 +1130,11 @@ static int _populate_method(path_t *path, openapi_spec_t *spec, data_t *dpath,
 	if (method->description)
 		data_set_string(data_key_set(dmethod, "description"),
 				method->description);
-	data_set_string(data_key_set(dmethod, "operationId"),
-			_get_method_operationId(spec, path, method));
+
+	{
+		char *opid = _get_method_operationId(spec, path, method);
+		data_set_string_own(data_key_set(dmethod, "operationId"), opid);
+	}
 
 	if (method->parameters || method->query) {
 		/*
@@ -1760,11 +1151,11 @@ static int _populate_method(path_t *path, openapi_spec_t *spec, data_t *dpath,
 
 	if (method->response.type) {
 		data_t *dresp = data_set_dict(data_key_set(dmethod, "responses"));
-		data_t *def = data_set_dict(data_key_set(dresp, "default"));
-		data_t *cnt = data_set_dict(data_key_set(def, "content"));
+		data_t *resp_code = data_set_dict(data_new());
+		data_t *cnt = data_set_dict(data_key_set(resp_code, "content"));
 
 		if (method->response.description)
-			data_set_string(data_set_dict(data_key_set(def,
+			data_set_string(data_set_dict(data_key_set(resp_code,
 				"description")), method->response.description);
 
 		for (int i = 0; mime_types[i]; i++) {
@@ -1786,7 +1177,21 @@ static int _populate_method(path_t *path, openapi_spec_t *spec, data_t *dpath,
 				fatal_abort("data_parser_g_populate_schema() failed");
 		}
 
-		data_copy(data_key_set(dresp, "200"), def);
+		for (int i = 0; response_status_codes[i]; i++) {
+			const http_status_code_t code =
+				response_status_codes[i];
+			char str[64];
+
+			if (code == HTTP_STATUS_CODE_DEFAULT)
+				snprintf(str, sizeof(str), "%s",
+					 get_http_status_code_string(code));
+			else
+				snprintf(str, sizeof(str), "%u", code);
+
+			data_copy(data_key_set(dresp, str), resp_code);
+		}
+
+		FREE_NULL_DATA(resp_code);
 	}
 
 	if (method->body.type) {
@@ -1905,11 +1310,11 @@ static int _foreach_count_path(void *x, void *arg)
 	return SLURM_SUCCESS;
 }
 
-static int _op_handler_openapi(openapi_ctxt_t *ctxt)
+extern int generate_spec(data_t *dst)
 {
 	openapi_spec_t spec = {
 		.magic = MAGIC_OAS,
-		.spec = ctxt->resp,
+		.spec = dst,
 	};
 	data_t *security1, *security2, *security3;
 	char *version_at = NULL;
@@ -2023,50 +1428,6 @@ static int _op_handler_openapi(openapi_ctxt_t *ctxt)
 	/* Add generated paths */
 	(void) list_for_each(paths, _foreach_add_path, &spec);
 
-	/* merge all the unique paths together */
-	for (int i = 0; i < plugins->count; i++) {
-		data_t *src_srvs = data_key_get(specs[i], "servers");
-
-		if (src_srvs) {
-			merge_path_server_t p_args = {
-				.dst_paths = spec.paths,
-				.src_paths = data_key_get(specs[i], "paths"),
-				.flags = spec_flags[i],
-			};
-
-			if (data_list_for_each(src_srvs, _merge_path_server,
-					       &p_args) < 0)
-				fatal("%s: unable to merge server paths",
-				      __func__);
-		} else {
-			/* servers is not populated, default to '/' */
-			merge_path_t p_args = {
-				.magic = MAGIC_MERGE_PATH,
-				.server_path = NULL,
-				.paths = spec.paths,
-				.flags = spec_flags[i],
-			};
-			data_t *src_paths = data_key_get(specs[i], "paths");
-
-			if (src_paths &&
-			    (data_dict_for_each(src_paths, _merge_path,
-						&p_args) < 0))
-				fatal("%s: unable to merge paths", __func__);
-		}
-	}
-
-	/* merge all the unique component schemas together */
-	for (int i = 0; i < plugins->count; i++) {
-		data_t *src =
-			data_resolve_dict_path(specs[i], "/components/schemas");
-
-		if (src && (data_dict_for_each(src, _merge_schema,
-					       spec.components_schemas) < 0)) {
-			fatal("%s: unable to merge components schemas",
-			      __func__);
-		}
-	}
-
 	for (int i = 0; parsers[i]; i++)
 		if (spec.references[i])
 			data_parser_g_release_references(parsers[i],
@@ -2079,6 +1440,11 @@ static int _op_handler_openapi(openapi_ctxt_t *ctxt)
 	 * out
 	 */
 	return SLURM_SUCCESS;
+}
+
+static int _op_handler_openapi(openapi_ctxt_t *ctxt)
+{
+	return generate_spec(ctxt->resp);
 }
 
 static bool _on_error(void *arg, data_parser_type_t type, int error_code,
@@ -2249,7 +1615,7 @@ extern int wrap_openapi_ctxt_callback(const char *context_id,
 				      const openapi_path_binding_t *op_path,
 				      const openapi_resp_meta_t *plugin_meta)
 {
-	int rc;
+	int rc = SLURM_SUCCESS;
 	openapi_ctxt_t ctxt = {
 		.id = context_id,
 		.method = method,
@@ -2282,10 +1648,23 @@ extern int wrap_openapi_ctxt_callback(const char *context_id,
 	      __func__, context_id, get_http_method_string(method),
 	      data_parser_get_plugin(ctxt.parser));
 
-	if (slurm_conf.accounting_storage_type &&
-	    !(ctxt.db_conn = openapi_get_db_conn(auth))) {
-		openapi_resp_error(&ctxt, (rc = ESLURM_DB_CONNECTION), __func__,
-				   "openapi_get_db_conn() failed to open slurmdb connection");
+	if (op_path->flags & OP_BIND_NO_SLURMDBD) {
+		; /* Do not attempt to open a connection to slurmdbd */
+	} else if (slurm_conf.accounting_storage_type &&
+		   !(ctxt.db_conn = openapi_get_db_conn(auth))) {
+		char *auth_error_msg = "";
+		if (errno == SLURM_PROTOCOL_AUTHENTICATION_ERROR)
+			auth_error_msg = ", authentication error";
+		if (op_path->flags & OP_BIND_REQUIRE_SLURMDBD)
+			openapi_resp_error(&ctxt, (rc = ESLURM_DB_CONNECTION),
+					   XSTRINGIFY(openapi_get_db_conn),
+					   "Failed to open slurmdbd connection%s",
+					   auth_error_msg);
+		else
+			openapi_resp_warn(&ctxt,
+					  XSTRINGIFY(openapi_get_db_conn),
+					  "Failed to open connection to slurmdbd%s. Response fields may not be fully populated or empty.",
+					  auth_error_msg);
 	} else {
 		rc = data_parser_g_assign(ctxt.parser,
 					  DATA_PARSER_ATTR_DBCONN_PTR,
@@ -2312,80 +1691,12 @@ extern int wrap_openapi_ctxt_callback(const char *context_id,
 	return rc;
 }
 
-extern data_t *openapi_get_param(openapi_ctxt_t *ctxt, bool required,
-				 const char *name, const char *caller)
+extern bool is_spec_generation_only(bool set)
 {
-	data_t *dbuf = NULL;
+	static bool is_spec_only = false;
 
-	if ((!ctxt->parameters ||
-	     !(dbuf = data_key_get(ctxt->parameters, name))) &&
-	    required) {
-		openapi_resp_error(ctxt, ESLURM_DATA_PATH_NOT_FOUND, caller,
-				   "Required parameter \"%s\" not found", name);
-	}
+	if (set)
+		is_spec_only = true;
 
-	return dbuf;
-}
-
-extern char *openapi_get_str_param(openapi_ctxt_t *ctxt, bool required,
-				   const char *name, const char *caller)
-{
-	char *str = NULL;
-	data_t *dbuf = openapi_get_param(ctxt, required, name, caller);
-
-	if (!dbuf)
-		return NULL;
-
-	if (data_convert_type(dbuf, DATA_TYPE_STRING) != DATA_TYPE_STRING) {
-		if (required)
-			openapi_resp_error(ctxt, ESLURM_DATA_CONV_FAILED,
-					   caller,
-					   "Rejecting required parameter \"%s\" provided with format %s which was unable to be converted to string.",
-					   name, data_get_type_string(dbuf));
-		else
-			openapi_resp_warn(ctxt, caller,
-					  "Ignoring parameter \"%s\" provided with format %s which was unable to be converted to string.",
-					  name, data_get_type_string(dbuf));
-	} else if (!(str = data_get_string(dbuf)) || !str[0]) {
-		if (required)
-			openapi_resp_error(ctxt, ESLURM_DATA_PARSE_NOTHING,
-					   caller, "Rejecting empty required parameter \"%s\"",
-					   name);
-		else
-			openapi_resp_warn(ctxt, caller,
-					  "Ignoring empty parameter \"%s\"",
-					  name);
-
-		str = NULL;
-	}
-
-	return str;
-}
-
-extern int openapi_get_date_param(openapi_ctxt_t *ctxt, bool required,
-				  const char *name, time_t *time_ptr,
-				  const char *caller)
-{
-	int rc;
-	time_t t;
-	data_t *dbuf = openapi_get_param(ctxt, required, name, caller);
-
-	if (!dbuf)
-		return ESLURM_REST_EMPTY_RESULT;
-
-	rc = DATA_PARSE(ctxt->parser, TIMESTAMP, t, dbuf, ctxt->parent_path);
-
-	if (!rc) {
-		*time_ptr = t;
-	} else if (required) {
-		openapi_resp_error(ctxt, ESLURM_DATA_CONV_FAILED,
-				   caller, "Rejecting invalid required timestamp parameter \"%s\"",
-				   name);
-	} else {
-		openapi_resp_warn(ctxt, caller,
-				  "Ignoring invalid timestamp parameter \"%s\"",
-				  name);
-	}
-
-	return rc;
+	return is_spec_only;
 }

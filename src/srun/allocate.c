@@ -204,7 +204,8 @@ static bool _retry(void)
 		      "retrying.");
 		return true;
 	} else if (opt.immediate &&
-		   ((errno == ETIMEDOUT) || (errno == ESLURM_NODES_BUSY))) {
+		   ((errno == ETIMEDOUT) || (errno == ESLURM_NODES_BUSY) ||
+		    (errno == ESLURM_PORTS_BUSY))) {
 		error("Unable to allocate resources: %s",
 		      slurm_strerror(ESLURM_NODES_BUSY));
 		error_exit = immediate_exit;
@@ -484,7 +485,7 @@ list_t *allocate_het_job_nodes(void)
 	slurm_allocation_callbacks_t callbacks;
 	list_itr_t *opt_iter, *resp_iter;
 	slurm_opt_t *opt_local, *first_opt = NULL;
-	List job_req_list = NULL, job_resp_list = NULL;
+	list_t *job_req_list = NULL, *job_resp_list = NULL;
 	uint32_t my_job_id = 0;
 	int i, k;
 
@@ -656,16 +657,16 @@ cleanup_allocation(void)
 	return SLURM_SUCCESS;
 }
 
-extern List existing_allocation(void)
+extern list_t *existing_allocation(void)
 {
 	uint32_t old_job_id;
-	List job_resp_list = NULL;
+	list_t *job_resp_list = NULL;
 
 	if (sropt.jobid == NO_VAL)
 		return NULL;
 
 	if (opt.clusters) {
-		List clusters = NULL;
+		list_t *clusters = NULL;
 		if (slurm_get_cluster_info(&(clusters), opt.clusters, 0)) {
 			print_db_notok(opt.clusters, 0);
 			fatal("Could not get cluster information");
@@ -706,6 +707,16 @@ static job_desc_msg_t *_job_desc_msg_create_from_opts(slurm_opt_t *opt_local)
 	if (!j) {
 		return NULL;
 	}
+
+	/*
+	 * The controller rejects any non-stepmgr allocation requesting
+	 * resv-ports. To allow srun to request --resv-ports outside of stepmgr
+	 * jobs, clear resv_port_cnt when creating a non-stepmgr allocation.
+	 */
+	if ((opt_local->resv_port_cnt != NO_VAL) &&
+	    !(opt_local->job_flags & STEPMGR_ENABLED) &&
+	    !xstrstr(slurm_conf.slurmctld_params, "enable_stepmgr"))
+		j->resv_port_cnt = NO_VAL16;
 
 	xassert(srun_opt);
 

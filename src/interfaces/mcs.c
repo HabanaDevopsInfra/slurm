@@ -221,7 +221,7 @@ extern int slurm_mcs_get_select(job_record_t *job_ptr)
 	if ((select_value == MCS_SELECT_SELECT) ||
 	    ((select_value == MCS_SELECT_ONDEMANDSELECT) &&
 	    job_ptr->details &&
-	    (job_ptr->details->whole_node == WHOLE_NODE_MCS)))
+	    (job_ptr->details->whole_node & WHOLE_NODE_MCS)))
 		return 1;
 	else
 		return 0;
@@ -234,12 +234,12 @@ extern int slurm_mcs_get_privatedata(void)
 
 extern int mcs_g_set_mcs_label(job_record_t *job_ptr, char *label)
 {
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return SLURM_SUCCESS;
 
-	return (int) (*(ops.set))(job_ptr, label);
+	return (*(ops.set))(job_ptr, label);
 }
 
 /*
@@ -251,10 +251,10 @@ extern int mcs_g_set_mcs_label(job_record_t *job_ptr, char *label)
 extern int mcs_g_check_mcs_label(uint32_t user_id, char *mcs_label,
 				 bool assoc_locked)
 {
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return SLURM_SUCCESS;
 
-	return (int)(*(ops.check))(user_id, mcs_label, assoc_locked);
+	return (*(ops.check))(user_id, mcs_label, assoc_locked);
 }

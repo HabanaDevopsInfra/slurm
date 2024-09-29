@@ -72,7 +72,7 @@ char **assoc_mgr_tres_name_array;
 
 static int cpunfo_frequency = 0;
 static long conv_units = 0;
-List prec_list = NULL;
+list_t *prec_list = NULL;
 
 static int my_pagesize = 0;
 static int energy_profile = ENERGY_DATA_NODE_ENERGY_UP;
@@ -528,7 +528,12 @@ static void _handle_stats(pid_t pid, jag_callbacks_t *callbacks, int tres_count)
 	int fd, fd2;
 	jag_prec_t *prec = NULL;
 
-	if (no_share_data == -1) {
+	/* UsePSS and NoShare are only compatible with the linux plugin. */
+	if ((no_share_data == -1) &&
+	    (!xstrcasestr(slurm_conf.job_acct_gather_type, "linux"))) {
+		use_pss = 0;
+		no_share_data = 0;
+	} else if (no_share_data == -1) {
 		if (xstrcasestr(slurm_conf.job_acct_gather_params, "NoShare"))
 			no_share_data = 1;
 		else
@@ -633,8 +638,17 @@ bail_out:
 	return;
 }
 
-static List _get_precs(List task_list, uint64_t cont_id,
-		       jag_callbacks_t *callbacks)
+static int _mark_as_completed(void *x, void *empty)
+{
+	jag_prec_t *prec = (jag_prec_t *) x;
+
+	prec->completed = true;
+
+	return SLURM_SUCCESS;
+}
+
+static list_t *_get_precs(list_t *task_list, uint64_t cont_id,
+			  jag_callbacks_t *callbacks)
 {
 	int npids = 0;
 	struct jobacctinfo *jobacct = NULL;
@@ -643,6 +657,16 @@ static List _get_precs(List task_list, uint64_t cont_id,
 	xassert(task_list);
 
 	jobacct = list_peek(task_list);
+
+	/*
+	 * Mark all the processes as completed as if they were terminated,
+	 * even if they might still be alive. If that is the case, the next call
+	 * to _handle_stats will reset this flag for each pid which is found to
+	 * be alive. Otherwise the pid statistics will be aggregated into its
+	 * ancestor and the prec be removed from the list in order to avoid
+	 * aggregating it on each iteration.
+	 */
+	list_for_each(prec_list, _mark_as_completed, NULL);
 
 	/* get only the processes in the proctrack container */
 	proctrack_g_get_pids(cont_id, &pids, &npids);
@@ -965,18 +989,21 @@ static void _aggregate_prec(jag_prec_t *prec, jag_prec_t *ancestor)
  *			tree.
  *	pid		The process for which we are currently looking
  *			for offspring.
- *
- * OUT:	none.
+ * IN/OUT:
+ *      permanent_anc Pointer to the original ancestor. Changes to
+ *	              it are saved, so we can permanently save
+ *		      the values from completed processes.
  *
  * RETVAL:	none.
  *
  * THREADSAFE! Only one thread ever gets here.
  */
-static void _get_offspring_data(List prec_list, jag_prec_t *ancestor, pid_t pid)
+static void _get_offspring_data(list_t *prec_list, jag_prec_t *ancestor,
+				pid_t pid, jag_prec_t *permanent_anc)
 {
 	jag_prec_t *prec = NULL;
 	jag_prec_t *prec_tmp = NULL;
-	List tmp_list = NULL;
+	list_t *tmp_list = NULL;
 
 	/* reset all precs to be not visited */
 	(void)list_for_each(prec_list, (ListForF)_reset_visited, NULL);
@@ -995,6 +1022,18 @@ static void _get_offspring_data(List prec_list, jag_prec_t *ancestor, pid_t pid)
 					      _list_find_prec_by_ppid,
 					       &(prec_tmp->pid)))) {
 			_aggregate_prec(prec, ancestor);
+			/*
+			 * If the prec disappeared (pid is dead) aggregate its
+			 * statistics and remove it from the prec_list to avoid
+			 * having to agreggate it on every iteration.
+			 */
+			if (prec->completed) {
+				_aggregate_prec(prec, permanent_anc);
+				log_flag(JAG, "Removing completed process %d",
+					 prec->pid);
+				list_remove_first(prec_list, _find_prec,
+						  &prec->pid);
+			}
 			list_append(tmp_list, prec);
 		}
 	}
@@ -1003,7 +1042,7 @@ static void _get_offspring_data(List prec_list, jag_prec_t *ancestor, pid_t pid)
 	return;
 }
 
-extern void jag_common_poll_data(List task_list, uint64_t cont_id,
+extern void jag_common_poll_data(list_t *task_list, uint64_t cont_id,
 				 jag_callbacks_t *callbacks, bool profile)
 {
 	/* Update the data */
@@ -1049,6 +1088,7 @@ extern void jag_common_poll_data(List task_list, uint64_t cont_id,
 	while ((jobacct = list_next(itr))) {
 		double cpu_calc;
 		double last_total_cputime;
+		jag_prec_t *permanent_anc;
 		if (!(prec = list_find_first(prec_list, _find_prec,
 					     &jobacct->pid)))
 			continue;
@@ -1058,6 +1098,7 @@ extern void jag_common_poll_data(List task_list, uint64_t cont_id,
 		 * keeping around precs after they end.
 		 */
 		memcpy(&tmp_prec, prec, sizeof(*prec));
+		permanent_anc = prec;
 		prec = &tmp_prec;
 
 		if (acct_gather_filesystem_g_get_data(prec->tres_data) < 0) {
@@ -1070,7 +1111,7 @@ extern void jag_common_poll_data(List task_list, uint64_t cont_id,
 		/* find all my descendents */
 		if (callbacks->get_offspring_data)
 			(*(callbacks->get_offspring_data))
-				(prec_list, prec, prec->pid);
+				(prec_list, prec, prec->pid, permanent_anc);
 
 		/*
 		 * Only jobacct_gather/cgroup uses prec_extra, and we want to
@@ -1140,6 +1181,32 @@ extern void jag_common_poll_data(List task_list, uint64_t cont_id,
 		for (i = 0; i < jobacct->tres_count; i++) {
 			if (prec->tres_data[i].size_read == INFINITE64)
 				continue;
+
+			/* Do this before the max for polling/profiling */
+			jobacct->tres_usage_in_tot[i] =
+				prec->tres_data[i].size_read;
+
+			/*
+			 * Check for support of MaxRSS direct reading.
+			 *
+			 * In cgroup/v1 and cgroup/v2 we can get the value
+			 * directly in the memory.peak or
+			 * memory.max_usage_in_bytes interfaces.
+			 *
+			 * If available it will be in size_write.
+			 *
+			 * If it is not available then the MaxRSS will be the
+			 * one gathered and calculated through memory.current,
+			 * memory.usage_in_bytes or linux /proc.
+			 */
+			if ((i == TRES_ARRAY_MEM) &&
+			    (prec->tres_data[i].size_write != INFINITE64)) {
+				prec->tres_data[i].size_read =
+					prec->tres_data[i].size_write;
+				prec->tres_data[i].size_write =
+					INFINITE64;
+			}
+
 			if (jobacct->tres_usage_in_max[i] == INFINITE64)
 				jobacct->tres_usage_in_max[i] =
 					prec->tres_data[i].size_read;
@@ -1158,8 +1225,6 @@ extern void jag_common_poll_data(List task_list, uint64_t cont_id,
 			 */
 			jobacct->tres_usage_in_min[i] =
 				jobacct->tres_usage_in_max[i];
-			jobacct->tres_usage_in_tot[i] =
-				prec->tres_data[i].size_read;
 
 			if (jobacct->tres_usage_out_max[i] == INFINITE64)
 				jobacct->tres_usage_out_max[i] =

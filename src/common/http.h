@@ -36,6 +36,7 @@
 #ifndef SLURM_HTTP_H
 #define SLURM_HTTP_H
 
+#include "slurm/slurm.h"
 #include "src/common/data.h"
 
 /*
@@ -92,6 +93,8 @@ typedef enum {
 	HTTP_STATUS_CODE_SRVERR_SERVICE_UNAVAILABLE = 503,
 	HTTP_STATUS_CODE_SRVERR_GATEWAY_TIMEOUT = 504,
 	HTTP_STATUS_CODE_SRVERR_HTTP_VERSION_NOT_SUPPORTED = 505,
+	/* place holder for default status code */
+	HTTP_STATUS_CODE_DEFAULT = INFINITE,
 } http_status_code_t;
 /*
  * Convert status code to string of status code
@@ -99,6 +102,12 @@ typedef enum {
  * RET string of status code or NULL on error
  */
 extern const char *get_http_status_code_string(http_status_code_t code);
+/*
+ * Convert string to status code
+ * IN str - string to parse
+ * RET status code or HTTP_STATUS_NONE on error
+ */
+extern http_status_code_t get_http_status_code(const char *str);
 
 /*
  * Supported HTTP request Methods.

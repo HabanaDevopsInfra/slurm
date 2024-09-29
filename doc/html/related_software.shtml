@@ -1,12 +1,12 @@
 <!--#include virtual="header.txt"-->
 
-<h1>Download Slurm</h1>
+<h1>Related Software</h1>
+
 <p>Slurm source can be downloaded from
 <a href="https://www.schedmd.com/download-slurm/">
 https://www.schedmd.com/download-slurm/</a>.</p>
 
-<h2>Related Software</h2>
-<p>Note that the following software is not written or maintained by
+<p>Note that the following related software is not written or maintained by
 SchedMD. Some of the software is required for certain functionality
 (e.g. MySQL or MariaDB are required to use slurmdbd) while other software
 was written to provide additional functionality for users or
@@ -170,12 +170,11 @@ time as performed with this tool:
 	<p>Some Slurm plugins (<a href="rest.html">slurmrestd</a>,
 	<a href="burst_buffer.html">burst_buffer/datawarp</a>,
 	<a href="burst_buffer.html">burst_buffer/lua</a>,
-	<a href="elasticsearch.html">jobcomp/elasticsearch</a>,
-	<a href="jobcomp_kafka.html">jobcomp/kafka</a>
-	and <a href="power_mgmt.html">power/cray_aries</a>) parse and/or
+	<a href="elasticsearch.html">jobcomp/elasticsearch</a>, and
+	<a href="jobcomp_kafka.html">jobcomp/kafka</a>) parse and/or
 	serialize JSON format data. These plugins and slurmrestd are designed to
-	make use of the JSON-C library for this purpose. Instructions for the
-	build are as follows:</p>
+	make use of the <b>JSON-C library (&gt;= v1.12.0)</b> for this purpose.
+	Instructions for the build are as follows:</p>
 	<pre>
 git clone --depth 1 --single-branch -b json-c-0.15-20200726 https://github.com/json-c/json-c.git json-c
 mkdir json-c-build
@@ -191,8 +190,8 @@ export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig/:$PKG_CONFIG_PATH</pre>
 
 <li><a id="httpparser" href="https://github.com/nodejs/http-parser">
     <b>HTTP Parser</b></a>
-	<p><a href="rest.html">slurmrestd</a> requires libhttp_parser
-	(>=v2.6.0). Instructions for the build are as follows:</p>
+	<p><a href="rest.html">slurmrestd</a> requires <b>libhttp_parser
+	(&gt;= v2.6.0)</b>. Instructions for the build are as follows:</p>
 	<pre>
 git clone --depth 1 --single-branch -b v2.9.4 https://github.com/nodejs/http-parser.git http_parser
 cd http_parser
@@ -204,9 +203,10 @@ sudo make install</pre>
 
 <li><a id="yaml" href="https://github.com/yaml/libyaml">
     <b>YAML Parser</b></a>
-	<p><a href="rest.html">slurmrestd</a> requires libyaml to support
-	YAML. Instructions for the build are as follows:</p>
-	<pre>
+	<p><a href="rest.html">slurmrestd</a> and commands that recognize a
+	<code>--yaml</code> flag will be able to parse YAML if <b>libyaml
+	(&gt;= v0.2.5)</b> is present. Instructions for the build are as follows:
+	</p><pre>
 git clone --depth 1 --single-branch -b 0.2.5 https://github.com/yaml/libyaml libyaml
 cd libyaml
 ./bootstrap
@@ -219,8 +219,8 @@ sudo make install</pre>
 
 <li><a id="jwt" href="https://github.com/benmcollins/libjwt">
     <b>JWT library</b></a>
-	<p><a href="jwt.html">JWT authentication</a> requires libjwt.
-	Instructions for the build are as follows:</p>
+	<p><a href="jwt.html">JWT authentication</a> requires <b>libjwt
+	(&gt;= v1.10.0)</b>. Instructions for the build are as follows:</p>
 	<pre>
 git clone --depth 1 --single-branch -b v1.12.0 https://github.com/benmcollins/libjwt.git libjwt
 cd libjwt
@@ -234,6 +234,6 @@ sudo make install</pre>
 
 </ul>
 
-<p style="text-align:center;">Last modified 12 March 2024</p>
+<p style="text-align:center;">Last modified 13 March 2024</p>
 
 <!--#include virtual="footer.txt"-->

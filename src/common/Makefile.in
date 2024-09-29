@@ -98,6 +98,7 @@ ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/auxdir/ax_check_compile_flag.m4 \
 	$(top_srcdir)/auxdir/ax_compare_version.m4 \
 	$(top_srcdir)/auxdir/ax_gcc_builtin.m4 \
+	$(top_srcdir)/auxdir/ax_have_epoll.m4 \
 	$(top_srcdir)/auxdir/ax_lib_hdf5.m4 \
 	$(top_srcdir)/auxdir/ax_pthread.m4 \
 	$(top_srcdir)/auxdir/gtk-2.0.m4 \
@@ -136,8 +137,8 @@ am__aclocal_m4_deps = $(top_srcdir)/auxdir/ax_check_compile_flag.m4 \
 	$(top_srcdir)/auxdir/x_ac_ptrace.m4 \
 	$(top_srcdir)/auxdir/x_ac_rdkafka.m4 \
 	$(top_srcdir)/auxdir/x_ac_readline.m4 \
-	$(top_srcdir)/auxdir/x_ac_rrdtool.m4 \
 	$(top_srcdir)/auxdir/x_ac_rsmi.m4 \
+	$(top_srcdir)/auxdir/x_ac_s2n.m4 \
 	$(top_srcdir)/auxdir/x_ac_selinux.m4 \
 	$(top_srcdir)/auxdir/x_ac_setproctitle.m4 \
 	$(top_srcdir)/auxdir/x_ac_sview.m4 \
@@ -159,17 +160,18 @@ LTLIBRARIES = $(noinst_LTLIBRARIES)
 am__DEPENDENCIES_1 =
 libcommon_la_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_libcommon_la_OBJECTS = assoc_mgr.lo bitstring.lo callerid.lo \
-	cbuf.lo conmgr.lo core_array.lo cpu_frequency.lo cron.lo \
-	daemonize.lo data.lo eio.lo env.lo extra_constraints.lo fd.lo \
+	cbuf.lo core_array.lo cpu_frequency.lo cron.lo daemonize.lo \
+	data.lo eio.lo env.lo extra_constraints.lo fd.lo \
 	fetch_config.lo forward.lo global_defaults.lo group_cache.lo \
 	half_duplex.lo hostlist.lo http.lo identity.lo id_util.lo \
-	io_hdr.lo job_features.lo job_options.lo job_resources.lo \
-	job_state_reason.lo list.lo log.lo net.lo node_conf.lo \
-	oci_config.lo openapi.lo optz.lo pack.lo parse_config.lo \
-	parse_time.lo parse_value.lo plugin.lo plugrack.lo \
-	print_fields.lo proc_args.lo read_config.lo reverse_tree.lo \
-	run_command.lo run_in_daemon.lo sack_api.lo setproctitle.lo \
-	slurm_errno.lo slurm_opt.lo slurm_persist_conn.lo \
+	io_hdr.lo job_features.lo job_options.lo job_record.lo \
+	job_resources.lo job_state_reason.lo list.lo log.lo \
+	msg_type.lo net.lo node_conf.lo oci_config.lo openapi.lo \
+	optz.lo pack.lo parse_config.lo parse_time.lo parse_value.lo \
+	part_record.lo persist_conn.lo plugin.lo plugrack.lo \
+	port_mgr.lo print_fields.lo proc_args.lo read_config.lo \
+	reverse_tree.lo run_command.lo run_in_daemon.lo sack_api.lo \
+	setproctitle.lo slurm_errno.lo slurm_opt.lo \
 	slurm_protocol_api.lo slurm_protocol_defs.lo \
 	slurm_protocol_pack.lo slurm_protocol_util.lo \
 	slurm_protocol_socket.lo slurm_resolv.lo \
@@ -178,9 +180,9 @@ am_libcommon_la_OBJECTS = assoc_mgr.lo bitstring.lo callerid.lo \
 	slurmdb_pack.lo slurmdbd_defs.lo slurmdbd_pack.lo spank.lo \
 	stepd_api.lo strlcpy.lo strnatcmp.lo timers.lo track_script.lo \
 	tres_bind.lo tres_frequency.lo uid.lo util-net.lo \
-	working_cluster.lo workq.lo write_labelled_message.lo \
-	x11_util.lo xassert.lo xhash.lo xmalloc.lo xregex.lo \
-	xsystemd.lo xsignal.lo xstring.lo
+	working_cluster.lo write_labelled_message.lo x11_util.lo \
+	xassert.lo xahash.lo xhash.lo xmalloc.lo xregex.lo xsystemd.lo \
+	xsignal.lo xstring.lo
 libcommon_la_OBJECTS = $(am_libcommon_la_OBJECTS)
 AM_V_lt = $(am__v_lt_@AM_V@)
 am__v_lt_ = $(am__v_lt_@AM_DEFAULT_V@)
@@ -209,10 +211,10 @@ depcomp = $(SHELL) $(top_srcdir)/auxdir/depcomp
 am__maybe_remake_depfiles = depfiles
 am__depfiles_remade = ./$(DEPDIR)/assoc_mgr.Plo \
 	./$(DEPDIR)/bitstring.Plo ./$(DEPDIR)/callerid.Plo \
-	./$(DEPDIR)/cbuf.Plo ./$(DEPDIR)/conmgr.Plo \
-	./$(DEPDIR)/core_array.Plo ./$(DEPDIR)/cpu_frequency.Plo \
-	./$(DEPDIR)/cron.Plo ./$(DEPDIR)/daemonize.Plo \
-	./$(DEPDIR)/data.Plo ./$(DEPDIR)/eio.Plo ./$(DEPDIR)/env.Plo \
+	./$(DEPDIR)/cbuf.Plo ./$(DEPDIR)/core_array.Plo \
+	./$(DEPDIR)/cpu_frequency.Plo ./$(DEPDIR)/cron.Plo \
+	./$(DEPDIR)/daemonize.Plo ./$(DEPDIR)/data.Plo \
+	./$(DEPDIR)/eio.Plo ./$(DEPDIR)/env.Plo \
 	./$(DEPDIR)/extra_constraints.Plo ./$(DEPDIR)/fd.Plo \
 	./$(DEPDIR)/fetch_config.Plo ./$(DEPDIR)/forward.Plo \
 	./$(DEPDIR)/global_defaults.Plo ./$(DEPDIR)/group_cache.Plo \
@@ -220,19 +222,21 @@ am__depfiles_remade = ./$(DEPDIR)/assoc_mgr.Plo \
 	./$(DEPDIR)/http.Plo ./$(DEPDIR)/id_util.Plo \
 	./$(DEPDIR)/identity.Plo ./$(DEPDIR)/io_hdr.Plo \
 	./$(DEPDIR)/job_features.Plo ./$(DEPDIR)/job_options.Plo \
-	./$(DEPDIR)/job_resources.Plo ./$(DEPDIR)/job_state_reason.Plo \
-	./$(DEPDIR)/list.Plo ./$(DEPDIR)/log.Plo ./$(DEPDIR)/net.Plo \
-	./$(DEPDIR)/node_conf.Plo ./$(DEPDIR)/oci_config.Plo \
-	./$(DEPDIR)/openapi.Plo ./$(DEPDIR)/optz.Plo \
-	./$(DEPDIR)/pack.Plo ./$(DEPDIR)/parse_config.Plo \
-	./$(DEPDIR)/parse_time.Plo ./$(DEPDIR)/parse_value.Plo \
-	./$(DEPDIR)/plugin.Plo ./$(DEPDIR)/plugrack.Plo \
+	./$(DEPDIR)/job_record.Plo ./$(DEPDIR)/job_resources.Plo \
+	./$(DEPDIR)/job_state_reason.Plo ./$(DEPDIR)/list.Plo \
+	./$(DEPDIR)/log.Plo ./$(DEPDIR)/msg_type.Plo \
+	./$(DEPDIR)/net.Plo ./$(DEPDIR)/node_conf.Plo \
+	./$(DEPDIR)/oci_config.Plo ./$(DEPDIR)/openapi.Plo \
+	./$(DEPDIR)/optz.Plo ./$(DEPDIR)/pack.Plo \
+	./$(DEPDIR)/parse_config.Plo ./$(DEPDIR)/parse_time.Plo \
+	./$(DEPDIR)/parse_value.Plo ./$(DEPDIR)/part_record.Plo \
+	./$(DEPDIR)/persist_conn.Plo ./$(DEPDIR)/plugin.Plo \
+	./$(DEPDIR)/plugrack.Plo ./$(DEPDIR)/port_mgr.Plo \
 	./$(DEPDIR)/print_fields.Plo ./$(DEPDIR)/proc_args.Plo \
 	./$(DEPDIR)/read_config.Plo ./$(DEPDIR)/reverse_tree.Plo \
 	./$(DEPDIR)/run_command.Plo ./$(DEPDIR)/run_in_daemon.Plo \
 	./$(DEPDIR)/sack_api.Plo ./$(DEPDIR)/setproctitle.Plo \
 	./$(DEPDIR)/slurm_errno.Plo ./$(DEPDIR)/slurm_opt.Plo \
-	./$(DEPDIR)/slurm_persist_conn.Plo \
 	./$(DEPDIR)/slurm_protocol_api.Plo \
 	./$(DEPDIR)/slurm_protocol_defs.Plo \
 	./$(DEPDIR)/slurm_protocol_pack.Plo \
@@ -249,12 +253,13 @@ am__depfiles_remade = ./$(DEPDIR)/assoc_mgr.Plo \
 	./$(DEPDIR)/timers.Plo ./$(DEPDIR)/track_script.Plo \
 	./$(DEPDIR)/tres_bind.Plo ./$(DEPDIR)/tres_frequency.Plo \
 	./$(DEPDIR)/uid.Plo ./$(DEPDIR)/util-net.Plo \
-	./$(DEPDIR)/working_cluster.Plo ./$(DEPDIR)/workq.Plo \
+	./$(DEPDIR)/working_cluster.Plo \
 	./$(DEPDIR)/write_labelled_message.Plo \
-	./$(DEPDIR)/x11_util.Plo ./$(DEPDIR)/xassert.Plo \
-	./$(DEPDIR)/xhash.Plo ./$(DEPDIR)/xmalloc.Plo \
-	./$(DEPDIR)/xregex.Plo ./$(DEPDIR)/xsignal.Plo \
-	./$(DEPDIR)/xstring.Plo ./$(DEPDIR)/xsystemd.Plo
+	./$(DEPDIR)/x11_util.Plo ./$(DEPDIR)/xahash.Plo \
+	./$(DEPDIR)/xassert.Plo ./$(DEPDIR)/xhash.Plo \
+	./$(DEPDIR)/xmalloc.Plo ./$(DEPDIR)/xregex.Plo \
+	./$(DEPDIR)/xsignal.Plo ./$(DEPDIR)/xstring.Plo \
+	./$(DEPDIR)/xsystemd.Plo
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -333,6 +338,7 @@ EGREP = @EGREP@
 ETAGS = @ETAGS@
 EXEEXT = @EXEEXT@
 FGREP = @FGREP@
+FILECMD = @FILECMD@
 FREEIPMI_CPPFLAGS = @FREEIPMI_CPPFLAGS@
 FREEIPMI_LDFLAGS = @FREEIPMI_LDFLAGS@
 FREEIPMI_LIBS = @FREEIPMI_LIBS@
@@ -445,10 +451,11 @@ RDKAFKA_LDFLAGS = @RDKAFKA_LDFLAGS@
 RDKAFKA_LIBS = @RDKAFKA_LIBS@
 READLINE_LIBS = @READLINE_LIBS@
 RELEASE = @RELEASE@
-RRDTOOL_CPPFLAGS = @RRDTOOL_CPPFLAGS@
-RRDTOOL_LDFLAGS = @RRDTOOL_LDFLAGS@
-RRDTOOL_LIBS = @RRDTOOL_LIBS@
 RSMI_CPPFLAGS = @RSMI_CPPFLAGS@
+S2N_CPPFLAGS = @S2N_CPPFLAGS@
+S2N_DIR = @S2N_DIR@
+S2N_LDFLAGS = @S2N_LDFLAGS@
+S2N_LIBS = @S2N_LIBS@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
@@ -562,8 +569,6 @@ libcommon_la_SOURCES = \
 	callerid.h				\
 	cbuf.c					\
 	cbuf.h					\
-	conmgr.c				\
-	conmgr.h				\
 	core_array.c				\
 	core_array.h				\
 	cpu_frequency.c				\
@@ -586,6 +591,7 @@ libcommon_la_SOURCES = \
 	fetch_config.h				\
 	forward.c				\
 	forward.h				\
+	front_end.h				\
 	global_defaults.c			\
 	group_cache.c				\
 	group_cache.h				\
@@ -605,6 +611,8 @@ libcommon_la_SOURCES = \
 	job_features.h				\
 	job_options.c				\
 	job_options.h				\
+	job_record.c				\
+	job_record.h				\
 	job_resources.c				\
 	job_resources.h				\
 	job_state_reason.c			\
@@ -614,6 +622,8 @@ libcommon_la_SOURCES = \
 	log.c					\
 	log.h					\
 	macros.h				\
+	msg_type.c				\
+	msg_type.h				\
 	net.c					\
 	net.h					\
 	node_conf.c				\
@@ -632,10 +642,16 @@ libcommon_la_SOURCES = \
 	parse_time.h				\
 	parse_value.c				\
 	parse_value.h				\
+	part_record.c				\
+	part_record.h				\
+	persist_conn.c				\
+	persist_conn.h				\
 	plugin.c				\
 	plugin.h				\
 	plugrack.c				\
 	plugrack.h				\
+	port_mgr.c				\
+	port_mgr.h				\
 	print_fields.c				\
 	print_fields.h				\
 	proc_args.c				\
@@ -656,19 +672,17 @@ libcommon_la_SOURCES = \
 	slurm_errno.c				\
 	slurm_opt.c				\
 	slurm_opt.h				\
-	slurm_persist_conn.c			\
-	slurm_persist_conn.h			\
 	slurm_protocol_api.c			\
 	slurm_protocol_api.h			\
 	slurm_protocol_common.h			\
 	slurm_protocol_defs.c			\
 	slurm_protocol_defs.h			\
-	slurm_protocol_interface.h		\
 	slurm_protocol_pack.c			\
 	slurm_protocol_pack.h			\
 	slurm_protocol_util.c			\
 	slurm_protocol_util.h			\
 	slurm_protocol_socket.c			\
+	slurm_protocol_socket.h			\
 	slurm_resolv.c				\
 	slurm_resolv.h				\
 	slurm_resource_info.c			\
@@ -711,14 +725,14 @@ libcommon_la_SOURCES = \
 	util-net.h				\
 	working_cluster.c			\
 	working_cluster.h			\
-	workq.c					\
-	workq.h					\
 	write_labelled_message.c		\
 	write_labelled_message.h		\
 	x11_util.c				\
 	x11_util.h				\
 	xassert.c				\
 	xassert.h				\
+	xahash.c				\
+	xahash.h				\
 	xhash.c					\
 	xhash.h					\
 	xmalloc.c				\
@@ -805,7 +819,6 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/bitstring.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/callerid.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/cbuf.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/conmgr.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/core_array.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/cpu_frequency.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/cron.Plo@am__quote@ # am--include-marker
@@ -827,10 +840,12 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/io_hdr.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/job_features.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/job_options.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/job_record.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/job_resources.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/job_state_reason.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/list.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/log.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/msg_type.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/net.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/node_conf.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/oci_config.Plo@am__quote@ # am--include-marker
@@ -840,8 +855,11 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/parse_config.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/parse_time.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/parse_value.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/part_record.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/persist_conn.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/plugin.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/plugrack.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/port_mgr.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/print_fields.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/proc_args.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/read_config.Plo@am__quote@ # am--include-marker
@@ -852,7 +870,6 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/setproctitle.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/slurm_errno.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/slurm_opt.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/slurm_persist_conn.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/slurm_protocol_api.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/slurm_protocol_defs.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/slurm_protocol_pack.Plo@am__quote@ # am--include-marker
@@ -878,9 +895,9 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/uid.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/util-net.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/working_cluster.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/workq.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/write_labelled_message.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/x11_util.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/xahash.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/xassert.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/xhash.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/xmalloc.Plo@am__quote@ # am--include-marker
@@ -1017,7 +1034,6 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/bitstring.Plo
 	-rm -f ./$(DEPDIR)/callerid.Plo
 	-rm -f ./$(DEPDIR)/cbuf.Plo
-	-rm -f ./$(DEPDIR)/conmgr.Plo
 	-rm -f ./$(DEPDIR)/core_array.Plo
 	-rm -f ./$(DEPDIR)/cpu_frequency.Plo
 	-rm -f ./$(DEPDIR)/cron.Plo
@@ -1039,10 +1055,12 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/io_hdr.Plo
 	-rm -f ./$(DEPDIR)/job_features.Plo
 	-rm -f ./$(DEPDIR)/job_options.Plo
+	-rm -f ./$(DEPDIR)/job_record.Plo
 	-rm -f ./$(DEPDIR)/job_resources.Plo
 	-rm -f ./$(DEPDIR)/job_state_reason.Plo
 	-rm -f ./$(DEPDIR)/list.Plo
 	-rm -f ./$(DEPDIR)/log.Plo
+	-rm -f ./$(DEPDIR)/msg_type.Plo
 	-rm -f ./$(DEPDIR)/net.Plo
 	-rm -f ./$(DEPDIR)/node_conf.Plo
 	-rm -f ./$(DEPDIR)/oci_config.Plo
@@ -1052,8 +1070,11 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/parse_config.Plo
 	-rm -f ./$(DEPDIR)/parse_time.Plo
 	-rm -f ./$(DEPDIR)/parse_value.Plo
+	-rm -f ./$(DEPDIR)/part_record.Plo
+	-rm -f ./$(DEPDIR)/persist_conn.Plo
 	-rm -f ./$(DEPDIR)/plugin.Plo
 	-rm -f ./$(DEPDIR)/plugrack.Plo
+	-rm -f ./$(DEPDIR)/port_mgr.Plo
 	-rm -f ./$(DEPDIR)/print_fields.Plo
 	-rm -f ./$(DEPDIR)/proc_args.Plo
 	-rm -f ./$(DEPDIR)/read_config.Plo
@@ -1064,7 +1085,6 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/setproctitle.Plo
 	-rm -f ./$(DEPDIR)/slurm_errno.Plo
 	-rm -f ./$(DEPDIR)/slurm_opt.Plo
-	-rm -f ./$(DEPDIR)/slurm_persist_conn.Plo
 	-rm -f ./$(DEPDIR)/slurm_protocol_api.Plo
 	-rm -f ./$(DEPDIR)/slurm_protocol_defs.Plo
 	-rm -f ./$(DEPDIR)/slurm_protocol_pack.Plo
@@ -1090,9 +1110,9 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/uid.Plo
 	-rm -f ./$(DEPDIR)/util-net.Plo
 	-rm -f ./$(DEPDIR)/working_cluster.Plo
-	-rm -f ./$(DEPDIR)/workq.Plo
 	-rm -f ./$(DEPDIR)/write_labelled_message.Plo
 	-rm -f ./$(DEPDIR)/x11_util.Plo
+	-rm -f ./$(DEPDIR)/xahash.Plo
 	-rm -f ./$(DEPDIR)/xassert.Plo
 	-rm -f ./$(DEPDIR)/xhash.Plo
 	-rm -f ./$(DEPDIR)/xmalloc.Plo
@@ -1149,7 +1169,6 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/bitstring.Plo
 	-rm -f ./$(DEPDIR)/callerid.Plo
 	-rm -f ./$(DEPDIR)/cbuf.Plo
-	-rm -f ./$(DEPDIR)/conmgr.Plo
 	-rm -f ./$(DEPDIR)/core_array.Plo
 	-rm -f ./$(DEPDIR)/cpu_frequency.Plo
 	-rm -f ./$(DEPDIR)/cron.Plo
@@ -1171,10 +1190,12 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/io_hdr.Plo
 	-rm -f ./$(DEPDIR)/job_features.Plo
 	-rm -f ./$(DEPDIR)/job_options.Plo
+	-rm -f ./$(DEPDIR)/job_record.Plo
 	-rm -f ./$(DEPDIR)/job_resources.Plo
 	-rm -f ./$(DEPDIR)/job_state_reason.Plo
 	-rm -f ./$(DEPDIR)/list.Plo
 	-rm -f ./$(DEPDIR)/log.Plo
+	-rm -f ./$(DEPDIR)/msg_type.Plo
 	-rm -f ./$(DEPDIR)/net.Plo
 	-rm -f ./$(DEPDIR)/node_conf.Plo
 	-rm -f ./$(DEPDIR)/oci_config.Plo
@@ -1184,8 +1205,11 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/parse_config.Plo
 	-rm -f ./$(DEPDIR)/parse_time.Plo
 	-rm -f ./$(DEPDIR)/parse_value.Plo
+	-rm -f ./$(DEPDIR)/part_record.Plo
+	-rm -f ./$(DEPDIR)/persist_conn.Plo
 	-rm -f ./$(DEPDIR)/plugin.Plo
 	-rm -f ./$(DEPDIR)/plugrack.Plo
+	-rm -f ./$(DEPDIR)/port_mgr.Plo
 	-rm -f ./$(DEPDIR)/print_fields.Plo
 	-rm -f ./$(DEPDIR)/proc_args.Plo
 	-rm -f ./$(DEPDIR)/read_config.Plo
@@ -1196,7 +1220,6 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/setproctitle.Plo
 	-rm -f ./$(DEPDIR)/slurm_errno.Plo
 	-rm -f ./$(DEPDIR)/slurm_opt.Plo
-	-rm -f ./$(DEPDIR)/slurm_persist_conn.Plo
 	-rm -f ./$(DEPDIR)/slurm_protocol_api.Plo
 	-rm -f ./$(DEPDIR)/slurm_protocol_defs.Plo
 	-rm -f ./$(DEPDIR)/slurm_protocol_pack.Plo
@@ -1222,9 +1245,9 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/uid.Plo
 	-rm -f ./$(DEPDIR)/util-net.Plo
 	-rm -f ./$(DEPDIR)/working_cluster.Plo
-	-rm -f ./$(DEPDIR)/workq.Plo
 	-rm -f ./$(DEPDIR)/write_labelled_message.Plo
 	-rm -f ./$(DEPDIR)/x11_util.Plo
+	-rm -f ./$(DEPDIR)/xahash.Plo
 	-rm -f ./$(DEPDIR)/xassert.Plo
 	-rm -f ./$(DEPDIR)/xhash.Plo
 	-rm -f ./$(DEPDIR)/xmalloc.Plo

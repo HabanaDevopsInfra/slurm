@@ -320,12 +320,6 @@ const static entry_t jsra[] = {
 	[FAIL_BURST_BUFFER_OP] = {
 		.str = "BurstBufferOperation",
 	},
-	[WAIT_POWER_NOT_AVAIL] = {
-		.str = "PowerNotAvail",
-	},
-	[WAIT_POWER_RESERVED] = {
-		.str = "PowerReserved",
-	},
 	[WAIT_ASSOC_GRP_UNK] = {
 		.flags = JSR_QOS_ASSOC,
 		.str = "AssocGrpUnknown",
@@ -808,6 +802,85 @@ const static entry_t jsra[] = {
 	},
 	[FAIL_CONSTRAINTS] = {
 		.str = "Constraints",
+	},
+	[WAIT_QOS_MAX_BB_RUN_MINS_PER_ACCT] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxBBRunMinsPerAccount",
+	},
+	[WAIT_QOS_MAX_BILLING_RUN_MINS_PER_ACCT] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxBillingRunMinsPerAccount",
+	},
+	[WAIT_QOS_MAX_CPU_RUN_MINS_PER_ACCT] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxCpuRunMinsPerAccount",
+	},
+	[WAIT_QOS_MAX_ENERGY_RUN_MINS_PER_ACCT] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxEnergyRunMinsPerAccount",
+	},
+	[WAIT_QOS_MAX_GRES_RUN_MINS_PER_ACCT] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxGRESRunMinsPerAccount",
+	},
+	[WAIT_QOS_MAX_NODE_RUN_MINS_PER_ACCT] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxNodeRunMinsPerAccount",
+	},
+	[WAIT_QOS_MAX_LIC_RUN_MINS_PER_ACCT] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxLicenseRunMinsPerAccount",
+	},
+	[WAIT_QOS_MAX_MEM_RUN_MINS_PER_ACCT] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxMemoryRunMinsPerAccount",
+	},
+	[WAIT_QOS_MAX_UNK_RUN_MINS_PER_ACCT] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxUnknownRunMinsPerAccount",
+	},
+	[WAIT_QOS_MAX_BB_RUN_MINS_PER_USER] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxBBRunMinsPerUser",
+	},
+	[WAIT_QOS_MAX_BILLING_RUN_MINS_PER_USER] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxBillingRunMinsPerUser",
+	},
+	[WAIT_QOS_MAX_CPU_RUN_MINS_PER_USER] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxCpuRunMinsPerUser",
+	},
+	[WAIT_QOS_MAX_ENERGY_RUN_MINS_PER_USER] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxEnergyRunMinsPerUser",
+	},
+	[WAIT_QOS_MAX_GRES_RUN_MINS_PER_USER] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxGRESRunMinsPerUser",
+	},
+	[WAIT_QOS_MAX_NODE_RUN_MINS_PER_USER] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxNodeRunMinsPerUser",
+	},
+	[WAIT_QOS_MAX_LIC_RUN_MINS_PER_USER] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxLicenseRunMinsPerUser",
+	},
+	[WAIT_QOS_MAX_MEM_RUN_MINS_PER_USER] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxMemoryRunMinsPerUser",
+	},
+	[WAIT_QOS_MAX_UNK_RUN_MINS_PER_USER] = {
+		.flags = JSR_QOS_ASSOC,
+		.str = "MaxUnknownRunMinsPerUser",
+	},
+	[WAIT_MAX_POWERED_NODES] = {
+		.flags = JSR_MISC,
+		.str = "MaxPoweredUpNodes",
+	},
+	[WAIT_MPI_PORTS_BUSY] = {
+		.str = "MpiPortsBusy",
 	},
 };
 

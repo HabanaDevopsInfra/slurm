@@ -67,6 +67,7 @@
 #include "src/common/xstring.h"
 #include "src/interfaces/gres.h"
 
+#include "src/slurmctld/acct_policy.h"
 #include "src/slurmctld/licenses.h"
 #include "src/slurmctld/read_config.h"
 
@@ -82,8 +83,9 @@
 #if defined (__APPLE__)
 extern void *acct_db_conn  __attribute__((weak_import));
 extern uint32_t cluster_cpus __attribute__((weak_import));
-extern List job_list  __attribute__((weak_import));
+extern list_t *job_list  __attribute__((weak_import));
 extern time_t last_job_update __attribute__((weak_import));
+extern time_t last_part_update __attribute__((weak_import));
 extern slurm_conf_t slurm_conf __attribute__((weak_import));
 extern int slurmctld_tres_cnt __attribute__((weak_import));
 extern uint16_t accounting_enforce __attribute__((weak_import));
@@ -91,8 +93,9 @@ extern int active_node_record_count __attribute__((weak_import));
 #else
 void *acct_db_conn = NULL;
 uint32_t cluster_cpus = NO_VAL;
-List job_list = NULL;
+list_t *job_list = NULL;
 time_t last_job_update = (time_t) 0;
+time_t last_part_update = (time_t) 0;
 slurm_conf_t slurm_conf;
 int slurmctld_tres_cnt = 0;
 uint16_t accounting_enforce = 0;
@@ -131,8 +134,6 @@ const uint32_t plugin_version	= SLURM_VERSION_NUMBER;
 static pthread_t decay_handler_thread;
 static pthread_mutex_t decay_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t decay_cond = PTHREAD_COND_INITIALIZER;
-static pthread_mutex_t decay_init_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t decay_init_cond = PTHREAD_COND_INITIALIZER;
 static bool running_decay = 0, reconfig = 0, calc_fairshare = 1;
 static time_t plugin_shutdown = 0;
 static uint16_t damp_factor = 1;  /* weight for age factor */
@@ -147,6 +148,7 @@ static uint32_t weight_qos;  /* weight for QOS factor */
 static double  *weight_tres; /* tres weights */
 static uint32_t flags;       /* Priority Flags */
 static time_t g_last_ran = 0; /* when the last poll ran */
+static time_t g_last_reset = 0; /* when the last reset was done */
 static double decay_factor = 1; /* The decay factor when decaying time. */
 
 /* variables defined in priority_multifactor.h */
@@ -406,7 +408,7 @@ static int _write_last_decay_ran(time_t last_ran, time_t last_reset)
  *
  * NOTE: acct_mgr_assoc_lock must be locked before this is called.
  */
-static int _set_children_usage_efctv(List children_list)
+static int _set_children_usage_efctv(list_t *children_list)
 {
 	slurmdb_assoc_rec_t *assoc = NULL;
 	list_itr_t *itr = NULL;
@@ -528,6 +530,76 @@ static double _get_tres_prio_weighted(double *tres_factors)
 	return tmp_tres;
 }
 
+typedef struct {
+	int *counter;
+	job_record_t *job_ptr;
+	char *multi_part_str;
+} part_prio_args_t;
+
+static int _priority_each_partition(void *object, void *arg)
+{
+	part_record_t *part_ptr = (part_record_t *)object;
+	part_prio_args_t *args = arg;
+	job_record_t *job_ptr = args->job_ptr;
+	char *multi_part_str = args->multi_part_str;
+	int *counter = args->counter;
+
+	double part_tres = 0.0;
+	double priority_part;
+	uint64_t tmp_64;
+
+	if (weight_tres) {
+		double part_tres_factors[slurmctld_tres_cnt];
+		memset(part_tres_factors, 0,
+		       sizeof(double) * slurmctld_tres_cnt);
+		_get_tres_factors(job_ptr, part_ptr, part_tres_factors);
+		part_tres = _get_tres_prio_weighted(part_tres_factors);
+	}
+
+	priority_part = ((flags & PRIORITY_FLAGS_NO_NORMAL_PART) ?
+			 part_ptr->priority_job_factor :
+			 part_ptr->norm_priority) *
+			 (double)weight_part;
+
+	priority_part +=
+		(job_ptr->prio_factors->priority_age
+		  + job_ptr->prio_factors->priority_assoc
+		  + job_ptr->prio_factors->priority_fs
+		  + job_ptr->prio_factors->priority_js
+		  + job_ptr->prio_factors->priority_qos
+		  + part_tres
+		  + (double)(((int64_t)job_ptr->prio_factors->priority_site)
+			     - NICE_OFFSET)
+		  - (double)(((int64_t)job_ptr->prio_factors->nice)
+			     - NICE_OFFSET));
+
+	/* Priority 0 is reserved for held jobs */
+	if (priority_part < 1)
+		priority_part = 1;
+
+	tmp_64 = (uint64_t) priority_part;
+	if (tmp_64 > 0xffffffff) {
+		error("%pJ priority '%"PRIu64"' exceeds 32 bits. Reducing it to 4294967295 (2^32 - 1)",
+		      job_ptr, tmp_64);
+		tmp_64 = 0xffffffff;
+		priority_part = (double) tmp_64;
+	}
+	if (((flags & PRIORITY_FLAGS_INCR_ONLY) == 0) ||
+	    (job_ptr->part_prio->priority_array[*counter] <
+	     (uint32_t) priority_part)) {
+		job_ptr->part_prio->priority_array[*counter] =
+			(uint32_t) priority_part;
+	}
+	if (slurm_conf.debug_flags & DEBUG_FLAG_PRIO) {
+		xstrfmtcat(multi_part_str, multi_part_str ?
+			   ", %s=%u" : "%s=%u", part_ptr->name,
+			   job_ptr->part_prio->priority_array[*counter]);
+	}
+	(*counter)++;
+	return SLURM_SUCCESS;
+}
+
+
 /* Returns the priority after applying the weight factors */
 static uint32_t _get_priority_internal(time_t start_time,
 				       job_record_t *job_ptr)
@@ -613,80 +685,48 @@ static uint32_t _get_priority_internal(time_t start_time,
 		priority = (double) tmp_64;
 	}
 
-	if (job_ptr->part_ptr_list) {
-		part_record_t *part_ptr;
-		double priority_part;
-		list_itr_t *part_iterator;
-		int i = 0;
+	/* Free after transitioning from multi-part job to single part job. */
+	if (!job_ptr->part_ptr_list && job_ptr->part_prio) {
+		xfree(job_ptr->part_prio->priority_array);
+		xfree(job_ptr->part_prio->priority_array_parts);
+		xfree(job_ptr->part_prio);
+	}
 
-		if (!job_ptr->priority_array) {
-			i = list_count(job_ptr->part_ptr_list) + 1;
-			job_ptr->priority_array = xcalloc(i, sizeof(uint32_t));
+	if (job_ptr->part_ptr_list) {
+		int i = 0;
+		part_prio_args_t arg;
+
+		if (!job_ptr->part_prio)
+			job_ptr->part_prio = xmalloc(sizeof(priority_parts_t));
+
+		if (job_ptr->part_prio &&
+		    (!job_ptr->part_prio->priority_array ||
+		     (job_ptr->part_prio->last_update < last_part_update))) {
+
+			xfree(job_ptr->part_prio->priority_array);
+			i = list_count(job_ptr->part_ptr_list);
+			job_ptr->part_prio->priority_array =
+				xcalloc(i, sizeof(uint32_t));
+
+			list_sort(job_ptr->part_ptr_list,
+				  priority_sort_part_tier);
+			xfree(job_ptr->part_prio->priority_array_parts);
+			job_ptr->part_prio->priority_array_parts =
+				part_list_to_xstr(job_ptr->part_ptr_list);
+
+			job_ptr->part_prio->last_update = time(NULL);
 		}
 
 		i = 0;
-		list_sort(job_ptr->part_ptr_list, priority_sort_part_tier);
-		part_iterator = list_iterator_create(job_ptr->part_ptr_list);
-		while ((part_ptr = list_next(part_iterator))) {
-			double part_tres = 0.0;
+		arg.job_ptr = job_ptr,
+		arg.multi_part_str = multi_part_str,
+		arg.counter = &i,
+		list_for_each(job_ptr->part_ptr_list, _priority_each_partition,
+			      &arg);
 
-			if (weight_tres) {
-				double part_tres_factors[slurmctld_tres_cnt];
-				memset(part_tres_factors, 0,
-				       sizeof(double) * slurmctld_tres_cnt);
-				_get_tres_factors(job_ptr, part_ptr,
-						  part_tres_factors);
-				part_tres = _get_tres_prio_weighted(
-							part_tres_factors);
-			}
-
-			priority_part =
-				((flags & PRIORITY_FLAGS_NO_NORMAL_PART) ?
-				 part_ptr->priority_job_factor :
-				 part_ptr->norm_priority) *
-				(double)weight_part;
-			priority_part +=
-				 (job_ptr->prio_factors->priority_age
-				 + job_ptr->prio_factors->priority_assoc
-				 + job_ptr->prio_factors->priority_fs
-				 + job_ptr->prio_factors->priority_js
-				 + job_ptr->prio_factors->priority_qos
-				 + part_tres
-				 + (double)
-				   (((int64_t)job_ptr->prio_factors->priority_site)
-				    - NICE_OFFSET)
-				 - (double)
-				   (((int64_t)job_ptr->prio_factors->nice)
-				    - NICE_OFFSET));
-
-			/* Priority 0 is reserved for held jobs */
-			if (priority_part < 1)
-				priority_part = 1;
-
-			tmp_64 = (uint64_t) priority_part;
-			if (tmp_64 > 0xffffffff) {
-				error("%pJ priority '%"PRIu64"' exceeds 32 bits. Reducing it to 4294967295 (2^32 - 1)",
-				      job_ptr, tmp_64);
-				tmp_64 = 0xffffffff;
-				priority_part = (double) tmp_64;
-			}
-			if (((flags & PRIORITY_FLAGS_INCR_ONLY) == 0) ||
-			    (job_ptr->priority_array[i] <
-			     (uint32_t) priority_part)) {
-				job_ptr->priority_array[i] =
-					(uint32_t) priority_part;
-			}
-			if (slurm_conf.debug_flags & DEBUG_FLAG_PRIO) {
-				xstrfmtcat(multi_part_str, multi_part_str ?
-					   ", %s=%u" : "%s=%u", part_ptr->name,
-					   job_ptr->priority_array[i]);
-			}
-			i++;
-		}
 		log_flag(PRIO, "%pJ multi-partition priorities: %s",
 			 job_ptr, multi_part_str);
 		xfree(multi_part_str);
-		list_iterator_destroy(part_iterator);
 	}
 
 	if (slurm_conf.debug_flags & DEBUG_FLAG_PRIO) {
@@ -814,13 +854,21 @@ static time_t _next_reset(uint16_t reset_period, time_t last_reset)
 
 static void _handle_qos_tres_run_secs(long double *tres_run_decay,
 				      uint64_t *tres_run_delta,
-				      uint32_t job_id,
+				      job_record_t *job_ptr,
 				      slurmdb_qos_rec_t *qos)
 {
+	slurmdb_used_limits_t *used_limits_a = NULL;
+	slurmdb_used_limits_t *used_limits_u = NULL;
+
 	int i;
 
 	if (!qos || !(accounting_enforce & ACCOUNTING_ENFORCE_LIMITS))
 		return;
+
+	used_limits_a = acct_policy_get_acct_used_limits(
+		&qos->usage->acct_limit_list, job_ptr->assoc_ptr->acct);
+	used_limits_u = acct_policy_get_user_used_limits(
+		&qos->usage->user_limit_list, job_ptr->user_id);
 
 	for (i=0; i<slurmctld_tres_cnt; i++) {
 		if (i == TRES_ARRAY_ENERGY)
@@ -834,7 +882,7 @@ static void _handle_qos_tres_run_secs(long double *tres_run_decay,
 			      "QOS %s TRES %s grp_used_tres_run_secs "
 			      "underflow, tried to remove %"PRIu64" seconds "
 			      "when only %"PRIu64" remained.",
-			      job_id,
+			      job_ptr->job_id,
 			      qos->name,
 			      assoc_mgr_tres_name_array[i],
 			      tres_run_delta[i],
@@ -845,9 +893,48 @@ static void _handle_qos_tres_run_secs(long double *tres_run_decay,
 				tres_run_delta[i];
 
 		log_flag(PRIO, "%s: job %u: Removed %"PRIu64" unused seconds from QOS %s TRES %s grp_used_tres_run_secs = %"PRIu64,
-			 __func__, job_id, tres_run_delta[i], qos->name,
+			 __func__, job_ptr->job_id, tres_run_delta[i], qos->name,
 			 assoc_mgr_tres_name_array[i],
 			 qos->usage->grp_used_tres_run_secs[i]);
+
+		if (tres_run_delta[i] >
+		    used_limits_a->tres_run_secs[i]) {
+			error("_handle_qos_tres_run_secs: job %u: "
+			      "QOS %s TRES %s account used limit tres_run_secs "
+			      "underflow, tried to remove %"PRIu64" seconds "
+			      "when only %"PRIu64" remained.",
+			      job_ptr->job_id,
+			      qos->name,
+			      assoc_mgr_tres_name_array[i],
+			      tres_run_delta[i],
+			      used_limits_a->tres_run_secs[i]);
+			used_limits_a->tres_run_secs[i] = 0;
+		} else
+			used_limits_a->tres_run_secs[i] -=
+				tres_run_delta[i];
+
+		log_flag(PRIO, "%s: job %u: Removed %"PRIu64" unused seconds from QOS %s TRES %s user used limit tres_run_secs = %"PRIu64,
+			 __func__, job_ptr->job_id, tres_run_delta[i], qos->name,
+			 assoc_mgr_tres_name_array[i],
+			 used_limits_a->tres_run_secs[i]);
+
+		if (tres_run_delta[i] >
+		    used_limits_u->tres_run_secs[i]) {
+			error("_handle_qos_tres_run_secs: job %u: QOS %s TRES %s user used limit tres_run_secs underflow, tried to remove %"PRIu64" seconds when only %"PRIu64" remained.",
+			      job_ptr->job_id,
+			      qos->name,
+			      assoc_mgr_tres_name_array[i],
+			      tres_run_delta[i],
+			      used_limits_u->tres_run_secs[i]);
+			used_limits_u->tres_run_secs[i] = 0;
+		} else
+			used_limits_u->tres_run_secs[i] -=
+				tres_run_delta[i];
+
+		log_flag(PRIO, "%s: job %u: Removed %"PRIu64" unused seconds from QOS %s TRES %s account used limit tres_run_secs = %"PRIu64,
+			 __func__, job_ptr->job_id, tres_run_delta[i], qos->name,
+			 assoc_mgr_tres_name_array[i],
+			 used_limits_a->tres_run_secs[i]);
 	}
 }
 
@@ -897,12 +984,12 @@ static void _handle_tres_run_secs(uint64_t *tres_run_delta,
 	slurmdb_assoc_rec_t *assoc = job_ptr->assoc_ptr;
 
 	_handle_qos_tres_run_secs(NULL, tres_run_delta,
-				  job_ptr->job_id, job_ptr->qos_ptr);
+				  job_ptr, job_ptr->qos_ptr);
 
 	/* Only update partition qos if not being used by job */
 	if (job_ptr->part_ptr &&
 	    (job_ptr->part_ptr->qos_ptr != job_ptr->qos_ptr))
-		_handle_qos_tres_run_secs(NULL, tres_run_delta, job_ptr->job_id,
+		_handle_qos_tres_run_secs(NULL, tres_run_delta, job_ptr,
 					  job_ptr->part_ptr->qos_ptr);
 
 	while (assoc) {
@@ -1132,14 +1219,14 @@ static int _apply_new_usage(job_record_t *job_ptr, time_t start_period,
 
 			_handle_qos_tres_run_secs(tres_run_nodecay,
 						  tres_run_delta,
-						  job_ptr->job_id, qos);
+						  job_ptr, qos);
 		} else {
 			qos->usage->grp_used_wall += run_decay;
 			qos->usage->usage_raw += (long double)real_decay;
 
 			_handle_qos_tres_run_secs(tres_run_decay,
 						  tres_run_delta,
-						  job_ptr->job_id, qos);
+						  job_ptr, qos);
 		}
 	}
 
@@ -1163,14 +1250,14 @@ static int _apply_new_usage(job_record_t *job_ptr, time_t start_period,
 
 			_handle_qos_tres_run_secs(tres_run_nodecay,
 						  tres_run_delta,
-						  job_ptr->job_id, qos);
+						  job_ptr, qos);
 		} else {
 			qos->usage->grp_used_wall += run_decay;
 			qos->usage->usage_raw += (long double)real_decay;
 
 			_handle_qos_tres_run_secs(tres_run_decay,
 						  tres_run_delta,
-						  job_ptr->job_id, qos);
+						  job_ptr, qos);
 		}
 	}
 
@@ -1215,7 +1302,7 @@ static int _decay_apply_new_usage_and_weighted_factors(job_record_t *job_ptr,
 static void *_decay_thread(void *no_data)
 {
 	time_t start_time = time(NULL);
-	time_t last_reset = 0, next_reset = 0;
+	time_t next_reset = 0;
 	double decay_hl = (double) slurm_conf.priority_decay_hl;
 	uint16_t reset_period = slurm_conf.priority_reset_period;
 
@@ -1235,56 +1322,14 @@ static void *_decay_thread(void *no_data)
 		error("%s: cannot set my name to %s %m", __func__, "decay");
 	}
 #endif
-	/*
-	 * DECAY_FACTOR DESCRIPTION:
-	 *
-	 * The decay thread applies an exponential decay over the past
-	 * consumptions using a rolling approach.
-	 * Every calc period p in seconds, the already computed usage is
-	 * computed again applying the decay factor of that slice :
-	 * decay_factor_slice.
-	 *
-	 * To ease the computation, the notion of decay_factor
-	 * is introduced and corresponds to the decay factor
-	 * required for a slice of 1 second. Thus, for any given
-	 * slice ot time of n seconds, decay_factor_slice will be
-	 * defined as : df_slice = pow(df,n)
-	 *
-	 * For a slice corresponding to the defined half life 'decay_hl' and
-	 * a usage x, we will therefore have :
-	 *    >>  x * pow(decay_factor,decay_hl) = 1/2 x  <<
-	 *
-	 * This expression helps to define the value of decay_factor that
-	 * is necessary to apply the previously described logic.
-	 *
-	 * The expression is equivalent to :
-	 *    >> decay_hl * ln(decay_factor) = ln(1/2)
-	 *    >> ln(decay_factor) = ln(1/2) / decay_hl
-	 *    >> decay_factor = e( ln(1/2) / decay_hl )
-	 *
-	 * Applying THe power series e(x) = sum(x^n/n!) for n from 0 to infinity
-	 *    >> decay_factor = 1 + ln(1/2)/decay_hl
-	 *    >> decay_factor = 1 - ( 0.693 / decay_hl)
-	 *
-	 * This explain the following declaration.
-	 */
-
-	slurm_mutex_lock(&decay_init_mutex);
-
-	if (decay_hl > 0)
-		decay_factor = 1 - (0.693 / decay_hl);
 
 	/* setup timer */
 	gettimeofday(&tvnow, NULL);
 	abs.tv_sec = tvnow.tv_sec;
 	abs.tv_nsec = tvnow.tv_usec * 1000;
 
-	_read_last_decay_ran(&g_last_ran, &last_reset);
-	if (last_reset == 0)
-		last_reset = start_time;
-
-	slurm_cond_signal(&decay_init_cond);
-	slurm_mutex_unlock(&decay_init_mutex);
+	if (g_last_reset == 0)
+		g_last_reset = start_time;
 
 	_init_grp_used_tres_run_secs(g_last_ran);
 
@@ -1322,7 +1367,7 @@ static void *_decay_thread(void *no_data)
 		case PRIORITY_RESET_NOW:	/* do once */
 			_reset_usage();
 			reset_period = PRIORITY_RESET_NONE;
-			last_reset = now;
+			g_last_reset = now;
 			break;
 		case PRIORITY_RESET_DAILY:
 		case PRIORITY_RESET_WEEKLY:
@@ -1331,13 +1376,13 @@ static void *_decay_thread(void *no_data)
 		case PRIORITY_RESET_YEARLY:
 			if (next_reset == 0) {
 				next_reset = _next_reset(reset_period,
-							 last_reset);
+							 g_last_reset);
 			}
 			if (now >= next_reset) {
 				_reset_usage();
-				last_reset = next_reset;
+				g_last_reset = next_reset;
 				next_reset = _next_reset(reset_period,
-							 last_reset);
+							 g_last_reset);
 			}
 		}
 
@@ -1397,7 +1442,7 @@ static void *_decay_thread(void *no_data)
 
 		g_last_ran = start_time;
 
-		_write_last_decay_ran(g_last_ran, last_reset);
+		_write_last_decay_ran(g_last_ran, g_last_reset);
 
 		running_decay = 0;
 
@@ -1488,7 +1533,7 @@ static void _internal_setup(void)
 /* Reursively call assoc_mgr_normalize_assoc_shares from assoc_mgr.c on
  * children of an assoc
  */
-static void _set_norm_shares(List children_list)
+static void _set_norm_shares(list_t *children_list)
 {
 	list_itr_t *itr = NULL;
 	slurmdb_assoc_rec_t *assoc = NULL;
@@ -1506,6 +1551,51 @@ static void _set_norm_shares(List children_list)
 	list_iterator_destroy(itr);
 }
 
+/* We need to set up some global variables that are needed outside of the
+* decay_thread (i.e. decay_factor, g_last_ran). These are needed if a job was
+* completing and the slurmctld was reset. If they aren't setup before
+* continuing we could get more time added than should be on a restart.
+*/
+static void _init_decay_vars()
+{
+	double decay_hl = (double) slurm_conf.priority_decay_hl;
+	/*
+	* DECAY_FACTOR DESCRIPTION:
+	*
+	* The decay thread applies an exponential decay over the past
+	* consumptions using a rolling approach.
+	* Every calc period p in seconds, the already computed usage is
+	* computed again applying the decay factor of that slice :
+	* decay_factor_slice.
+	*
+	* To ease the computation, the notion of decay_factor
+	* is introduced and corresponds to the decay factor
+	* required for a slice of 1 second. Thus, for any given
+	* slice ot time of n seconds, decay_factor_slice will be
+	* defined as : df_slice = pow(df,n)
+	*
+	* For a slice corresponding to the defined half life 'decay_hl' and
+	* a usage x, we will therefore have :
+	*    >>  x * pow(decay_factor,decay_hl) = 1/2 x  <<
+	*
+	* This expression helps to define the value of decay_factor that
+	* is necessary to apply the previously described logic.
+	*
+	* The expression is equivalent to :
+	*    >> decay_hl * ln(decay_factor) = ln(1/2)
+	*    >> ln(decay_factor) = ln(1/2) / decay_hl
+	*    >> decay_factor = e( ln(1/2) / decay_hl )
+	*
+	* Applying the power series e(x) = sum(x^n/n!) for n from 0 to infinity
+	*    >> decay_factor = 1 + ln(1/2)/decay_hl
+	*    >> decay_factor = 1 - ( 0.693 / decay_hl)
+	*
+	* This explains the following declaration.
+	*/
+	if (decay_hl > 0)
+		decay_factor = 1 - (0.693 / decay_hl);
+	_read_last_decay_ran(&g_last_ran, &g_last_reset);
+}
 
 static void _depth_oblivious_set_usage_efctv(slurmdb_assoc_rec_t *assoc)
 {
@@ -1657,23 +1747,8 @@ int init ( void )
 		weight_age = 0;
 		weight_fs = 0;
 	} else if (assoc_mgr_root_assoc) {
+		_init_decay_vars();
 		assoc_mgr_root_assoc->usage->usage_efctv = 1.0;
-
-		/* The decay_thread sets up some global variables that are
-		 * needed outside of the decay_thread (i.e. decay_factor,
-		 * g_last_ran).  These are needed if a job was completing and
-		 * the slurmctld was reset.  If they aren't setup before
-		 * continuing we could get more time added than should be on a
-		 * restart.  So wait until they are set up. Set the lock now so
-		 * that the decay thread won't trigger the conditional before we
-		 * wait for it. */
-		slurm_mutex_lock(&decay_init_mutex);
-
-		slurm_thread_create(&decay_handler_thread,
-				    _decay_thread, NULL);
-
-		slurm_cond_wait(&decay_init_cond, &decay_init_mutex);
-		slurm_mutex_unlock(&decay_init_mutex);
 	} else {
 		if (weight_fs) {
 			fatal("It appears you don't have any association "
@@ -1713,6 +1788,13 @@ int fini ( void )
 	site_factor_g_fini();
 
 	return SLURM_SUCCESS;
+}
+
+void priority_p_thread_start(void)
+{
+	slurm_thread_create(&decay_handler_thread, _decay_thread, NULL);
+
+	return;
 }
 
 extern uint32_t priority_p_set(uint32_t last_prio, job_record_t *job_ptr)
@@ -1818,9 +1900,9 @@ extern double priority_p_calc_fs_factor(long double usage_efctv,
 	return priority_fs;
 }
 
-extern List priority_p_get_priority_factors_list(uid_t uid)
+extern list_t *priority_p_get_priority_factors_list(uid_t uid)
 {
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	list_itr_t *itr, *job_iter;
 	job_record_t *job_ptr = NULL;
 	part_record_t *job_part_ptr = NULL;
@@ -1866,7 +1948,8 @@ extern List priority_p_get_priority_factors_list(uid_t uid)
 			    !validate_operator(uid) &&
 			    (((slurm_mcs_get_privatedata() == 0) &&
 			      !assoc_mgr_is_user_acct_coord(acct_db_conn, uid,
-			                                    job_ptr->account))||
+			                                    job_ptr->account,
+							    false)) ||
 			     ((slurm_mcs_get_privatedata() == 1) &&
 			      (mcs_g_check_mcs_label(uid, job_ptr->mcs_label,
 						     false) != 0))))

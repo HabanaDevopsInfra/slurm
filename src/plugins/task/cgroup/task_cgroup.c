@@ -47,7 +47,6 @@
 #include "src/interfaces/cgroup.h"
 #include "src/slurmd/slurmstepd/slurmstepd_job.h"
 #include "src/slurmd/slurmd/slurmd.h"
-#include "task_cgroup.h"
 #include "task_cgroup_cpuset.h"
 #include "task_cgroup_memory.h"
 #include "task_cgroup_devices.h"
@@ -63,6 +62,12 @@ static bool use_devices = false;
 extern int init(void)
 {
 	int rc = SLURM_SUCCESS;
+
+	/* Sanity check for incompatible plugins */
+	if (!xstrcmp(slurm_cgroup_conf.cgroup_plugin, "disabled")) {
+		fatal("%s: CgroupPlugin=disabled in cgroup.conf is not compatible with task/cgroup.",
+		      __func__);
+	}
 
 	if (slurm_cgroup_conf.constrain_swap_space &&
 	    !cgroup_g_has_feature(CG_MEMCG_SWAP)) {
@@ -138,16 +143,6 @@ extern int task_p_slurmd_batch_request(batch_job_launch_msg_t *req)
 
 extern int task_p_slurmd_launch_request(launch_tasks_request_msg_t *req,
 					uint32_t node_id, char **err_msg)
-{
-	return SLURM_SUCCESS;
-}
-
-extern int task_p_slurmd_suspend_job(uint32_t job_id)
-{
-	return SLURM_SUCCESS;
-}
-
-extern int task_p_slurmd_resume_job(uint32_t job_id)
 {
 	return SLURM_SUCCESS;
 }

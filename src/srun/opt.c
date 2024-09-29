@@ -62,7 +62,7 @@
 #include "src/common/proc_args.h"
 #include "src/interfaces/mpi.h"
 #include "src/common/slurm_protocol_api.h"
-#include "src/common/slurm_protocol_interface.h"
+#include "src/common/slurm_protocol_socket.h"
 #include "src/common/slurm_rlimits_info.h"
 #include "src/common/slurm_resource_info.h"
 #include "src/interfaces/acct_gather_profile.h"
@@ -94,12 +94,14 @@ slurm_opt_t opt = {
 	.usage_func = _usage,
 	.autocomplete_func = _autocomplete,
 };
-List 	opt_list = NULL;
+list_t *opt_list = NULL;
 int	pass_number = 0;
 time_t	srun_begin_time = 0;
 bool local_het_step = false;
 
 /*---- forward declarations of static variables and functions  ----*/
+
+static bool is_step = false;
 
 static slurm_opt_t *_get_first_opt(int het_job_offset);
 static slurm_opt_t *_get_next_opt(int het_job_offset, slurm_opt_t *opt_last);
@@ -342,6 +344,8 @@ extern int initialize_and_process_args(int argc, char **argv, int *argc_off)
 	bool opt_found = false;
 	static bool check_het_step = false;
 
+	is_step = getenv("SLURM_JOB_ID") ? true : false;
+
 	het_grp_bits = _get_het_group(argc, argv, default_het_job_offset++,
 				      &opt_found);
 	/*
@@ -371,7 +375,7 @@ extern int initialize_and_process_args(int argc, char **argv, int *argc_off)
 		_opt_default();
 
 		/* do not set adjust defaults in an active allocation */
-		if (!getenv("SLURM_JOB_ID")) {
+		if (!is_step) {
 			bool first = (pass_number == 1);
 			if (cli_filter_g_setup_defaults(&opt, first)) {
 				error("cli_filter plugin terminated with error");
@@ -409,7 +413,7 @@ extern int initialize_and_process_args(int argc, char **argv, int *argc_off)
 			 * trying to use the whole allocation.
 			 */
 			if (!getenv("SLURM_HET_SIZE") &&
-			    getenv("SLURM_JOB_ID") &&
+			    is_step &&
 			    (optind >= 0) && (optind < argc)) {
 				for (int i2 = optind; i2 < argc; i2++) {
 					if (!xstrcmp(argv[i2], ":")) {
@@ -786,6 +790,9 @@ static void _opt_args(int argc, char **argv, int het_job_offset)
 	if (opt.container_id && !getenv("SLURM_CONTAINER_ID"))
 		setenvf(NULL, "SLURM_CONTAINER_ID", "%s", opt.container_id);
 
+	if (opt.network)
+		setenvf(NULL, "SLURM_NETWORK", "%s", opt.network);
+
 	if (opt.dependency)
 		setenvfs("SLURM_JOB_DEPENDENCY=%s", opt.dependency);
 
@@ -811,10 +818,6 @@ static void _opt_args(int argc, char **argv, int het_job_offset)
 	if (!rest && !sropt.test_only)
 		fatal("No command given to execute.");
 
-	if (launch_init() != SLURM_SUCCESS) {
-		fatal("Unable to load launch plugin, check LaunchType "
-		      "configuration");
-	}
 	command_pos = launch_g_setup_srun_opt(rest, &opt);
 
 	/* make sure we have allocated things correctly */
@@ -913,6 +916,14 @@ static bool _opt_verify(void)
 		if (slurm_option_set_by_env(&opt, 'N'))
 			opt.nodes_set = false;
 	}
+
+	/*
+	 * Specifying --gpus should override SLURM_GPUS_PER_NODE env if present
+	 * in step request.
+	 */
+	if (slurm_option_set_by_env(&opt, LONG_OPT_GPUS_PER_NODE) &&
+	    slurm_option_set_by_cli(&opt, 'G') && is_step)
+		slurm_option_reset(&opt, "gpus-per-node");
 
 	validate_options_salloc_sbatch_srun(&opt);
 
@@ -1050,6 +1061,9 @@ static bool _opt_verify(void)
 	if (((opt.distribution & SLURM_DIST_STATE_BASE) == SLURM_DIST_ARBITRARY)
 	   && (!opt.nodes_set || !opt.ntasks_set)) {
 		hostlist_t *hl = hostlist_create(opt.nodelist);
+
+		if (!hl)
+			fatal("Invalid node list specified");
 		if (!opt.ntasks_set) {
 			opt.ntasks_set = true;
 			opt.ntasks = hostlist_count(hl);
@@ -1139,10 +1153,8 @@ static bool _opt_verify(void)
 	/* massage the numbers */
 	if (opt.nodelist && !opt.nodes_set) {
 		hl = hostlist_create(opt.nodelist);
-		if (!hl) {
-			error("memory allocation failure");
-			exit(error_exit);
-		}
+		if (!hl)
+			fatal("Invalid node list specified");
 		hostlist_uniq(hl);
 		hl_cnt = hostlist_count(hl);
 		opt.min_nodes = hl_cnt;
@@ -1173,10 +1185,8 @@ static bool _opt_verify(void)
 		if (opt.nodelist) {
 			FREE_NULL_HOSTLIST(hl);
 			hl = hostlist_create(opt.nodelist);
-			if (!hl) {
-				error("memory allocation failure");
-				exit(error_exit);
-			}
+			if (!hl)
+				fatal("Invalid node list specified");
 			if (((opt.distribution & SLURM_DIST_STATE_BASE) ==
 			     SLURM_DIST_ARBITRARY) && !opt.ntasks_set) {
 				opt.ntasks = hostlist_count(hl);
@@ -1231,19 +1241,38 @@ static bool _opt_verify(void)
 		    slurm_option_set_by_env(&opt, 'n') &&
 		    !slurm_option_set_by_env(&opt, 'N')) {
 			slurm_option_reset(&opt, "ntasks");
-		} else if ((opt.ntasks_per_node != NO_VAL) && opt.min_nodes &&
-			   (opt.ntasks_per_node !=
-			    (opt.ntasks / opt.min_nodes))) {
-			if ((opt.ntasks > opt.ntasks_per_node) &&
-			    !mpack_reset_nodes)
-				warning("can't honor --ntasks-per-node set to %u which doesn't match the requested tasks %u with the number of requested nodes %u. Ignoring --ntasks-per-node.",
+		} else if (opt.ntasks_per_node != NO_VAL) {
+			bool ntasks_per_node_reset = false;
+			int min_ntasks, max_ntasks;
+
+			min_ntasks = opt.min_nodes * opt.ntasks_per_node;
+			max_ntasks = opt.max_nodes * opt.ntasks_per_node;
+
+			/*
+			* We only want to notify incoherent combinations of
+			* -n/-N/--ntasks-per-node for steps, since job
+			* allocations will be already rejected.
+			*/
+			if (opt.max_nodes &&
+			    (opt.ntasks > max_ntasks) &&
+			    !mpack_reset_nodes &&
+			    is_step) {
+				warning("can't honor --ntasks-per-node set to %u which doesn't match the requested tasks %u with the maximum number of requested nodes %u. Ignoring --ntasks-per-node.",
 					opt.ntasks_per_node, opt.ntasks,
-					opt.min_nodes);
-			else if (opt.ntasks > opt.ntasks_per_node)
+					opt.max_nodes);
+				ntasks_per_node_reset = true;
+			}
+			else if (opt.min_nodes &&
+				 (opt.ntasks != min_ntasks) &&
+				 (opt.ntasks > opt.ntasks_per_node) &&
+				 mpack_reset_nodes) {
 				warning("can't honor --ntasks-per-node set to %u which doesn't match the requested tasks %u and -mpack, which forces min number of nodes to 1",
 					opt.ntasks_per_node, opt.ntasks);
+				ntasks_per_node_reset = true;
+			}
 
-			slurm_option_reset(&opt, "ntasks-per-node");
+			if (ntasks_per_node_reset)
+				slurm_option_reset(&opt, "ntasks-per-node");
 		}
 
 	} /* else if (opt.ntasks_set && !opt.nodes_set) */
@@ -1340,7 +1369,7 @@ extern char *spank_get_job_env(const char *name)
 
 	if ((name == NULL) || (name[0] == '\0') ||
 	    (strchr(name, (int)'=') != NULL)) {
-		slurm_seterrno(EINVAL);
+		errno = EINVAL;
 		return NULL;
 	}
 
@@ -1366,7 +1395,7 @@ extern int   spank_set_job_env(const char *name, const char *value,
 
 	if ((name == NULL) || (name[0] == '\0') ||
 	    (strchr(name, (int)'=') != NULL)) {
-		slurm_seterrno(EINVAL);
+		errno = EINVAL;
 		return -1;
 	}
 
@@ -1400,7 +1429,7 @@ extern int   spank_unset_job_env(const char *name)
 
 	if ((name == NULL) || (name[0] == '\0') ||
 	    (strchr(name, (int)'=') != NULL)) {
-		slurm_seterrno(EINVAL);
+		errno = EINVAL;
 		return -1;
 	}
 
@@ -1624,7 +1653,7 @@ static void _help(void)
 "      --sockets-per-node=S    number of sockets per node to allocate\n"
 "      --cores-per-socket=C    number of cores per socket to allocate\n"
 "      --threads-per-core=T    number of threads per core to allocate\n"
-"  -B  --extra-node-info=S[:C[:T]]  combine request of sockets per node,\n"
+"  -B, --extra-node-info=S[:C[:T]]  combine request of sockets per node,\n"
 "                              cores per socket and threads per core.\n"
 "                              Specify an asterisk (*) as a placeholder,\n"
 "                              a minimum value, or a min-max range.\n"

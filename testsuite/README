@@ -288,7 +288,6 @@ test5.9    Validate that squeue -O displays correct job/step format.
 test5.10   Validate that squeue --priority is listing jobs by priority.
 test5.11   Validate that job node estimation is accurate.
 
-
 test6.#    Testing of scancel options.
 ======================================
 test6.1    Validate scancel usage option (--usage option).
@@ -461,8 +460,6 @@ test17.3   Confirm that sbatch reports a proper version number
 	   (--version option).
 test17.4   Confirm that as sbatch job executes as the appropriate user and
 	   group.
-test17.5   Confirm that sbatch stdout, and stderr options work (--output
-	   and --error option respectively, including use of %j specification)
 test17.6   Confirm that a job executes with the proper task count (--ntasks
 	   option).
 test17.8   Confirm that sbatch sets appropriate time limit (--time
@@ -483,7 +480,6 @@ test17.18  Test of job dependencies and deferred begin time (--dependency
 	   and --begin options).
 test17.19  Test of job submit to multiple partitions (--partition).
 test17.20  Test of mail options (--mail-type and --mail-user options)
-test17.21  Tests #Slurm entry functionality in a batch script
 test17.22  Test of running non-existent job, confirm timely termination.
 test17.23  Test of nice value specification (--nice option).
 test17.24  Test of --partition and --verbose options.
@@ -653,7 +649,6 @@ test28.5   Validates that scontrol can hold and release a whole job
 test28.6   Validates that when a job array is submitted to multiple
 	   partitions that the jobs run on them.
 test28.7   Confirms job array dependencies.
-test28.8   Test of job array suspend/resume.
 test28.9   Test of maximum running task count in a job array.
 test28.10  Test change to maximum running task count in a job array.
 test28.11  Test that job arrays requesting features with --constraint are
@@ -778,7 +773,6 @@ test39.23  Test --gpus-per-task with implicit task count
 test40.#   Test of job select/cons_tres and gres/mps options.
 =============================================================
 test40.1   Test some invalid gres/mps job option
-test40.2   Test scheduling of gres/gpu and gres/mps
 test40.3   Test accounting for MPS resources with various allocation options
 test40.4   Test MPS resource limits with various allocation options
 test40.5   Increase size of job with allocated MPS
@@ -799,6 +793,7 @@ test_102_#   Testing of sacctmgr options.
 test_102_1   /commands/sacctmgr/test_federation.py
 test_102_2   /commands/sacctmgr/test_--usage.py
 test_102_3   /commands/sacctmgr/test_--json.py
+test_102_4   /commands/sacctmgr/test_ping.py
 
 test_103_#   Testing of salloc options.
 =======================================
@@ -815,6 +810,8 @@ test_105_1   /commands/sbatch/test_gpu_options.py
 test_105_2   /commands/sbatch/test_hetjob.py
 test_105_3   /commands/sbatch/test_invalid_mps_options.py
 test_105_4   /commands/sbatch/test_--usage.py
+test_105_5   Test sbatch --output and --error options work, including use of spaces, %j, and %u
+test_105_6   Test #SBATCH directives in sbatch scripts
 
 test_106_#   Testing of sbcast options.
 =======================================
@@ -824,6 +821,7 @@ test_107_#   Testing of scancel options.
 ========================================
 test_107_1   /commands/scancel/test_--help.py
 test_107_2   /commands/scancel/test_--usage.py
+test_107_3   Test scancel --ctld and filtering options
 
 test_108_#   Testing of scontrol options.
 =========================================
@@ -851,7 +849,7 @@ test_111_3   /commands/sinfo/test_--json.py
 test_112_#   Testing of slurmrestd options.
 ===========================================
 test_112_1   /commands/slurmrestd/test_options.py
-test_112_2   Test slurmrestd requests
+test_112_40  Test slurmrestd v0.0.40 requests
 
 test_113_#   Testing of sprio options.
 ======================================
@@ -866,6 +864,7 @@ test_114_#   Testing of squeue options.
 test_114_1   /commands/squeue/test_--help.py
 test_114_2   /commands/squeue/test_--usage.py
 test_114_3   /commands/squeue/test_--json.py
+test_114_4   Validate that squeue --only-job-state is listing jobs accurately.
 
 test_115_#   Testing of sreport options.
 ========================================
@@ -905,7 +904,6 @@ test_116_31  /commands/srun/test_--help.py
 test_116_32  /commands/srun/test_--input--output--error.py
 test_116_33  /commands/srun/test_srun_increasing_job_sizes.py
 test_116_34  /commands/srun/test_--unbuffered.py
-test_116_35  /commands/srun/test_--constraint.py
 test_116_36  /commands/srun/test_--debugger-test.py
 test_116_37  /commands/srun/test_--task-epilog.py
 test_116_38  /commands/srun/test_--test-only.py
@@ -945,6 +943,7 @@ test_122_#   Testing of job_arrays.
 ===================================
 test_122_1   /features/job_arrays/test_basics.py
 test_122_2   Test job array with gres
+test_122_3   Test suspension of job arrays
 
 test_123_#   Testing of reservations.
 =====================================
@@ -1013,6 +1012,10 @@ test_138_#   Testing stressing cases.
 test_138_1   /stress/test_stdin_broadcast.py
 test_138_2   Test parallel performance of squeue
 
+test_139_#   Testing dynamic nodes.
+===================================
+test_139_1   Test creation, registration, usage, and deletion of dynamic nodes.
+
 test_140_#   Testing --tres options.
 ====================================
 test_140_1   Test --tres-per-task option
@@ -1033,3 +1036,16 @@ test_144_3   Test --exact with GPUs and multiple steps
 test_144_4   Test gres with file or type and --overlap
 test_144_6   Test gres with no_consume flag
 test_144_7   Test allocating sub-sets of GRES to job steps
+
+test_145_#   Testing --constraint.
+==================================
+test_145_1   Test --constraint with --ntasks-per-node
+test_145_2   Test --constraint
+
+test_146_#   Testing partitions.
+================================
+test_146_1   Test MaxCPUsPerNode and MaxCPUsPerSocket
+
+test_147_#   Testing SPANK.
+===========================
+test_147_1   Test SPANK contained when SlurmdParameters=contain_spank

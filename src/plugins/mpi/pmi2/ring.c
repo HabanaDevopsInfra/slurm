@@ -110,8 +110,8 @@
 #include <unistd.h>
 
 #include "src/common/slurm_xlator.h"
-#include "src/common/slurm_protocol_interface.h"
 #include "src/common/slurm_protocol_api.h"
+#include "src/common/slurm_protocol_socket.h"
 #include "src/common/xmalloc.h"
 
 #include "pmi.h"
@@ -296,7 +296,7 @@ int pmix_ring_init(const pmi2_job_info_t* job, char*** env)
 	pmix_ring_children = pmix_app_children + pmix_stepd_children;
 
 	/* allocate a structure to record ring_in message from each child */
-	pmix_ring_msgs = (pmix_ring_msg*) xmalloc(pmix_ring_children * sizeof(pmix_ring_msg));
+	pmix_ring_msgs = xcalloc(pmix_ring_children, sizeof(pmix_ring_msg));
 
 	/* initialize messages */
 	for (i = 0; i < pmix_ring_children; i++) {
@@ -363,7 +363,7 @@ int pmix_ring_out(int count, char* left, char* right)
 	 * right value for the last process in our subtree */
 
 	/* allocate a structure to compute values to send to each child */
-	pmix_ring_msg* outmsgs = (pmix_ring_msg*) xmalloc(pmix_ring_children * sizeof(pmix_ring_msg));
+	pmix_ring_msg *outmsgs = xcalloc(pmix_ring_children, sizeof(pmix_ring_msg));
 
         /* initialize messages to all children */
 	int i;

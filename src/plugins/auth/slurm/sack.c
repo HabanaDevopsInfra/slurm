@@ -44,19 +44,25 @@
 #include "slurm/slurm_errno.h"
 #include "src/common/slurm_xlator.h"
 
-#include "src/common/conmgr.h"
 #include "src/common/fd.h"
 #include "src/common/log.h"
+#include "src/common/net.h"
+#include "src/common/read_config.h"
 #include "src/common/sack_api.h"
 #include "src/common/slurm_protocol_api.h"
-#include "src/common/read_config.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
+
+#include "src/conmgr/conmgr.h"
 
 #include "src/interfaces/auth.h"
 #include "src/interfaces/serializer.h"
 
 #include "src/plugins/auth/slurm/auth_slurm.h"
+
+#define SLURMCTLD_SACK_SOCKET "unix:/run/slurmctld/sack.socket"
+#define SLURMDBD_SACK_SOCKET "unix:/run/slurmdbd/sack.socket"
+#define SLURM_SACK_SOCKET "unix:/run/slurm/sack.socket"
 
 /*
  * Loosely inspired by MUNGE.
@@ -174,7 +180,7 @@ static int _sack_verify(conmgr_fd_t *con, buf_t *in)
 	}
 
 	rc = htonl(verify_internal(cred, uid));
-	conmgr_queue_write_fd(con, &rc, sizeof(uint32_t));
+	conmgr_queue_write_data(con, &rc, sizeof(uint32_t));
 
 	FREE_NULL_CRED(cred);
 	return SLURM_SUCCESS;
@@ -247,68 +253,37 @@ unpack_error:
 extern void init_sack_conmgr(void)
 {
 	conmgr_callbacks_t callbacks = {NULL, NULL};
-	conmgr_events_t events = {
+	static const conmgr_events_t events = {
 		.on_data = _on_connection_data,
-	};
-	int fd;
-	struct sockaddr_un addr = {
-		.sun_family = AF_UNIX,
-		.sun_path = "/run/slurm/sack.socket",
 	};
 	int rc;
 	mode_t mask;
+	const char *path = NULL;
 
 	if (running_in_slurmctld()) {
 		_prepare_run_dir("slurmctld");
-		(void) strlcpy(addr.sun_path, "/run/slurmctld/sack.socket",
-			       sizeof(addr.sun_path));
+		path = SLURMCTLD_SACK_SOCKET;
 	} else if (running_in_slurmdbd()) {
 		_prepare_run_dir("slurmdbd");
-		(void) strlcpy(addr.sun_path, "/run/slurmdbd/sack.socket",
-			       sizeof(addr.sun_path));
+		path = SLURMDBD_SACK_SOCKET;
 	} else {
 		_prepare_run_dir("slurm");
+		path = SLURM_SACK_SOCKET;
 	}
 
-	init_conmgr(0, 0, callbacks);
+	conmgr_init(0, 0, callbacks);
 
-	if ((fd = socket(AF_UNIX, (SOCK_STREAM | SOCK_CLOEXEC), 0)) < 0)
-		fatal("%s: socket() failed: %m", __func__);
-
-	/* set value of socket path */
 	mask = umask(0);
-	if ((rc = bind(fd, (const struct sockaddr *) &addr,
-		       sizeof(addr))))
-		fatal("%s: [%s] Unable to bind UNIX socket: %m",
-		      __func__, addr.sun_path);
+
+	if ((rc = conmgr_create_listen_socket(CON_TYPE_RAW, path, &events,
+					      NULL)))
+		fatal("%s: [%s] unable to create socket: %s",
+		      __func__, path, slurm_strerror(rc));
+
 	umask(mask);
 
-	fd_set_oob(fd, 0);
-
-	if ((rc = listen(fd, SLURM_DEFAULT_LISTEN_BACKLOG)))
-		fatal("%s: [%s] unable to listen(): %m",
-		      __func__, addr.sun_path);
-
-	if ((rc = conmgr_process_fd_unix_listen(CON_TYPE_RAW, fd, events,
-						(const slurm_addr_t *) &addr,
-						sizeof(addr), addr.sun_path,
-						NULL)))
-		fatal("%s: conmgr refused fd %d: %s",
-		      __func__, fd, slurm_strerror(rc));
-
-	if ((rc = conmgr_run(false)))
-		fatal("%s: conmgr run failed: %s",
-		      __func__, slurm_strerror(rc));
-}
-
-extern void fini_sack_conmgr(void)
-{
 	/*
-	 * Do not attempt to remove /run/slurm/sack.socket.
-	 * If multiple daemons are co-located on this node, we may no
-	 * longer be the one that owns that socket, and removing it
-	 * would prevent the current owner from responding.
+	 * We do not need to call conmgr_run() here since only the daemons
+	 * get here, and all the daemons call conmgr_run() separately.
 	 */
-
-	free_conmgr();
 }

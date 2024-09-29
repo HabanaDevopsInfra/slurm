@@ -102,48 +102,12 @@ static void _gen_combs(int *comb_list, int n, int k)
 	xfree(comb);
 }
 
-/* qsort compare function for ascending int list */
-static int _cmp_int_ascend(const void *a, const void *b)
-{
-	int ca = *((int *) a);
-	int cb = *((int *) b);
-
-	if (ca < cb)
-		return -1;
-	else if (ca > cb)
-		return 1;
-
-	return 0;
-}
-
-/* qsort compare function for descending int list */
-static int _cmp_int_descend(const void *a, const void *b)
-{
-	int ca = *((int *) a);
-	int cb = *((int *) b);
-
-	if (ca < cb)
-		return 1;
-	else if (ca > cb)
-		return -1;
-
-	return 0;
-}
-
-
 /* qsort compare function for board combination socket list
  * NOTE: sockets_core_cnt is a global symbol in this module */
 static int _cmp_sock(const void *a, const void *b)
 {
-	int ca = sockets_core_cnt[*((int *) a)];
-	int cb = sockets_core_cnt[*((int *) b)];
-
-	if (ca < cb)
-		return 1;
-	else if (ca > cb)
-		return -1;
-
-	return 0;
+	return slurm_sort_int_list_desc(&sockets_core_cnt[*((int *) a)],
+					&sockets_core_cnt[*((int *) b)]);
 }
 
 /* Enable detailed logging of cr_dist() node and core bitmaps */
@@ -226,9 +190,8 @@ static int _set_task_dist_internal(job_record_t *job_ptr)
 	uint32_t n, i, tid = 0, maxtasks;
 	uint16_t *avail_cpus;
 	job_resources_t *job_res = job_ptr->job_resrcs;
-	bool log_over_subscribe = true;
 	char *err_msg = NULL;
-	int plane_size = 1;
+	int rc = SLURM_SUCCESS, plane_size = 1;
 
 	if (!job_res)
 		err_msg = "job_res is NULL";
@@ -314,30 +277,11 @@ static int _set_task_dist_internal(job_record_t *job_ptr)
 			break;
 	}
 
-	/* If more tasks than resources, distribute them evenly */
-	if (!job_ptr->details->overcommit)
-		log_over_subscribe = true;
-	while (maxtasks > tid) {
-		if (log_over_subscribe) {
-			/*
-			 * 'over_subscribe' is a relief valve that guards
-			 * against an infinite loop, and it *should* never
-			 * come into play because maxtasks should never be
-			 * greater than the total number of available CPUs
-			 */
-			error("oversubscribe for %pJ",
-			      job_ptr);
-			log_over_subscribe = false;
-		}
-		for (n = 0; n < job_res->nhosts; n++) {
-			i = MIN(plane_size, maxtasks - tid);
-			job_res->tasks_per_node[n] += i;
-			tid += i;
-		}
-	}
+	if (maxtasks > tid)
+		rc = ESLURM_BAD_TASK_COUNT;
 	xfree(avail_cpus);
 
-	return SLURM_SUCCESS;
+	return rc;
 }
 
 static int _set_task_dist(job_record_t *job_ptr, const uint16_t cr_type)
@@ -379,12 +323,11 @@ static int _set_task_dist(job_record_t *job_ptr, const uint16_t cr_type)
 static int _compute_plane_dist(job_record_t *job_ptr,
 			       uint32_t *gres_task_limit)
 {
-	bool over_subscribe = false;
 	uint32_t n, i, p, tid, maxtasks, l;
 	uint16_t *avail_cpus, plane_size = 1;
 	job_resources_t *job_res = job_ptr->job_resrcs;
-	bool log_over_subscribe = true;
 	bool test_tres_tasks = true;
+	int rc = SLURM_SUCCESS;
 
 	if (!job_res || !job_res->cpus || !job_res->nhosts) {
 		error("invalid allocation for %pJ",
@@ -407,21 +350,8 @@ static int _compute_plane_dist(job_record_t *job_ptr,
 
 	job_res->cpus = xcalloc(job_res->nhosts, sizeof(uint16_t));
 	job_res->tasks_per_node = xcalloc(job_res->nhosts, sizeof(uint16_t));
-	if (job_ptr->details->overcommit)
-		log_over_subscribe = false;
 	for (tid = 0, i = 0; (tid < maxtasks); i++) { /* cycle counter */
 		bool space_remaining = false;
-		if (over_subscribe && log_over_subscribe) {
-			/*
-			 * 'over_subscribe' is a relief valve that guards
-			 * against an infinite loop, and it *should* never
-			 * come into play because maxtasks should never be
-			 * greater than the total number of available CPUs
-			 */
-			error("oversubscribe for %pJ",
-			      job_ptr);
-			log_over_subscribe = false;	/* Log once per job */;
-		}
 		for (n = 0; ((n < job_res->nhosts) && (tid < maxtasks)); n++) {
 			bool more_tres_tasks = false;
 			for (p = 0; p < plane_size && (tid < maxtasks); p++) {
@@ -430,8 +360,7 @@ static int _compute_plane_dist(job_record_t *job_ptr,
 					    gres_task_limit, job_res, n))
 					continue;
 				more_tres_tasks = true;
-				if ((job_res->cpus[n] < avail_cpus[n]) ||
-				    over_subscribe) {
+				if (job_res->cpus[n] < avail_cpus[n]) {
 					tid++;
 					job_res->tasks_per_node[n]++;
 					for (l = 0;
@@ -448,11 +377,13 @@ static int _compute_plane_dist(job_record_t *job_ptr,
 			if (job_res->cpus[n] < avail_cpus[n])
 				space_remaining = true;
 		}
-		if (!space_remaining)
-			over_subscribe = true;
+		if (!space_remaining && (tid < maxtasks)) {
+			rc = ESLURM_BAD_TASK_COUNT;
+			break;
+		}
 	}
 	xfree(avail_cpus);
-	return SLURM_SUCCESS;
+	return rc;
 }
 
 /*
@@ -619,7 +550,7 @@ static void _block_sync_core_bitmap(job_record_t *job_ptr,
 
 		/* Sort boards in descending order of available core count */
 		qsort(sort_brds_core_cnt, nboards_nb, sizeof(int),
-		      _cmp_int_descend);
+		      slurm_sort_int_list_desc);
 		/*
 		 * Determine minimum number of boards required for the
 		 * allocation (b_min)
@@ -740,7 +671,7 @@ static void _block_sync_core_bitmap(job_record_t *job_ptr,
 		 * ascending order of socket number
 		 */
 		qsort(&socket_list[comb_min * sock_per_comb], sock_per_comb,
-		      sizeof (int), _cmp_int_ascend);
+		      sizeof (int), slurm_sort_int_list_asc);
 
 		xfree(board_combs);
 		xfree(elig_brd_combs);
@@ -1210,15 +1141,12 @@ static int _at_tpn_limit(const uint32_t n, const job_record_t *job_ptr,
 static int _dist_tasks_compute_c_b(job_record_t *job_ptr,
 				   uint32_t *gres_task_limit)
 {
-	bool over_subscribe = false;
 	uint32_t n, tid, t, maxtasks, l;
 	uint16_t *avail_cpus;
 	job_resources_t *job_res = job_ptr->job_resrcs;
-	bool log_over_subscribe = true;
 	char *err_msg = NULL;
 	uint16_t *vpus;
-	bool space_remaining;
-	int rem_cpus, rem_tasks;
+	int rc = SLURM_SUCCESS, rem_cpus, rem_tasks;
 	uint16_t cpus_per_task;
 	node_record_t *node_ptr;
 
@@ -1269,10 +1197,7 @@ static int _dist_tasks_compute_c_b(job_record_t *job_ptr,
 		      job_ptr);
 		maxtasks = 1;
 	}
-	if (job_ptr->details->overcommit)
-		log_over_subscribe = false;
 	/* Start by allocating one task per node */
-	space_remaining = false;
 	tid = 0;
 	for (n = 0; ((n < job_res->nhosts) && (tid < maxtasks)); n++) {
 		if (avail_cpus[n]) {
@@ -1283,12 +1208,8 @@ static int _dist_tasks_compute_c_b(job_record_t *job_ptr,
 				if (job_res->cpus[n] < avail_cpus[n])
 					job_res->cpus[n]++;
 			}
-			if (job_res->cpus[n] < avail_cpus[n])
-				space_remaining = true;
 		}
 	}
-	if (!space_remaining)
-		over_subscribe = true;
 
 	/* Next fill out the CPUs on the cores already allocated to this job */
 	for (n = 0; ((n < job_res->nhosts) && (tid < maxtasks)); n++) {
@@ -1328,37 +1249,20 @@ static int _dist_tasks_compute_c_b(job_record_t *job_ptr,
 		maxtasks = 0;	/* Allocate have one_task_per_node */
 	while (tid < maxtasks) {
 		bool space_remaining = false;
-		int over_limit = -1;
-		if (over_subscribe && log_over_subscribe && (over_limit > 0)) {
-			/*
-			 * 'over_subscribe' is a relief valve that guards
-			 * against an infinite loop, and it *should* never
-			 * come into play because maxtasks should never be
-			 * greater than the total number of available CPUs
-			 */
-			error("oversubscribe for %pJ",
-			      job_ptr);
-			log_over_subscribe = false;	/* Log once per job */;
-		}
 		for (n = 0; ((n < job_res->nhosts) && (tid < maxtasks)); n++) {
 			rem_tasks = vpus[n] / cpus_per_task;
 			rem_tasks = MAX(rem_tasks, 1);
 			for (t = 0; ((t < rem_tasks) && (tid < maxtasks)); t++){
-				if (!over_subscribe) {
-					if ((avail_cpus[n] - job_res->cpus[n]) <
-					    cpus_per_task)
-						break;
-					if (!dist_tasks_tres_tasks_avail(
-						    gres_task_limit,
-						    job_res, n))
-						break;
-					over_limit = _at_tpn_limit(
-						n, job_ptr,
-						"fill additional",
-						false);
-					if (over_limit >= 0)
-						break;
-				}
+				if ((avail_cpus[n] - job_res->cpus[n]) <
+					cpus_per_task)
+					break;
+				if (!dist_tasks_tres_tasks_avail(
+						gres_task_limit,
+						job_res, n))
+					break;
+				if (_at_tpn_limit(n, job_ptr, "fill allocated",
+						  false) >= 0)
+					break;
 
 				tid++;
 				job_res->tasks_per_node[n]++;
@@ -1372,13 +1276,15 @@ static int _dist_tasks_compute_c_b(job_record_t *job_ptr,
 					space_remaining = true;
 			}
 		}
-		if (!space_remaining)
-			over_subscribe = true;
+		if (!space_remaining && (tid < maxtasks)) {
+			rc = ESLURM_BAD_TASK_COUNT;
+			break;
+		}
 	}
 	xfree(avail_cpus);
 	xfree(vpus);
 
-	return SLURM_SUCCESS;
+	return rc;
 }
 
 /*
@@ -1445,7 +1351,7 @@ extern int dist_tasks(job_record_t *job_ptr, const uint16_t cr_type,
 	}
 
 	if ((job_ptr->job_resrcs->node_req == NODE_CR_RESERVED) ||
-	    (job_ptr->details->whole_node == 1)) {
+	    (job_ptr->details->whole_node & WHOLE_NODE_REQUIRED)) {
 		/*
 		 * The job has been allocated an EXCLUSIVE set of nodes,
 		 * so it gets all of the bits in the core_array except for

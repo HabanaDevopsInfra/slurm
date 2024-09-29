@@ -1,7 +1,498 @@
 This file describes changes in recent versions of Slurm. It primarily
 documents those changes that are of interest to users and administrators.
 
-* Changes in Slurm 24.08.0rc1
+* Changes in Slurm 24.11.0rc1
+=============================
+ -- Improve error type logged from partial or incomplete reading from socket or
+    pipe to avoid potentially logging an error from a previous syscall.
+ -- slurmrestd - Improve the handling of queries when unable to connect to
+    slurmdbd by providing responses when possible.
+ -- slurmrestd,sackd,scrun - Avoid rare hangs related to I/O.
+ -- scrun - Add support '--all' argument for kill subcommand.
+ -- Remove srun --cpu-bind=rank.
+ -- Add resource_spec/cpus and resource_spec/memory entry points in data_parser
+    to print the CpuSpecList and MemSpecLimit in sinfo --json.
+ -- sinfo - Add '.sinfo[].resource_spec.cpus' and
+    '.sinfo[].resource_spec.memory' fields to print the CpuSpecList and
+    MemSpecLimit dumped by 'sinfo --{json|yaml}'.
+ -- Increase efficency of sending logs to syslog.
+ -- Switch to new official YAML mime type "application/yaml" in compliance with
+    RFC9512 as primary mime type for YAML formatting.
+ -- slurmrestd - Removed deprecated fields from the following endpoints:
+	'.result' from 'POST /slurm/v0.0.42/job/submit'.
+	'.job_id', '.step_id', '.job_submit_user_msg' from 'POST /slurm/v0.0.42/job/{job_id}'.
+	'.job.exclusive', '.jobs[].exclusive' to 'POST /slurm/v0.0.42/job/submit'.
+	'.jobs[].exclusive' from 'GET /slurm/v0.0.42/job/{job_id}'.
+	'.jobs[].exclusive' from 'GET /slurm/v0.0.42/jobs'.
+	'.job.oversubscribe', '.jobs[].oversubscribe' to 'POST /slurm/v0.0.42/job/submit'.
+	'.jobs[].oversubscribe' from 'GET /slurm/v0.0.42/job/{job_id}'.
+	'.jobs[].oversubscribe' from 'GET /slurm/v0.0.42/jobs'.
+ -- scontrol - Removed deprecated fields '.jobs[].exclusive' and
+    '.jobs[].oversubscribe' from 'scontrol show jobs --{json|yaml}'.
+ -- squeue - Removed deprecated fields '.jobs[].exclusive' and
+    '.jobs[].oversubscribe' from 'squeue --{json|yaml}'.
+ -- Improve the way to run external commands and fork processes to avoid
+    non-async-signal safe calls between a fork and an exec. We fork ourselves
+    now and executes the commands in a safe environment. This includes spank
+    prolog/epilog executions.
+ -- Improve MaxMemPerCPU enforcement when exclusive jobs request per node memory
+    and the partition has heterogeneous nodes.
+ -- Remove a TOCTOU where multiple steps requesting an energy reading at the
+    same time could cause too frequent accesses to the drivers.
+ -- Limit SwitchName to HOST_NAME_MAX chars length.
+ -- For scancel --ctld and the following rest api endpoints:
+      'DELETE /slurm/v0.0.40/jobs'
+      'DELETE /slurm/v0.0.41/jobs'
+      'DELETE /slurm/v0.0.42/jobs'
+    Support array expressions in the responses to the client.
+ -- salloc - Always output node names to the user when an allocation is granted.
+ -- slurmrestd - Removed all v0.0.39 endpoints.
+ -- select/linear - Reject jobs asking for GRES per job|socket|task or
+    cpus|mem per GRES.
+ -- Add /nodes POST endpoint to REST API, supports multiple node update whereas
+    previously only single nodes could be updated through /node/<nodename>
+    endpoint:
+      'POST /slurm/v0.0.42/nodes'
+ -- Do not allow changing or setting PreemptMode=GANG to a partition as this is
+    a cluster-wide option.
+ -- Add "%b" as a file name pattern for the array task id modulo 10.
+ -- Skip packing empty nodes when they are hidden during REQUEST_NODE_INFO RPC.
+ -- accounting_storage/mysql - Avoid a fatal condition when the db server is
+    not reachable.
+ -- Always lay out steps cyclically on nodes in an allocation.
+ -- squeue - add priority by partition ('.jobs[].priority_by_partition') to
+    JSON and YAML output.
+ -- slurmrestd - Add clarification to "failed to open slurmdbd connection" error
+    if the error was the result of an authentication failure.
+ -- Make it so slurmctld responds to RPCs that have authenticaiton errors with
+    the SLURM_PROTOCOL_AUTHENTICATION_ERROR error code.
+ -- openapi/slurmctld - Display the correct error code instead of
+    "Unspecified error" if querying the following endpoints fails:
+      'GET /slurm/v0.0.40/diag/'
+      'GET /slurm/v0.0.41/diag/'
+      'GET /slurm/v0.0.42/diag/'
+      'GET /slurm/v0.0.40/licenses/'
+      'GET /slurm/v0.0.41/licenses/'
+      'GET /slurm/v0.0.42/licenses/'
+      'GET /slurm/v0.0.40/reconfigure'
+      'GET /slurm/v0.0.41/reconfigure'
+      'GET /slurm/v0.0.42/reconfigure'
+ -- Fix how used cpus are tracked in a job allocation to allow the max number of
+    concurrent steps to run at a time if threads per core is greater than 1.
+ -- In existing allocations SLURM_GPUS_PER_NODE environment variable will be
+    ignored by srun if --gpus is specified.
+ -- When using --get-user-env explicitly or implicitly, check if PID or mnt
+    namespaces are disabled and fall back to old logic that does not rely on
+    them when they are not available.
+ -- Removed non-functional option SLURM_PROLOG_CPU_MASK from TaskProlog which
+    was used to reset the affinity of a task based on the mask given.
+ -- slurmrestd - Support passing of '-d latest' to load latest version of
+    data_parser plugin.
+ -- sacct,sacctmgr,scontrol,sdiag,sinfo,squeue,sshare - Change response to
+    '--json=list' or '--yaml=list' to send list of plugins to stdout and
+    descriptive header to stderr to allow for easier parsing.
+ -- slurmrestd - Change response to '-d list', '-a list' or '-s list' to send
+    list of plugins to stdout and descriptive header to stderr to allow for
+    easier parsing.
+ -- sacct,sacctmgr,scontrol,sdiag,sinfo,squeue,sshare,slurmrestd - Avoid crash
+    when loading data_parser plugins fail due to NULL dereference.
+ -- Add autodetected gpus to the output of slurmd -C
+ -- Remove burst_buffer/lua call slurm.job_info_to_string().
+ -- Add SchedulerParameters=bf_allow_magnetic_slot option. It allows jobs in
+    magnetic reservations to be planned by backfill scheduler.
+ -- slurmrestd - Refuse to run as root, SlurmUser, and nobody(99).
+ -- openapi/slurmctld - Revert regression that caused signaling jobs to cancel
+    entire job arrays instead of job array tasks:
+      'DELETE /slurm/v0.0.40/{job_id}'
+      'DELETE /slurm/v0.0.41/{job_id}'
+      'DELETE /slurm/v0.0.42/{job_id}'
+ -- openapi/slurmctld - Support more formats for {job_id} including job steps:
+      'DELETE /slurm/v0.0.40/{job_id}'
+      'DELETE /slurm/v0.0.41/{job_id}'
+      'DELETE /slurm/v0.0.42/{job_id}'
+ -- Alter scheduling of jobs at submission time to consider job submission time
+    and job id. This makes it so that that interactive jobs aren't allocated
+    resources before batch jobs when they have the same priority at submit time.
+ -- Fix multi-cluster submissions with differing Switch plugins.
+ -- slurmrestd - Change +prefer_refs flag to default in data_parser/v0.0.42
+    plugin. Add +minimize_refs flag to inline single referenced schemas in the
+    OpenAPI schema. This sets the default OpenAPI schema generation behavior of
+    data_parser/v0.0.42 to match v0.0.41+prefer_refs and v0.0.40 (without
+    flags).
+ -- Fix LaunchParameters=batch_step_set_cpu_freq.
+ -- Clearer seff warning message for running jobs.
+ -- data_parser/v0.0.42 - Rename JOB_INFO field "minimum_switches" to
+    "required_switches" to reflect the actual behavior.
+ -- data_parser/v0.0.42 - Rename ACCOUNT_CONDITION field "assocation" to
+    "association" to fix typo.
+ -- cgroup/v2 - fix cgroup cleanup when running inside a container without write
+    permissions to /sys/fs/cgroup.
+ -- cgroup/v2 - fix accounting of swap events detection.
+ -- Fix gathering MaxRSS for jobs that run shorter than two jobacctgather
+    intevals. Get the metrics from cgroups memory.peak or
+    memory.max_usage_in_bytes where available.
+ -- openapi/slurmctld - Set complex number support for the following fields:
+      .shares[][].fairshare.factor
+      .shares[][].fairshare.level
+    for endpoints:
+      'GET /slurm/v0.0.42/shares'
+    and for commands:
+      sshare --json
+      sshare --yaml
+ -- data_parser/v0.0.42 - Avoid dumping "Infinity" for NO_VAL tagged "number"
+    fields.
+ -- Add TopologyParam=TopoMaxSizeUnroll=# to allow --nodes=<min>-<max> for
+    topology/block.
+ -- sacct - Respect --noheader for --batch-script and --env-vars.
+ -- sacct - Remove extra newline in output from --batch-script and --env-vars.
+ -- Add "sacctmgr ping" command to query status of slurmdbd.
+
+* Changes in Slurm 24.05.4
+==========================
+ -- Fix generic int sort functions.
+ -- Fix user look up using possible unrealized uid in the dbd.
+ -- Fix FreeBSD compile issue with tls/none plugin.
+ -- slurmrestd - Fix regressions that allowed slurmrestd to be run as SlurmUser
+    when SlurmUser was not root.
+ -- mpi/pmix fix race conditions with het jobs at step start/end which could
+    make srun to hang.
+ -- Fix not showing some SelectTypeParameters in scontrol show config.
+ -- Avoid assert when dumping removed certain fields in JSON/YAML.
+ -- Improve how shards are scheduled with affinity in mind.
+ -- Fix MaxJobsAccruePU not being respected when MaxJobsAccruePA is set
+    in the same QOS.
+ -- Prevent backfill from planning jobs that use overlapping resources for the
+    same time slot if the job's time limit is less than bf_resolution.
+ -- Fix memory leak when requesting typed gres and --[cpus|mem]-per-gpu.
+ -- Prevent backfill from breaking out due to "system state changed" every 30
+    seconds if reservations use REPLACE or REPLACE_DOWN flags.
+ -- slurmrestd - Make sure that scheduler_unset parameter defaults to true even
+    when the following flags are also set: show_duplicates, skip_steps,
+    disable_truncate_usage_time, run_away_jobs, whole_hetjob,
+    disable_whole_hetjob, disable_wait_for_result, usage_time_as_submit_time,
+    show_batch_script, and or show_job_environment. Additionaly, always make
+    sure show_duplicates and disable_truncate_usage_time default to true when
+    the following flags are also set: scheduler_unset, scheduled_on_submit,
+    scheduled_by_main, scheduled_by_backfill, and or job_started. This effects
+    the following endpoints:
+      'GET /slurmdb/v0.0.40/jobs'
+      'GET /slurmdb/v0.0.41/jobs'
+ -- Ignore --json and --yaml options for scontrol show config to prevent mixing
+    output types.
+ -- Fix not considering nodes in reservations with Maintenance or Overlap flags
+    when creating new reservations with nodecnt or when they replace down nodes.
+ -- Fix slurmd - slurmctld synchronization issues on scontrol reconfigure.
+    Those may have result in prolog errors or tasks not being launched while
+    jobs where shown running by slurmctld.
+ -- Fix suspending/resuming steps running under a 23.02 slurmstepd process.
+ -- Fix options like sprio --me and squeue --me for users with a uid greater
+    than 2147483647.
+ -- fatal() if BlockSizes=0. This value is invalid and would otherwise cause the
+    slurmctld to crash.
+ -- sacctmgr - Fix issue where clearing out a preemption list using
+    preempt='' would cause the given qos to no longer be preempt-able until set
+    again.
+ -- Fix stepmgr creating job steps concurrently.
+ -- data_parser/v0.0.40 - Avoid dumping "Infinity" for NO_VAL tagged "number"
+    fields.
+ -- data_parser/v0.0.41 - Avoid dumping "Infinity" for NO_VAL tagged "number"
+    fields.
+ -- slurmctld - Fix a potential leak while updating a reservation.
+ -- slurmctld - Fix state save with reservation flags when a update fails.
+ -- Fix reservation update issues with parameters Accounts and Users, when
+    using +/- signs.
+
+* Changes in Slurm 24.05.3
+==========================
+ -- data_parser/v0.0.40 - Added field descriptions
+ -- slurmrestd - Avoid creating new slurmdbd connection per request to
+    '* /slurm/slurmctld/*/*' endpoints.
+ -- Fix compilation issue with switch/hpe_slingshot plugin.
+ -- Fix gres per task allocation with threads-per-core.
+ -- data_parser/v0.0.41 - Added field descriptions
+ -- slurmrestd - Change back generated OpenAPI schema for
+    `DELETE /slurm/v0.0.40/jobs/` to RequestBody instead of using parameters
+    for request. slurmrestd will continue accept endpoint requests via
+    RequestBody or HTTP query.
+ -- topology/tree - Fix issues with switch distance optimization.
+ -- Fix potential segfault of secondary slurmctld when falling back to the
+    primary when running with a JobComp plugin.
+ -- Enable --json/--yaml=v0.0.39 options on client commands to dump data using
+    data_parser/v0.0.39 instead or outputting nothing.
+ -- switch/hpe_slingshot - Fix issue that could result in a 0 length state file.
+ -- Fix unnecessary message protocol downgrade for unregistered nodes.
+ -- Fix unnecessarily packing alias addrs when terminating jobs with a mix of
+    non-cloud/dynamic nodes and powered down cloud/dynamic nodes.
+ -- accounting_storage/mysql - Fix issue when deleting a qos that could remove
+    too many commas from the qos and/or delta_qos fields of the assoc table.
+ -- slurmctld - Fix memory leak when using RestrictedCoresPerGPU.
+ -- Fix allowing access to reservations without MaxStartDelay set.
+ -- Fix regression introduced in 24.05.0rc1 breaking srun --send-libs parsing.
+ -- Fix slurmd vsize memory leak when using job submission/allocation commands
+    that implicitly or explicitly use --get-user-env.
+ -- slurmd - Fix node going into invalid state when using CPUSpecList and
+    setting CPUs to the # of cores on a multithreaded node
+ -- Fix reboot asap nodes being considered in backfill after a restart.
+ -- Fix --clusters/-M queries for clusters outside of a federation when
+    fed_display is configured.
+ -- Fix scontrol allowing updating job with bad cpus-per-task value.
+ -- sattach - Fix regression from 24.05.2 security fix leading to crash.
+ -- mpi/pmix - Fix assertion when built under --enable-debug.
+
+* Changes in Slurm 24.05.2
+==========================
+ -- Fix energy gathering rpc counter underflow in _rpc_acct_gather_energy when
+    more than 10 threads try to get energy at the same time. This prevented
+    the possibility to get energy from slurmd by any step until slurmd was
+    restarted, so losing energy accounting metrics in the node.
+ -- accounting_storage/mysql - Fix issue where new user with wckey did not
+    have a default wckey sent to the slurmctld.
+ -- slurmrestd - Prevent slurmrestd segfault when handling the following
+    endpoints when none of the optional parameters are specified:
+      'DELETE /slurm/v0.0.40/jobs'
+      'DELETE /slurm/v0.0.41/jobs'
+      'GET /slurm/v0.0.40/shares'
+      'GET /slurm/v0.0.41/shares'
+      'GET /slurmdb/v0.0.40/instance'
+      'GET /slurmdb/v0.0.41/instance'
+      'GET /slurmdb/v0.0.40/instances'
+      'GET /slurmdb/v0.0.41/instances'
+      'POST /slurm/v0.0.40/job/{job_id}'
+      'POST /slurm/v0.0.41/job/{job_id}'
+ -- Fix IPMI energy gathering when no IPMIPowerSensors are specified in
+    acct_gather.conf. This situation resulted in an accounted energy of 0
+    for job steps.
+ -- Fix a minor memory leak in slurmctld when updating a job dependency.
+ -- scontrol,squeue - Fix regression that caused incorrect values for
+    multisocket nodes at '.jobs[].job_resources.nodes.allocation' for
+    'scontrol show jobs --(json|yaml)' and 'squeue --(json|yaml)'.
+ -- slurmrestd - Fix regression that caused incorrect values for
+    multisocket nodes at '.jobs[].job_resources.nodes.allocation' to be dumped
+    with endpoints:
+      'GET /slurm/v0.0.41/job/{job_id}'
+      'GET /slurm/v0.0.41/jobs'
+ -- jobcomp/filetxt - Fix truncation of job record lines > 1024 characters.
+ -- Fixed regression that prevented compilation on FreeBSD hosts.
+ -- switch/hpe_slingshot - Drain node on failure to delete CXI services.
+ -- Fix a performance regression from 23.11.0 in cpu frequency handling when no
+    CpuFreqDef is defined.
+ -- Fix one-task-per-sharing not working across multiple nodes.
+ -- Fix inconsistent number of cpus when creating a reservation using the
+    TRESPerNode option.
+ -- data_parser/v0.0.40+ - Fix job state parsing which could break filtering.
+ -- Prevent cpus-per-task to be modified in jobs where a -c value has been
+    explicitly specified and the requested memory constraints implicitly
+    increase the number of CPUs to allocate.
+ -- slurmrestd - Fix regression where args '-s v0.0.39,dbv0.0.39' and
+    '-d v0.0.39' would result in 'GET /openapi/v3' not registering as a valid
+    possible query resulting in 404 errors.
+ -- slurmrestd - Fix memory leak for dbv0.0.39 jobs query which occurred if the
+    query parameters specified account, association, cluster, constraints,
+    format, groups, job_name, partition, qos, reason, reservation, state, users,
+    or wckey. This affects the following endpoints:
+      'GET /slurmdb/v0.0.39/jobs'
+ -- slurmrestd - In the case the slurmdbd does not respond to a persistent
+    connection init message, prevent the closed fd from being used, and instead
+    emit an error or warning depending on if the connection was required.
+ -- Fix 24.05.0 regression that caused the slurmdbd not to send back an error
+    message if there is an error initializing a persistent connection.
+ -- Reduce latency of forwarded x11 packets.
+ -- Add "curr_dependency" (representing the current dependency of the job)
+    and "orig_dependency" (representing the original requested dependency of
+    the job) fields to the job record in job_submit.lua (for job update) and
+    jobcomp.lua.
+ -- Fix potential segfault of slurmctld configured with
+    SlurmctldParameters=enable_rpc_queue from happening on reconfigure.
+ -- Fix potential segfault of slurmctld on its shutdown when rate limitting
+    is enabled.
+ -- slurmrestd - Fix missing job environment for SLURM_JOB_NAME,
+    SLURM_OPEN_MODE, SLURM_JOB_DEPENDENCY, SLURM_PROFILE, SLURM_ACCTG_FREQ,
+    SLURM_NETWORK and SLURM_CPU_FREQ_REQ to match sbatch.
+ -- Add missing bash-completions dependency to slurm-smd-client debian package.
+ -- Fix bash-completions installation in debian pacakges.
+ -- Fix GRES environment variable indices being incorrect when only using a
+    subset of all GPUs on a node and the --gres-flags=allow-task-sharing option
+ -- Add missing mariadb/mysql client package dependency to debian package.
+ -- Fail the debian package build early if mysql cannot be found.
+ -- Prevent scontrol from segfaulting when requesting scontrol show reservation
+    --json or --yaml if there is an error retrieving reservations from the
+    slurmctld.
+ -- switch/hpe_slingshot - Fix security issue around managing VNI access.
+    CVE-2024-42511.
+ -- switch/nvidia_imex - Fix security issue managing IMEX channel access.
+    CVE-2024-42511.
+ -- switch/nvidia_imex - Allow for compatibility with job_container/tmpfs.
+
+* Changes in Slurm 24.05.1
+==========================
+ -- Fix slurmctld and slurmdbd potentially stopping instead of performing a
+    logrotate when recieving SIGUSR2 when using auth/slurm.
+ -- switch/hpe_slingshot - Fix slurmctld crash when upgrading from 23.02.
+ -- Fix "Could not find group" errors from validate_group() when using
+    AllowGroups with large /etc/group files.
+ -- Prevent an assertion in debugging builds when triggering log rotation
+    in a backup slurmctld.
+ -- Add AccountingStoreFlags=no_stdio which allows to not record the stdio
+    paths of the job when set.
+ -- slurmrestd - Prevent a slurmrestd segfault when parsing the crontab field,
+    which was never usable. Now it explicitly ignores the value and emits a
+    warning if it is used for the following endpoints:
+      'POST /slurm/v0.0.39/job/{job_id}'
+      'POST /slurm/v0.0.39/job/submit'
+      'POST /slurm/v0.0.40/job/{job_id}'
+      'POST /slurm/v0.0.40/job/submit'
+      'POST /slurm/v0.0.41/job/{job_id}'
+      'POST /slurm/v0.0.41/job/submit'
+      'POST /slurm/v0.0.41/job/allocate'
+ -- mpi/pmi2 - Fix communication issue leading to task launch failure with
+    "invalid kvs seq from node".
+ -- Fix getting user environment when using sbatch with "--get-user-env" or
+    "--export=" when there is a user profile script that reads /proc.
+ -- Prevent slurmd from crashing if acct_gather_energy/gpu is configured but
+    GresTypes is not configured.
+ -- Do not log the following errors when AcctGatherEnergyType plugins are used
+    but a node does not have or cannot find sensors:
+    "error: _get_joules_task: can't get info from slurmd"
+    "error: slurm_get_node_energy: Zero Bytes were transmitted or received"
+    However, the following error will continue to be logged:
+    "error: Can't get energy data. No power sensors are available. Try later"
+ -- sbatch, srun - Set SLURM_NETWORK environment variable if --network is set.
+ -- Fix cloud nodes not being able to forward to nodes that restarted with new
+    IP addresses.
+ -- Fix cwd not being set correctly when running a SPANK plugin with a
+    spank_user_init() hook and the new "contain_spank" option set.
+ -- slurmctld - Avoid deadlock during shutdown when auth/slurm is active.
+ -- Fix segfault in slurmctld with topology/block.
+ -- sacct - Fix printing of job group for job steps.
+ -- scrun - Log when an invalid environment variable causes the job submission
+    to be rejected.
+ -- accounting_storage/mysql - Fix problem where listing or modifying an
+    association when specifying a qos list could hang or take a very long time.
+ -- gpu/nvml - Fix gpuutil/gpumem only tracking last GPU in step. Now,
+    gpuutil/gpumem will record sums of all GPUS in the step.
+ -- Fix error in scrontab jobs when using slurm.conf:PropagatePrioProcess=1.
+ -- Fix slurmctld crash on a batch job submission with "--nodes 0,...".
+ -- Fix dynamic IP address fanout forwarding when using auth/slurm.
+ -- Restrict listening sockets in the mpi/pmix plugin and sattach to the
+    SrunPortRange.
+ -- slurmrestd - Limit mime types returned from query to 'GET /openapi/v3' to
+    only return one mime type per serializer plugin to fix issues with OpenAPI
+    client generators that are unable to handle multiple mime type aliases.
+ -- Fix many commands possibly reporting an "Unexpected Message Received" when
+    in reality the connection timed out.
+ -- Prevent slurmctld from starting if there is not a json serializer present
+    and the extra_constraints feature is enabled.
+ -- Fix heterogeneous job components not being signaled with scancel --ctld and
+    'DELETE slurm/v0.0.40/jobs' if the job ids are not explicitly given,
+    the heterogeneous job components match the given filters, and the
+    heterogeneous job leader does not match the given filters.
+ -- Fix regression from 23.02 impeding job licenses from being cleared.
+ -- Move error to log_flag which made _get_joules_task error to be logged to the
+    user when too many rpcs were queued in slurmd for gathering energy.
+ -- For scancel --ctld and the associated rest api endpoints:
+      'DELETE /slurm/v0.0.40/jobs'
+      'DELETE /slurm/v0.0.41/jobs'
+    Fix canceling the final array task in a job array when the task is pending
+    and all array tasks have been split into separate job records. Previously
+    this task was not canceled.
+ -- Fix power_save operation after recovering from a failed reconfigure.
+ -- slurmctld - Skip removing the pidfile when running under systemd. In that
+    situation it is never created in the first place.
+ -- Fix issue where altering the flags on a Slurm account (UsersAreCoords)
+    several limits on the account's association would be set to 0 in
+    Slurm's internal cache.
+ -- Fix memory leak in the controller when relaying stepmgr step accounting to
+    the dbd.
+ -- Fix segfault when submitting stepmgr jobs within an existing allocation.
+ -- Added "disable_slurm_hydra_bootstrap" as a possible MpiParams parameter in
+    slurm.conf. Using this will disable env variable injection to allocations
+    for the following variables: I_MPI_HYDRA_BOOTSTRAP,
+    I_MPI_HYDRA_BOOTSTRAP_EXEC_EXTRA_ARGS, HYDRA_BOOTSTRAP,
+    HYDRA_LAUNCHER_EXTRA_ARGS.
+ -- scrun - Delay shutdown until after start requested. This caused scrun
+    to never start or shutdown and hung forever when using --tty.
+ -- Fix backup slurmctld potentially not running the agent when taking over as
+    the primary controller.
+ -- Fix primary controller not running the agent when a reconfigure of the
+    slurmctld fails.
+ -- slurmd - fix premature timeout waiting for REQUEST_LAUNCH_PROLOG with large
+    array jobs causing node to drain.
+ -- jobcomp/{elasticsearch,kafka} - Avoid sending fields with invalid date/time.
+ -- jobcomp/elasticsearch - Fix slurmctld memory leak from curl usage
+ -- acct_gather_profile/influxdb - Fix slurmstepd memory leak from curl usage
+ -- Fix 24.05.0 regression not deleting job hash dirs after MinJobAge.
+ -- Fix filtering arguments being ignored when using squeue --json.
+ -- switch/nvidia_imex - Move setup call after spank_init() to allow namespace
+    manipulation within the SPANK plugin.
+ -- switch/nvidia_imex - Skip plugin operation if nvidia-caps-imex-channels
+    device is not present rather than preventing slurmd from starting.
+ -- switch/nvidia_imex - Skip plugin operation if job_container/tmpfs
+    is configured due to incompatibility.
+ -- switch/nvidia_imex - Remove any pre-existing channels when slurmd starts.
+ -- rpc_queue - Add support for an optional rpc_queue.yaml configuration file.
+ -- slurmrestd - Add new +prefer_refs flag to data_parser/v0.0.41 plugin. This
+    flag will avoid inlining single referenced schemas in the OpenAPI schema.
+
+* Changes in Slurm 24.05.0
+==========================
+ -- Fix regresssion in rc1 causing power_save thread to spin continuously.
+ -- Improve ctld_relay shutdown sequence.
+ -- Fixed 'make distclean' behavior for contribs/perlapi.
+ -- slurmrestd - Avoid ignoring numerical only endpoints during startup with
+    older libjson-c due to type parsing mismatching.
+ -- Reject non-stepmgr job allocations requesting --resv-ports from the ctld.
+ -- slurmrestd - Add fields '.job.resv_ports' '.jobs[].resv_ports' to
+    'POST /slurm/v0.0.41/job/submit' and 'POST /slurm/v0.0.41/job/allocate'.
+ -- slurmstepd - Fix crash when cleaning up on shutdown with
+    --enable-memory-leak-debug.
+ -- Fix segfault in switch/hpe_slingshot plugin due to initialization squence.
+ -- scrun - Fix regression in rc1 that caused scrun to crash.
+ -- Prevent unnecessary log statement when free'ing ports.
+ -- Fix regression in rc1 causing communication problems when sending large
+    responses from slurmctld.
+ -- sreport - fix parsing of 'format=Planned' to prevent it from being
+    misinterpreted as 'PlannedDown'. 'PlannedDown' is now also known as
+    'PLNDDown' to match what is printed as the column title.
+ -- topology/block - Always return an error when the segment size does not
+    match the system or job specification.
+ -- Add previously missing timers for Prolog and Epilog scripts when RunInJob is
+    set.
+ -- Show an error when PrologFlags RunInJob and Serial are used together.
+    PrologFlags=Serial is not compatible with how RunInJob operates.
+ -- Fix memory leak on shutdown when using --enable-memory-leak-debug and
+    freeing cons_tres node usage.
+ -- Rename src/stepmgr/gres_ctld.[ch] to src/stepmgr/gres_stepmgr.[ch].
+ -- Fix various cosmetic issues with states in sinfo.
+ -- slurmrestd - Avoid crash due to associations query.
+ -- Calculate a job's min_cpus with consideration to --cpus-per-gpu.
+ -- Fix scancel request when specifying individual array tasks in combination
+    with filtering options (in both regular and --interactive mode).
+ -- Enable MaxStepCount in stepmgr.
+ -- Enable AccountingStorageEnforce=nojobs,nosteps in stepmgr.
+ -- Add AccountingStorageParameters=max_step_records to limit how many steps
+    are recorded in the database for each job -- excluding batch, extern, and
+    interactive steps.
+ -- switch/hpe_slingshot - allocate VNIs on the controller for stepmgr jobs and
+    pass to the stepmgr for steps to use.
+ -- switch/hpe_slingshot - fix assertion when restarting the controller.
+ -- switch/hpe_slingshot - fix calcuation of free vnis when restarting the
+    controller with running jobs.
+ -- Improve default job reserve MPI port allocations that use overcommit or do
+    not specify a task count for stepmgr enabled jobs.
+ -- Fix a regression in rc1 resulting in scrun occasionally deadlocking when
+    the --enable-memory-leak-debug configure option was used.
+ -- topology/default - Prevent segfault in slurmctld on 'scontrol show topo'.
+ -- slurmrestd - Avoid creating or requring a connection to slurmdbd for the
+    'GET /openapi/v3' endpoint, fixing a regression in rc1.
+ -- scrun - Fix setting and getting environment via SPANK plugins.
+ -- sview - Fix nodes tab if a node has RestrictedCoresPerGPU configured.
+ -- slurmrestd - Add --generate-openapi-spec argument.
+ -- sview - Prevent segfault when retrieving slurmdbd configuration.
+ -- Avoid canceling rejected heterogeneous jobs without job write lock.
+ -- Fix slurmctld crash when reconfiguring with a PrologSlurmctld is running.
+ -- Fix slurmctld crash after a job has been resized.
+
+* Changes in Slurm 24.05.0rc1
 =============================
  -- Make slurmstepd retry REQUEST_COMPLETE_BATCH_SCRIPT indefinitely.
  -- Always load serializer/json when using any data_parser plugins.
@@ -83,6 +574,380 @@ documents those changes that are of interest to users and administrators.
     required hooks; slurmctld will exit with a fatal error if this is not
     successful. Added PollInterval to burst_buffer.conf. Removed the arbitrary
     limit of 512 copies of the script running simultaneously.
+ -- sackd/slurmrestd/scrun - Avoid using empty string while logging unix socket
+    connections from a listening connection.
+ -- Fix 20 character username limit from 'sacctmgr show events'
+ -- Log an error if UsePss or NoShare are configured with a plugin other than
+    jobacct_gather/linux. In such case these parameters are ignored.
+ -- helpers.conf - Added Flags=rebootless parameter allowing feature changes
+    without rebooting compute nodes.
+ -- scontrol - Add new subcommand 'power' for node power control.
+ -- data_parser/v0.0.41 - Implement parser of distribution for
+    /slurm/v0.0.41/job/submit.
+ -- data_parser/v0.0.41 - Change distribution_plane_size field type from UINT16
+    to UINT16_NO_VAL for /slurm/v0.0.41/job/submit.
+ -- topology/block - Replaced the BlockLevels with BlockSizes in topology.conf.
+ -- Fix slurmd cgroup/v2 startup race with systemd and cgroupfs.
+ -- Add SystemdTimeout= parameter in cgroup.conf.
+ -- Add QOS limit MaxTRESRunMinsPerAccount.
+ -- Add QOS limit MaxTRESRunMinsPerUser.
+ -- jobcomp/{elasticsearch,kafka} - Send priority alongside the rest of fields.
+ -- Add contain_spank option to SlurmdParameters. When set, spank_user_init(),
+    spank_task_post_fork(), and spank_task_exit() will execute within the
+    job_container/tmpfs plugin namespace.
+ -- Update job reason appropriately when bf_licenses is used.
+ -- slurmrestd - Tagged `script` field as deprecated in
+    'POST /slurm/v0.0.41/job/submit' in anticipation of removal in future
+    OpenAPI plugin versions.
+ -- Fix salloc/sbatch/srun crashing with certain invalid nodelist requests.
+ -- Optimize jobacctgather by not iterating every time over pids that have
+    already finished.
+ -- Remote SPANK callbacks invoked by srun get called once instead of twice.
+ -- auth/slurm - Support multiple keys through slurm.jwks.
+ -- sched/backfill - Fix issue with bf_continue where a job partition request
+    could be incorrectly reset back to a partition that is no longer specified
+    after a job partition update processed during a lock yield time window.
+ -- slurmrestd - Explicitly set process as dumpable (and ptrace-able) at
+    startup for systems where suid_dumpable is not 2.
+ -- slurmrestd - Tag all /slurm/v0.0.39/ and /slurmdb/v0.0.39/ endpoints as
+    deprecated in anticipation of removal in Slurm 24.11.
+ -- Add ELIGIBLE environment variable to jobcomp/script plugin.
+ -- slurmrestd,sackd,scrun - Improve outgoing data efficiency using
+    non-contiguous write support in kernel.
+ -- sackd - Add support for SACKD_DEBUG, SACKD_STDERR_DEBUG, and
+    SACKD_SYSLOG_DEBUG environment variables to control logging.
+ -- mpi/pmi2 - PMI_process_mapping values have been adapted for executions
+    where arbitrary distribution/SLURM_HOSTFILE is used. Now it can take into
+    account multiple instances of the same node inside SLURM_HOSTFILE.
+ -- Avoid wrong limit oriented (i.e. QosMaxGresPer*) job pending reason for jobs
+    actually pending on Resources when GPUs are requested per job.
+ -- Fix --ntasks-per-node not being treated as a max count of tasks per node
+    when used in combination with --ntasks. --ntasks option will now take
+    precedence as it is documented.
+ -- Accept X11 cookies that do not have a display number associated with it.
+ -- Always use the QOS name for SLURM_JOB_QOS environment variables.
+    Previously the batch environment would use the description field,
+    which was usually equivalent to the name.
+ -- slurmrestd - Add "CRON_JOBS" as possible flag value to the following:
+      'DELETE /slurm/v0.0.40/jobs' flags field.
+      'DELETE /slurm/v0.0.41/jobs' flags field.
+      'DELETE /slurm/v0.0.40/job/{job_id}?flags=' flags query parameter.
+      'DELETE /slurm/v0.0.41/job/{job_id}?flags=' flags query parameter.
+ -- Fix ScronParameters=explicit_scancel when using the rest api DELETE jobs
+    query: if the CRON_JOBS flag is not used then cron jobs will not be
+    cancelled. The NO_CRON_JOBS flag is ignored in v0.0.40 and removed in
+    v0.0.41.
+ -- Pass multi-partition job priorities to job for squeue to display.
+ -- cgroup/v2 - Require dbus-1 version >= 1.11.16.
+ -- Add RestrictedCoresPerGPU configuration option.
+ -- Fix how ntasks is inferred from --cpus-per-task when using --nodes,
+    --threads-per-core, or --hint=nomultithread.
+ -- For PreemptMode=CANCEL and PreemptMode=REQUEUE assume that job signalled
+    for GraceTime was preempted.
+ -- slurmd - Retry fetching configs indefinitely during startup.
+ -- Fix SPANK options not bing sent to remote context when --export was used.
+ -- slurmrestd - Attempt to automatically convert enumerated string arrays with
+    incoming non-string values into strings. Add warning when incoming value for
+    enumerated string arrays can not be converted to string and silently ignore
+    instead of rejecting entire request.
+ -- slurmrestd - Require `user` and `association_condition` fields to be
+    populated for requests to 'POST /slurmdb/v0.0.41/users_association'.
+ -- Allow NodeSet names to be used in SuspendExcNodes.
+ -- SuspendExcNodes=<nodes>:N now counts allocated nodes in N. The first N
+    powered up nodes in <nodes> are protected from being suspended.
+ -- Add SlurmctldParameters=max_powered_nodes=N, which prevents powering up
+    nodes after the max is reached.
+ -- Store output, error and input paths in the database and make them available
+    in accounting tools.
+ -- slurmrestd - Add 'POST /slurm/v0.0.41/job/allocate' endpoint.
+ -- Fix issues related to the extern step getting killed before other steps.
+    This includes the job_containter/tmpfs plugin not cleaning up.
+ -- Add USER_DELETE reservation flag to allow users with access to a reservation
+    to delete it.
+ -- Add CgroupPlugin=disabled to disable any interaction with Cgroups.
+ -- slurmrestd - Add "STEPMGR_ENABLED" as possible flag value to the following:
+      'GET /slurm/v0.0.41/jobs' flags field.
+      'GET /slurm/v0.0.41/job/{job_id}' flags query parameter.
+ -- scontrol,squeue - Added possible flags "STEPMGR_ENABLED" to '.jobs[].flags' for
+    'scontrol show jobs --{json|yaml}' and 'squeue --{json|yaml}' responses.
+ -- Add SlurmctldParameters=enable_stepmgr to enable step management through
+    the slurmstepd instead of the controller.
+ -- Avoid slurmstepd infinite loop waiting for tasks termination.
+ -- Fix logging of JSON/YAML values in some messages where nothing would be
+    printed as the value instead of the actual JSONified version of the parsed
+    string.
+ -- slurmrestd,sackd,scrun - Improve logic around handling kernel provided
+    buffer size of incoming data in files/sockets/pipes to avoid crashes.
+ -- Add --segment to job allocation to be used in topology/block.
+ -- Add --exclusive=topo for use with topology/block.
+ -- Add ExclusiveTopo to a partition definition in slurm.conf.
+ -- Add new 'BLOCKED' state to a node.
+ -- Account coordinators may not increase association job limits above
+    parent ones
+ -- Account coordinators can now suspend/resume jobs owned by member users.
+ -- Add DisableCoordDBD slurmdbd configuration parameter to disable the
+    coordinator status in all slurmdbd interactions.
+ -- slurmrestd - Added possible flags "WithAssociations" and "WithCoordinators"
+    to `.accounts[].flags` for "GET /slurmdb/v0.0.41/accounts/" and
+    "POST /slurmdb/v0.0.41/accounts/" endpoints.
+ -- sacctmgr - Added possible flags "WithAssociations" and "WithCoordinators"
+    to `.accounts[].flags` for `sacctmgr show accounts --{json|yaml}` response.
+ -- slurmrestd - Rename URL query parameter "with_assocs" to "WithAssociations"
+    for "GET /slurmdb/v0.0.41/accounts?WithAssociations".
+ -- slurmrestd - Rename URL query parameter "with_coords" to "WithCoordinators"
+    for "GET /slurmdb/v0.0.41/accounts?WithCoordinators".
+ -- slurmrestd - Rename URL query parameter "with_deleted" to "deleted"
+    for "GET /slurmdb/v0.0.41/accounts?deleted".
+ -- slurmrestd - Added possible flags "RemoveUsersAreCoords" and
+    "UsersAreCoords" to `.accounts[].flags` for "GET /slurmdb/v0.0.41/accounts/"
+    and "POST /slurmdb/v0.0.41/accounts/" endpoints.
+ -- sacctmgr - Added possible flags "RemoveUsersAreCoords" and "UsersAreCoords"
+    to `.accounts[].flags` for `sacctmgr show accounts --{json|yaml}` response.
+ -- slurmrestd - Add URL query parameter "UsersAreCoords" and
+    "RemoveUsersAreCoords" for
+    "GET /slurmdb/v0.0.41/accounts?UsersAreCoords&RemoveUsersAreCoords".
+ -- sacctmgr - Add new possible new flags "NoUpdate" and "Exact" to
+    '.associations[].flags' response from 'sacctmgr show assocs --{json|yaml}'.
+ -- slurmrestd - Added possible flags "NoUpdate" and "Exact" to
+    `.associations[].flags` for "GET /slurmdb/v0.0.41/associations/"
+    and "POST /slurmdb/v0.0.41/associations/" endpoints.
+ -- Fix false success of REQUEST_FORWARD_DATA RPC that made pmix to get out
+    of sync during initialization.
+ -- slurmrestd - Allow startup when slurmdbd is not configured and avoid loading
+    slurmdbd specific plugins.
+ -- Added PrologFlags=RunInJob to make prolog and epilog run inside the job
+    extern step to include it in the job's cgroup.
+ -- Return '*' for the password field for nss_slurm instead of "x".
+ -- slurmrestd - Add "topo" as possible value to the following:
+      'GET /slurm/v0.0.41/jobs' in '.jobs[].shared' field
+      'GET /slurm/v0.0.41/job/{job_id}' in '.jobs[].shared' field
+      'POST /slurm/v0.0.41/job/submit' in '.job.shared' and '.jobs[].shared'
+      'POST /slurm/v0.0.41/job/allocate' in '.job.shared' and '.jobs[].shared'
+ -- sacctmgr - Added possible flags "NoUsersAreCoords" and "UsersAreCoords"
+    to `.accounts[].flags` for `sacctmgr show accounts --{json|yaml}` response.
+ -- sacct - Add "topo" as possible value to output of 'sacct --{json|yaml}' to
+    '.jobs[].shared' field.
+ -- squeue - Add "topo" as possible value to output of 'squeue --{json|yaml}' to
+    '.jobs[].shared' field.
+ -- scontrol - Add "topo" as possible value to output of
+    'scontrol show jobs --{json|yaml}' to '.jobs[].shared' field.
+ -- slurmrestd - Add "topo" as possible value to the following:
+      'GET /slurm/v0.0.41/jobs' in '.jobs[].exclusive' field
+      'GET /slurm/v0.0.41/job/{job_id}' in '.jobs[].exclusive' field
+      'POST /slurm/v0.0.41/job/submit' in '.job.exclusive' and
+        '.jobs[].exclusive'
+      'POST /slurm/v0.0.41/job/allocate' in '.job.exclusive' and
+        '.jobs[].exclusive'
+ -- sacctmgr - Added possible flags "RemoveUsersAreCoords" and "UsersAreCoords"
+    to `.accounts[].flags` for `sacctmgr show accounts --{json|yaml}` response.
+ -- sacct - Add "topo" as possible value to output of 'sacct --{json|yaml}' to
+    '.jobs[].exclusive' field.
+ -- squeue - Add "topo" as possible value to output of 'squeue --{json|yaml}' to
+    '.jobs[].exclusive' field.
+ -- scontrol - Add "topo" as possible value to output of
+    'scontrol show jobs --{json|yaml}' to '.jobs[].exclusive' field.
+ -- slurmrestd - Add fields '.job.segment_size' and '.jobs[].segment_size' to
+    'POST /slurm/v0.0.41/job/submit' and 'POST /slurm/v0.0.41/job/allocate'.
+ -- sacctmgr - Added possible flags "NoUsersAreCoords" and "UsersAreCoords"
+    to `.associations[].flags` for `sacctmgr show assocs --{json|yaml}`
+    response.
+ -- slurmrestd - Added possible flags "NoUsersAreCoords" and "UsersAreCoords" to
+    `.associations[].flags` for "GET /slurmdb/v0.0.41/associations/"
+    and "POST /slurmdb/v0.0.41/associations/" endpoints.
+ -- Add ability to reserve MPI ports at the job level for stepmgr jobs and
+    subdivide them at the step level.
+ -- slurmrestd - Fix possible memory leak from failed job submissions to
+    'POST /slurm/v0.0.{39,40,41}/job/submit'.
+ -- slurmrestd - Fix possible memory leak from failed job allocation requests to
+    'POST /slurm/v0.0.{39,40,41}/job/allocate'.
+
+* Changes in Slurm 23.11.11
+===========================
+
+* Changes in Slurm 23.11.10
+===========================
+ -- switch/hpe_slingshot - Fix issue that could result in a 0 length state file.
+ -- Fix unnecessary message protocol downgrade for unregistered nodes.
+ -- Fix unnecessarily packing alias addrs when terminating jobs with a mix of
+    non-cloud/dynamic nodes and powered down cloud/dynamic nodes.
+ -- Fix allowing access to reservations without MaxStartDelay set.
+ -- Fix scontrol allowing updating job with bad cpus-per-task value.
+ -- sattach - Fix regression from 23.11.9 security fix leading to crash.
+
+* Changes in Slurm 23.11.9
+==========================
+ -- Fix many commands possibly reporting an "Unexpected Message Received" when
+    in reality the connection timed out.
+ -- Fix heterogeneous job components not being signaled with scancel --ctld and
+    'DELETE slurm/v0.0.40/jobs' if the job ids are not explicitly given,
+    the heterogeneous job components match the given filters, and the
+    heterogeneous job leader does not match the given filters.
+ -- Fix regression from 23.02 impeding job licenses from being cleared.
+ -- Move error to log_flag which made _get_joules_task error to be logged to the
+    user when too many rpcs were queued in slurmd for gathering energy.
+ -- slurmrestd - Prevent a slurmrestd segfault when modifying an association
+    without specifying max TRES limits in the request if those TRES
+    limits are currently defined in the association. This affects the following
+    fields of endpoint 'POST /slurmdb/v0.0.38/associations/':
+      'associations/max/tres/per/job'
+      'associations/max/tres/per/node'
+      'associations/max/tres/total'
+      'associations/max/tres/minutes/per/job'
+      'associations/max/tres/minutes/total'
+ -- Fix power_save operation after recovering from a failed reconfigure.
+ -- scrun - Delay shutdown until after start requested. This caused scrun
+    to never start or shutdown and hung forever when using --tty.
+ -- Fix backup slurmctld potentially not running the agent when taking over as
+    the primary controller.
+ -- Fix primary controller not running the agent when a reconfigure of the
+    slurmctld fails.
+ -- jobcomp/{elasticsearch,kafka} - Avoid sending fields with invalid date/time.
+ -- Fix energy gathering rpc counter underflow in _rpc_acct_gather_energy when
+    more than 10 threads try to get energy at the same time. This prevented
+    the possibility to get energy from slurmd by any step until slurmd was
+    restarted, so losing energy accounting metrics in the node.
+ -- slurmrestd - Fix memory leak for dbv0.0.39 jobs query which occurred if the
+    query parameters specified account, association, cluster, constraints,
+    format, groups, job_name, partition, qos, reason, reservation, state, users,
+    or wckey. This affects the following endpoints:
+      'GET /slurmdb/v0.0.39/jobs'
+ -- switch/hpe_slingshot - Fix security issue around managing VNI access.
+    CVE-2024-42511.
+
+* Changes in Slurm 23.11.8
+==========================
+ -- Fix slurmctld crash when reconfiguring with a PrologSlurmctld is running.
+ -- Fix slurmctld crash after a job has been resized.
+ -- Fix slurmctld and slurmdbd potentially stopping instead of performing a
+    logrotate when recieving SIGUSR2 when using auth/slurm.
+ -- Fix not having a disabled value for keepalive CommunicationParameters in
+    slurm.conf when these parameters are not set. This can log an error when
+    setting a socket, for example during slurmdbd registration with ctld.
+ -- switch/hpe_slingshot - Fix slurmctld crash when upgrading from 23.02.
+ -- Fix "Could not find group" errors from validate_group() when using
+    AllowGroups with large /etc/group files.
+ -- slurmrestd - Prevent a slurmrestd segfault when parsing the crontab field,
+    which was never usable. Now it explicitly ignores the value and emits a
+    warning if it is used for the following endpoints:
+      'POST /slurm/v0.0.39/job/{job_id}'
+      'POST /slurm/v0.0.39/job/submit'
+      'POST /slurm/v0.0.40/job/{job_id}'
+      'POST /slurm/v0.0.40/job/submit'
+ -- Fix getting user environment when using sbatch with "--get-user-env" or
+    "--export=" when there is a user profile script that reads /proc.
+ -- Prevent slurmd from crashing if acct_gather_energy/gpu is configured but
+    GresTypes is not configured.
+ -- Do not log the following errors when AcctGatherEnergyType plugins are used
+    but a node does not have or cannot find sensors:
+    "error: _get_joules_task: can't get info from slurmd"
+    "error: slurm_get_node_energy: Zero Bytes were transmitted or received"
+    However, the following error will continue to be logged:
+    "error: Can't get energy data. No power sensors are available. Try later"
+ -- Fix cloud nodes not being able to forward to nodes that restarted with new
+    IP addresses.
+ -- sacct - Fix printing of job group for job steps.
+ -- Fix error in scrontab jobs when using slurm.conf:PropagatePrioProcess=1.
+ -- Fix slurmctld crash on a batch job submission with "--nodes 0,...".
+ -- Fix dynamic IP address fanout forwarding when using auth/slurm.
+
+* Changes in Slurm 23.11.7
+==========================
+ -- slurmrestd - Correct OpenAPI specification for
+    'GET /slurm/v0.0.40/jobs/state' having response as null.
+ -- Allow running jobs on overlapping partitions if jobs don't specify -s.
+ -- Fix segfault when requesting a shared gres along with an exclusive
+    allocation.
+ -- Fix regression in 23.02 where afternotok and afterok dependencies were
+    rejected for federated jobs not running on the origin cluster of the
+    submitting job.
+ -- slurmctld - Disable job table locking while job state cache is active when
+    replying to `squeue --only-job-state` or `GET /slurm/v0.0.40/jobs/state`.
+ -- Fix sanity check when setting tres-per-task on the job allocation as well as
+    the step.
+ -- slurmrestd - Fix compatiblity with auth/slurm.
+ -- Fix issue where TRESRunMins gets off correct value if using
+    QOS UsageFactor != 1.
+ -- slurmrestd - Require `user` and `association_condition` fields to be
+    populated for requests to 'POST /slurmdb/v0.0.40/users_association'.
+ -- Avoid a slurmctld crash with extra_constraints enabled when a job requests
+    certain invalid --extra values.
+ -- `scancel --ctld` and `DELETE /slurm/v0.0/40/jobs` - Fix support for job
+    array expressions (e.g. 1_[3-5]). Also fix signaling a single pending array
+    task (e.g. 1_10), which previously signaled the whole array job instead.
+ -- Fix a possible slurmctld segfault when at some point we failed to create an
+    external launcher step.
+ -- Allow the slurmctld to open a connection to the slurmdbd if the first
+    attempt fails due to a protocol error.
+ -- mpi/cray_shasta - Fix launch for non-het-steps within a hetjob.
+ -- sacct - Fix "gpuutil" TRES usage output being incorrect when using --units.
+ -- Fix a rare deadlock on slurmctld shutdown or reconfigure.
+ -- Fix issue that only left one thread on each core available when "CPUs=" is
+    configured to total thread count on multi-threaded hardware and no other
+    topology info ("Sockets=", "CoresPerSocket", etc.) is configured.
+ -- Fix the external launcher step not being allocated a VNI when requested.
+ -- jobcomp/kafka - Fix payload length when producing and sending a message.
+ -- scrun - Avoid a crash if RunTimeDelete is called before the container
+    finishes.
+ -- Save the slurmd's cred_state while reconfiguring to prevent the loss job
+    credentials.
+
+* Changes in Slurm 23.11.6
+==========================
+ -- Avoid limiting sockets per node to one when using gres enforce-binding.
+ -- slurmrestd - Avoid permission denied errors when attempting to listen on
+    the same port multiple times.
+ -- Fix GRES reservations where the GRES has no topology
+    (no cores= in gres.conf).
+ -- Ensure that thread_id_rpc is gone before priority_g_fini().
+ -- Fix scontrol reboot timeout removing drain state from nodes.
+ -- squeue - Print header on empty reponse to `--only-job-state`.
+ -- Fix slurmrestd not ending job properly when xauth is not present and a x11
+    job is sent.
+ -- Add experimental job state caching with
+    SchedulerParameters=enable_job_state_cache to speed up querying job states
+    with squeue --only-job-state.
+ -- slurmrestd - Correct dumping of invalid ArrayJobIds returned from
+    'GET /slurm/v0.0.40/jobs/state'.
+ -- squeue - Correct dumping of invalid ArrayJobIds returned from
+    `squeue --only-job-state --{json|yaml}`.
+ -- If scancel --ctld is not used with --interactive, --sibling, or specific
+    step ids, then this option issues a single request to the slurmctld to
+    signal all jobs matching the specified filters. This greatly improves
+    the performance of slurmctld and scancel. The updated --ctld option also
+    fixes issues with the --partition or --reservation scancel options for jobs
+    that requested multiple partitions or reservations.
+ -- slurmrestd - Give EINVAL error when failing to parse signal name to numeric
+    signal.
+ -- slurmrestd - Allow ContentBody for all methods per RFC7230 even if ignored.
+ -- slurmrestd - Add 'DELETE /slurm/v0.0.40/jobs' endpoint to allow bulk job
+    signaling via slurmctld.
+ -- Fix combination of --nodelist and --exclude not always respecting the
+    excluded node list.
+ -- Fix jobs incorrectly allocating nodes exclusively when started on a
+    partition that doesn't enforce it. This could happen if a multi-partition
+    job doesn't specify --exclusive and is evaluated first on a partition
+    configured with OverSubscribe=EXCLUSIVE but ends up starting in a partition
+    configured with OverSubscribe!=EXCLUSIVE evaluated afterwards.
+ -- Setting GLOB_SILENCE flag no longer exposes old bugged behavior.
+ -- Fix associations AssocGrpCPURunMinutes being incorrectly computed for
+    running jobs after a controller reconfiguration/restart.
+ -- Fix scheduling jobs that request --gpus and nodes have different node
+    weights and different numbers of gpus.
+ -- slurmrestd - Add "NO_CRON_JOBS" as possible flag value to the following:
+      'DELETE /slurm/v0.0.40/jobs' flags field.
+      'DELETE /slurm/v0.0.40/job/{job_id}?flags=' flags query parameter.
+ -- Fix scontrol segfault/assert failure if the TRESPerNode parameter is used
+    when creating reservations.
+ -- Avoid checking for wsrep_on when restoring streaming replication settings.
+ -- Clarify in the logs that error "1193 Unknown system variable 'wsrep_on'" is
+    innocuous.
+ -- accounting_storage/mysql - Fix problem when loading reservations from an
+    archive dump.
+ -- slurmdbd - Fix minor race condition when sending updates to a shutdown
+    slurmctld.
+ -- slurmctld - Fix invalid refusal of a reservation update.
+ -- openapi - Fix memory leak of /meta/slurm/cluster response field.
+ -- Fix memory leak when using auth/slurm and AuthInfo=use_client_ids.
 
 * Changes in Slurm 23.11.5
 ==========================
@@ -131,6 +996,34 @@ documents those changes that are of interest to users and administrators.
     prevented milliseconds from being printed.
  -- Fix issue where you could have a gpu allocated as well as a shard on that
     gpu allocated at the same time.
+ -- Fix slurmctld crashes when using extra constraints with job arrays.
+ -- sackd/slurmrestd/scrun - Avoid memory leak on new unix socket connection.
+ -- The failed node field is filled when a node fails but does not time out.
+ -- topology/block - Implement topology_p_generate_node_ranking().
+ -- slurmrestd - Remove requiring job script field and job component script
+    fields to both be populated in the `POST /slurm/v0.0.40/job/submit`
+    endpoint as there can only be one batch step script for a job.
+ -- slurmrestd - When job script is provided in '.jobs[].script' and '.script'
+    fields, the '.script' field's value will be used in the
+    `POST /slurm/v0.0.40/job/submit` endpoint.
+ -- slurmrestd - Reject HetJob submission missing or empty batch script for
+    first Het component in the `POST /slurm/v0.0.40/job/submit` endpoint.
+ -- slurmrestd - Reject job when empty batch script submitted to the
+    POST /slurm/v0.0.40/job/submit` endpoint.
+ -- Fix pam_slurm and pam_slurm_adopt when using auth/slurm.
+ -- slurmrestd - Add 'cores_per_socket' field to
+    `POST /slurm/v0.0.40/job/submit` endpoint.
+ -- Fix srun and other Slurm commands running within a "configless" salloc when
+    salloc itself fetched the config.
+ -- Enforce binding with shared gres selection if requested.
+ -- Fix job allocation failures when the requested tres type or name ends in
+    "gres" or "license".
+ -- accounting_storage/mysql - Fix lineage string construction when adding a
+    user association with a partition.
+ -- Fix sattach command.
+ -- Fix ReconfigFlags. Due how reconfig was changed in 23.11, they will also
+    be used to influence the slurmctld startup as well.
+ -- Fix starting slurmd in configless mode if MUNGE support was disabled.
 
 * Changes in Slurm 23.11.4
 ==========================
@@ -748,11 +1641,17 @@ documents those changes that are of interest to users and administrators.
  -- Improve scontrol show node -d information of used shared gres (shard/mps)
     topology.
 
+* Changes in Slurm 23.02.9
+==========================
+ -- sattach - Fix regression from 23.02.8 security fix leading to crash.
+
 * Changes in Slurm 23.02.8
 ==========================
  -- Fix rare deadlock when a dynamic node registers at the same time that a
     once per minute background task occurs.
  -- Fix assertion in developer mode on a failed message unpack.
+ -- switch/hpe_slingshot - Fix security issue around managing VNI access.
+    CVE-2024-42511.
 
 * Changes in Slurm 23.02.7
 ==========================
@@ -8465,6 +9364,8 @@ documents those changes that are of interest to users and administrators.
  -- MYSQL - Make sure suspended time is only subtracted from the CPU TRES
     as it is the only TRES that can be given to another job while suspended.
  -- Clarify how TRESBillingWeights operates on memory and burst buffers.
+ -- Add report AccountUtilizationByQOS to sreport. AccountUtilizationByUser is
+    also able to be filtered by QOS as well.
 
 * Changes in Slurm 15.08.1
 ==========================

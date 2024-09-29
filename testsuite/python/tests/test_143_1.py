@@ -10,7 +10,7 @@ import re
 @pytest.fixture(scope="module", autouse=True)
 def setup():
     atf.require_auto_config("wants to create custom topology.conf")
-    atf.require_nodes(2)
+    atf.require_nodes(3)
     atf.require_config_parameter("SelectType", "select/cons_tres")
     atf.require_config_parameter("SelectTypeParameters", "CR_CPU")
     atf.require_config_parameter("TopologyPlugin", "topology/tree")
@@ -54,7 +54,7 @@ def test_switches():
     ), "Expected command to time out when asking for 2 nodes 1 switch apart"
     assert (
         re.search(
-            "srun: job [0-9]+ queued and waiting for resources",
+            r"srun: job [0-9]+ queued and waiting for resources",
             str(negative_output["stderr"]),
         )
         is not None

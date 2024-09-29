@@ -144,6 +144,11 @@ extern int topology_p_eval_nodes(topology_eval_t *topo_eval)
 	return common_topo_choose_nodes(topo_eval);
 }
 
+extern int topology_p_whole_topo(bitstr_t *node_mask)
+{
+	return SLURM_SUCCESS;
+}
+
 /*
  * When TopologyParam=SwitchAsNodeRank is set, this plugin assigns a unique
  * node_rank for all nodes belonging to the same leaf switch.
@@ -508,6 +513,12 @@ extern int topology_p_get(topology_data_t type, void *data)
 	{
 		int *rec_cnt = data;
 		*rec_cnt = switch_record_cnt;
+		break;
+	}
+	case TOPO_DATA_EXCLUSIVE_TOPO:
+	{
+		int *exclusive_topo = data;
+		*exclusive_topo = 0;
 		break;
 	}
 	default:

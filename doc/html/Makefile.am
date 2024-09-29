@@ -19,7 +19,6 @@ generated_html = \
 	contributor.html \
 	core_spec.html \
 	cpu_management.html \
-	cray.html \
 	dist_plane.html \
 	documentation.html \
 	dynamic_nodes.html \
@@ -39,6 +38,8 @@ generated_html = \
 	job_container_tmpfs.html \
 	job_exit_code.html \
 	job_launch.html \
+	job_reason_codes.html \
+	job_state_codes.html \
 	job_submit_plugins.html \
 	jwt.html \
 	kubernetes.html \
@@ -51,14 +52,12 @@ generated_html = \
 	mpi_guide.html \
 	multi_cluster.html \
 	network.html \
-	news.html \
 	nss_slurm.html \
 	openapi_release_notes.html \
 	overview.html \
 	pam_slurm_adopt.html \
 	platforms.html \
 	plugins.html \
-	power_mgmt.html \
 	power_save.html \
 	preempt.html \
 	prep_plugins.html \
@@ -71,11 +70,13 @@ generated_html = \
 	quickstart_admin.html \
 	quickstart.html \
 	related_software.html \
+	release_notes.html \
 	reservations.html \
 	resource_binding.html \
 	resource_limits.html \
 	rest.html \
 	rest_api.html \
+	rest_clients.html \
 	rest_quickstart.html \
 	rosetta.html \
 	sched_config.html \
@@ -87,6 +88,7 @@ generated_html = \
 	topology.html \
 	tres.html \
 	troubleshoot.html \
+	upgrades.html \
 	user_permissions.html \
 	wckey.html
 

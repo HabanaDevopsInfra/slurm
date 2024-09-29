@@ -43,6 +43,7 @@
  *  DEPENDENCY		Original list of jobids dependencies
  *  DERIVED_EC		Derived exit code and after : the signal number (if any)
  *  END			Time of job termination, UTS
+ *  ELIGIBLE		Eligble time of job, UTS
  *  EXITCODE		Job's exit code and after : the signal number (if any)
  *  GID			Group ID of job owner
  *  GROUPNAME		Group name of job owner
@@ -135,7 +136,7 @@ const char plugin_type[]       	= "jobcomp/script";
 const uint32_t plugin_version	= SLURM_VERSION_NUMBER;
 
 static char *jobcomp_script = NULL;
-static List comp_list = NULL;
+static list_t *comp_list = NULL;
 
 static pthread_t script_thread = 0;
 static pthread_mutex_t thread_flag_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -164,6 +165,7 @@ struct jobcomp_info {
 	uint16_t batch_flag;
 	time_t submit;
 	time_t start;
+	time_t eligible;
 	time_t end;
 	char *cluster;
 	char *constraints;
@@ -250,6 +252,10 @@ static struct jobcomp_info *_jobcomp_info_create(job_record_t *job)
 		j->limit = job->part_ptr->max_time;
 	else
 		j->limit = job->time_limit;
+
+	if (job->details && job->details->begin_time)
+		j->eligible = job->details->begin_time;
+
 	j->submit = job->details ? job->details->submit_time:job->start_time;
 	j->batch_flag = job->batch_flag;
 	j->nodes = xstrdup (job->nodes);
@@ -417,6 +423,7 @@ static char ** _create_environment (struct jobcomp_info *job)
 	_env_append_fmt (&env, "START", "%ld", (long)job->start);
 	_env_append_fmt (&env, "END",   "%ld", (long)job->end);
 	_env_append_fmt (&env, "SUBMIT","%ld", (long)job->submit);
+	_env_append_fmt(&env, "ELIGIBLE","%ld", (long)job->eligible);
 	_env_append_fmt (&env, "PROCS", "%u",  job->nprocs);
 	_env_append_fmt (&env, "NODECNT", "%u", job->nnodes);
 
@@ -566,7 +573,7 @@ static void * _script_agent (void *args)
 			slurm_cond_wait(&comp_list_cond, &comp_list_mutex);
 
 		/*
-		 * It is safe to unlock list mutex here. List has its
+		 * It is safe to unlock list mutex here. list has its
 		 *  own internal mutex that protects the comp_list itself
 		 */
 		slurm_mutex_unlock(&comp_list_mutex);
@@ -668,10 +675,10 @@ extern int fini ( void )
 
 /*
  * get info from the storage
- * in/out job_list List of job_rec_t *
- * note List needs to be freed when called
+ * in/out job_list list of job_rec_t *
+ * note list needs to be freed when called
  */
-extern List jobcomp_p_get_jobs(slurmdb_job_cond_t *job_cond)
+extern list_t *jobcomp_p_get_jobs(slurmdb_job_cond_t *job_cond)
 {
 
 	info("This function is not implemented.");

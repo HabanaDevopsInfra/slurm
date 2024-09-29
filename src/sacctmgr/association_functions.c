@@ -43,7 +43,7 @@
 
 static int _set_cond(int *start, int argc, char **argv,
 		     slurmdb_assoc_cond_t *assoc_cond,
-		     List format_list)
+		     list_t *format_list)
 {
 	int i, end = 0;
 	int set = 0;
@@ -63,31 +63,30 @@ static int _set_cond(int *start, int argc, char **argv,
 
 		if (!end && !xstrncasecmp(argv[i], "OnlyDefaults",
 					  MAX(command_len, 2))) {
-			assoc_cond->only_defs = 1;
+			assoc_cond->flags |= ASSOC_COND_FLAG_ONLY_DEFS;
 			set = 1;
 		} else if (!end && !xstrncasecmp(argv[i], "Tree",
 					  MAX(command_len, 4))) {
 			tree_display = 1;
 		} else if (!end && !xstrncasecmp(argv[i], "WithDeleted",
 						 MAX(command_len, 5))) {
-			assoc_cond->with_deleted = 1;
+			assoc_cond->flags |= ASSOC_COND_FLAG_WITH_DELETED;
 		} else if (!end &&
 			   !xstrncasecmp(argv[i], "WithRawQOSLevel",
 					 MAX(command_len, 5))) {
-			assoc_cond->with_raw_qos = 1;
+			assoc_cond->flags |= ASSOC_COND_FLAG_RAW_QOS;
 		} else if (!end &&
 			   !xstrncasecmp(argv[i], "WithSubAccounts",
 					 MAX(command_len, 5))) {
-			assoc_cond->with_sub_accts = 1;
+			assoc_cond->flags |= ASSOC_COND_FLAG_SUB_ACCTS;
 		} else if (!end && !xstrncasecmp(argv[i], "WOPInfo",
 						 MAX(command_len, 4))) {
-			assoc_cond->without_parent_info = 1;
-		} else if (!end && !xstrncasecmp(argv[i], "WOPLimits",
-						 MAX(command_len, 4))) {
-			assoc_cond->without_parent_limits = 1;
-		} else if (!end && !xstrncasecmp(argv[i], "WOLimits",
-						 MAX(command_len, 3))) {
-			assoc_cond->without_parent_limits = 1;
+			assoc_cond->flags |= ASSOC_COND_FLAG_WOPI;
+		} else if (!end && (!xstrncasecmp(argv[i], "WOPLimits",
+						  MAX(command_len, 4)) ||
+				    !xstrncasecmp(argv[i], "WOLimits",
+						  MAX(command_len, 3)))) {
+			assoc_cond->flags |= ASSOC_COND_FLAG_WOPL;
 		} else if (!end && !xstrncasecmp(argv[i], "where",
 						 MAX(command_len, 5))) {
 			continue;
@@ -536,7 +535,7 @@ extern int sacctmgr_set_assoc_rec(slurmdb_assoc_rec_t *assoc,
 }
 
 extern void sacctmgr_print_assoc_rec(slurmdb_assoc_rec_t *assoc,
-				     print_field_t *field, List tree_list,
+				     print_field_t *field, list_t *tree_list,
 				     bool last)
 {
 	char *print_acct = NULL;
@@ -599,6 +598,10 @@ extern void sacctmgr_print_assoc_rec(slurmdb_assoc_rec_t *assoc,
 			print_fields_str(field, "parent", last);
 		else
 			field->print_routine(field, &assoc->shares_raw, last);
+		break;
+	case PRINT_FLAGS:
+		tmp_char = slurmdb_assoc_flags_2_str(assoc->flags);
+		field->print_routine(field, tmp_char, last);
 		break;
 	case PRINT_GRPCM:
 		tmp_uint64 = slurmdb_find_tres_count_in_string(
@@ -757,20 +760,20 @@ extern int sacctmgr_list_assoc(int argc, char **argv)
 	int rc = SLURM_SUCCESS;
 	slurmdb_assoc_cond_t *assoc_cond =
 		xmalloc(sizeof(slurmdb_assoc_cond_t));
-	List assoc_list = NULL;
+	list_t *assoc_list = NULL;
 	slurmdb_assoc_rec_t *assoc = NULL;
 	int i=0;
 	list_itr_t *itr = NULL;
 	list_itr_t *itr2 = NULL;
 	char *last_cluster = NULL;
-	List tree_list = NULL;
+	list_t *tree_list = NULL;
 
 	int field_count = 0;
 
 	print_field_t *field = NULL;
 
-	List format_list = list_create(xfree_ptr);
-	List print_fields_list; /* types are of print_field_t */
+	list_t *format_list = list_create(xfree_ptr);
+	list_t *print_fields_list; /* types are of print_field_t */
 
 	for (i=0; i<argc; i++) {
 		int command_len = strlen(argv[i]);
@@ -786,7 +789,7 @@ extern int sacctmgr_list_assoc(int argc, char **argv)
 		return SLURM_ERROR;
 	} else if (!list_count(format_list)) {
 		slurm_addto_char_list(format_list, "Cluster,Account,User,Part");
-		if (!assoc_cond->without_parent_limits)
+		if (!(assoc_cond->flags & ASSOC_COND_FLAG_WOPL))
 			slurm_addto_char_list(format_list,
 					      "Share,Priority,GrpJ,GrpTRES,"
 					      "GrpS,GrpWall,GrpTRESMins,MaxJ,"

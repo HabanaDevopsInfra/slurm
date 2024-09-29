@@ -61,7 +61,7 @@
 /* Local functions */
 static void _write_group_header(FILE* out, char * header);
 static void _write_key_pairs(FILE* out, void *key_pairs);
-static void _print_config_plugin_params_list(FILE* out, List l, char *title);
+static void _print_config_plugin_params_list(FILE *out, list_t *l, char *title);
 
 /*
  * slurm_api_version - Return a single number reflecting the Slurm API's
@@ -322,6 +322,9 @@ void slurm_write_ctl_conf ( slurm_ctl_conf_info_msg_t * slurm_ctl_conf_ptr,
 		if (p[i].flags & PART_FLAG_EXCLUSIVE_USER)
 			fprintf(fp, " ExclusiveUser=YES");
 
+		if (p[i].flags & PART_FLAG_EXCLUSIVE_TOPO)
+			fprintf(fp, " ExclusiveTopo=YES");
+
 		if (p[i].grace_time)
 			fprintf(fp, " GraceTime=%u", p[i].grace_time);
 
@@ -443,7 +446,7 @@ void slurm_write_ctl_conf ( slurm_ctl_conf_info_msg_t * slurm_ctl_conf_ptr,
 	fclose(fp);
 }
 
-static void _print_config_plugin_params_list(FILE* out, List l, char *title)
+static void _print_config_plugin_params_list(FILE *out, list_t *l, char *title)
 {
 	list_itr_t *itr = NULL;
 	config_plugin_params_t *p;
@@ -494,23 +497,22 @@ void slurm_print_ctl_conf ( FILE* out,
 	slurm_print_key_pairs(out, slurm_ctl_conf_ptr->cgroup_conf,
 			      "\nCgroup Support Configuration:\n");
 
-	slurm_print_key_pairs(out, slurm_ctl_conf_ptr->ext_sensors_conf,
-			      "\nExternal Sensors Configuration:\n");
 	slurm_print_key_pairs(out, slurm_ctl_conf_ptr->mpi_conf,
 			      "\nMPI Plugins Configuration:\n");
 
 	xstrcat(tmp2_str, "\nNode Features Configuration:");
 	_print_config_plugin_params_list(out,
-		 (List) slurm_ctl_conf_ptr->node_features_conf, tmp2_str);
+		 (list_t *) slurm_ctl_conf_ptr->node_features_conf, tmp2_str);
 	xfree(tmp2_str);
 
 	slurm_print_key_pairs(out, slurm_ctl_conf_ptr->select_conf_key_pairs,
 			      select_title);
 
 }
+
 extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *slurm_ctl_conf_ptr)
 {
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	config_key_pair_t *key_pair;
 	char tmp_str[256];
 	uint32_t cluster_flags = slurmdb_setup_cluster_flags();
@@ -576,17 +578,20 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *slurm_ctl_conf_ptr)
 
 	key_pair = xmalloc(sizeof(config_key_pair_t));
 	key_pair->name = xstrdup("AccountingStoreFlags");
-	if (slurm_ctl_conf_ptr->conf_flags & CTL_CONF_SJC)
+	if (slurm_ctl_conf_ptr->conf_flags & CONF_FLAG_SJC)
 		xstrfmtcat(key_pair->value, "%sjob_comment",
 			   key_pair->value ? "," : "");
-	if (slurm_ctl_conf_ptr->conf_flags & CTL_CONF_SJE)
+	if (slurm_ctl_conf_ptr->conf_flags & CONF_FLAG_SJE)
 		xstrfmtcat(key_pair->value, "%sjob_env",
 			   key_pair->value ? "," : "");
-	if (slurm_ctl_conf_ptr->conf_flags & CTL_CONF_SJX)
+	if (slurm_ctl_conf_ptr->conf_flags & CONF_FLAG_SJX)
 		xstrfmtcat(key_pair->value, "%sjob_extra",
 			   key_pair->value ? "," : "");
-	if (slurm_ctl_conf_ptr->conf_flags & CTL_CONF_SJS)
+	if (slurm_ctl_conf_ptr->conf_flags & CONF_FLAG_SJS)
 		xstrfmtcat(key_pair->value, "%sjob_script",
+			   key_pair->value ? "," : "");
+	if (slurm_ctl_conf_ptr->conf_flags & CONF_FLAG_NO_STDIO)
+		xstrfmtcat(key_pair->value, "%sno_stdio",
 			   key_pair->value ? "," : "");
 	list_append(ret_list, key_pair);
 
@@ -622,7 +627,7 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *slurm_ctl_conf_ptr)
 	key_pair = xmalloc(sizeof(config_key_pair_t));
 	key_pair->name = xstrdup("AllowSpecResourcesUsage");
 	key_pair->value = xstrdup(
-		(slurm_ctl_conf_ptr->conf_flags & CTL_CONF_ASRU) ?
+		(slurm_ctl_conf_ptr->conf_flags & CONF_FLAG_ASRU) ?
 		"Yes" : "No");
 	list_append(ret_list, key_pair);
 
@@ -751,7 +756,7 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *slurm_ctl_conf_ptr)
 	list_append(ret_list, key_pair);
 	key_pair->name = xstrdup("DisableRootJobs");
 	key_pair->value = xstrdup(
-		(slurm_ctl_conf_ptr->conf_flags & CTL_CONF_DRJ) ? "Yes" : "No");
+		(slurm_ctl_conf_ptr->conf_flags & CONF_FLAG_DRJ) ? "Yes" : "No");
 
 	key_pair = xmalloc(sizeof(config_key_pair_t));
 	key_pair->name = xstrdup("EioTimeout");
@@ -767,10 +772,12 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *slurm_ctl_conf_ptr)
 		parse_part_enforce_type_2str(
 			slurm_ctl_conf_ptr->enforce_part_limits));
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("Epilog");
-	key_pair->value = xstrdup(slurm_ctl_conf_ptr->epilog);
-	list_append(ret_list, key_pair);
+	for (int i = 0; i < slurm_ctl_conf_ptr->epilog_cnt; i++) {
+		char *key = xstrdup_printf("Epilog[%d]", i);
+		add_key_pair(ret_list, key, "%s",
+			     slurm_ctl_conf_ptr->epilog[i]);
+		xfree(key);
+	}
 
 	snprintf(tmp_str, sizeof(tmp_str), "%u usec",
 		 slurm_ctl_conf_ptr->epilog_msg_time);
@@ -779,22 +786,12 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *slurm_ctl_conf_ptr)
 	key_pair->value = xstrdup(tmp_str);
 	list_append(ret_list, key_pair);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EpilogSlurmctld");
-	key_pair->value = xstrdup(slurm_ctl_conf_ptr->epilog_slurmctld);
-	list_append(ret_list, key_pair);
-
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("ExtSensorsType");
-	key_pair->value = xstrdup(slurm_ctl_conf_ptr->ext_sensors_type);
-	list_append(ret_list, key_pair);
-
-	snprintf(tmp_str, sizeof(tmp_str), "%u sec",
-		 slurm_ctl_conf_ptr->ext_sensors_freq);
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("ExtSensorsFreq");
-	key_pair->value = xstrdup(tmp_str);
-	list_append(ret_list, key_pair);
+	for (int i = 0; i < slurm_ctl_conf_ptr->epilog_slurmctld_cnt; i++) {
+		char *key = xstrdup_printf("EpilogSlurmctld[%d]", i);
+		add_key_pair(ret_list, key, "%s",
+			     slurm_ctl_conf_ptr->epilog_slurmctld[i]);
+		xfree(key);
+	}
 
 	if (xstrcmp(slurm_ctl_conf_ptr->priority_type, "priority/basic")) {
 		snprintf(tmp_str, sizeof(tmp_str), "%u",
@@ -862,6 +859,9 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *slurm_ctl_conf_ptr)
 		key_pair->value = xstrdup(tmp_str);
 		list_append(ret_list, key_pair);
 	}
+
+	add_key_pair(ret_list, "HashPlugin", "%s",
+		     slurm_ctl_conf_ptr->hash_plugin);
 
 	snprintf(tmp_str, sizeof(tmp_str), "%u sec",
 		 slurm_ctl_conf_ptr->health_check_interval);
@@ -1185,16 +1185,6 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *slurm_ctl_conf_ptr)
 	list_append(ret_list, key_pair);
 
 	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("PowerParameters");
-	key_pair->value = xstrdup(slurm_ctl_conf_ptr->power_parameters);
-	list_append(ret_list, key_pair);
-
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("PowerPlugin");
-	key_pair->value = xstrdup(slurm_ctl_conf_ptr->power_plugin);
-	list_append(ret_list, key_pair);
-
-	key_pair = xmalloc(sizeof(config_key_pair_t));
 	key_pair->name = xstrdup("PreemptMode");
 	key_pair->value = xstrdup(preempt_mode_string(slurm_ctl_conf_ptr->
 						      preempt_mode));
@@ -1360,10 +1350,12 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *slurm_ctl_conf_ptr)
 	key_pair->value = xstrdup(slurm_ctl_conf_ptr->proctrack_type);
 	list_append(ret_list, key_pair);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("Prolog");
-	key_pair->value = xstrdup(slurm_ctl_conf_ptr->prolog);
-	list_append(ret_list, key_pair);
+	for (int i = 0; i < slurm_ctl_conf_ptr->prolog_cnt; i++) {
+		char *key = xstrdup_printf("Prolog[%d]", i);
+		add_key_pair(ret_list, key, "%s",
+			     slurm_ctl_conf_ptr->prolog[i]);
+		xfree(key);
+	}
 
 	snprintf(tmp_str, sizeof(tmp_str), "%u",
 		 slurm_ctl_conf_ptr->prolog_epilog_timeout);
@@ -1372,10 +1364,12 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *slurm_ctl_conf_ptr)
 	key_pair->value = xstrdup(tmp_str);
 	list_append(ret_list, key_pair);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("PrologSlurmctld");
-	key_pair->value = xstrdup(slurm_ctl_conf_ptr->prolog_slurmctld);
-	list_append(ret_list, key_pair);
+	for (int i = 0; i < slurm_ctl_conf_ptr->prolog_slurmctld_cnt; i++) {
+		char *key = xstrdup_printf("PrologSlurmctld[%d]", i);
+		add_key_pair(ret_list, key, "%s",
+			     slurm_ctl_conf_ptr->prolog_slurmctld[i]);
+		xfree(key);
+	}
 
 	key_pair = xmalloc(sizeof(config_key_pair_t));
 	key_pair->name = xstrdup("PrologFlags");
@@ -1794,6 +1788,10 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *slurm_ctl_conf_ptr)
 					 slurm_ctl_conf_ptr->tcp_timeout);
 	list_append(ret_list, key_pair);
 
+	add_key_pair(ret_list, "TLSParameters", "%s",
+		     slurm_ctl_conf_ptr->tls_params);
+	add_key_pair(ret_list, "TLSType", "%s", slurm_ctl_conf_ptr->tls_type);
+
 	key_pair = xmalloc(sizeof(config_key_pair_t));
 	key_pair->name = xstrdup("TmpFS");
 	key_pair->value = xstrdup(slurm_ctl_conf_ptr->tmp_fs);
@@ -1812,7 +1810,7 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *slurm_ctl_conf_ptr)
 	key_pair = xmalloc(sizeof(config_key_pair_t));
 	key_pair->name = xstrdup("TrackWCKey");
 	key_pair->value = xstrdup(
-		(slurm_ctl_conf_ptr->conf_flags & CTL_CONF_WCKEY) ?
+		(slurm_ctl_conf_ptr->conf_flags & CONF_FLAG_WCKEY) ?
 		"Yes" : "No");
 	list_append(ret_list, key_pair);
 
@@ -1826,7 +1824,7 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *slurm_ctl_conf_ptr)
 	key_pair = xmalloc(sizeof(config_key_pair_t));
 	key_pair->name = xstrdup("UsePam");
 	key_pair->value = xstrdup(
-		(slurm_ctl_conf_ptr->conf_flags & CTL_CONF_PAM) ? "Yes" : "No");
+		(slurm_ctl_conf_ptr->conf_flags & CONF_FLAG_PAM) ? "Yes" : "No");
 	list_append(ret_list, key_pair);
 
 	key_pair = xmalloc(sizeof(config_key_pair_t));
@@ -2066,21 +2064,21 @@ static void _write_key_pairs(FILE* out, void *key_pairs)
 {
 	config_key_pair_t *key_pair;
 	char *temp = NULL;
-	List config_list = (List)key_pairs;
+	list_t *config_list = key_pairs;
 	list_itr_t *iter = NULL;
 	/* define lists of specific configuration sections */
-	List other_list;
-	List control_list;
-	List accounting_list;
-	List logging_list;
-	List power_list;
-	List sched_list;
-	List topology_list;
-	List timers_list;
-	List debug_list;
-	List proepilog_list;
-	List resconf_list;
-	List proctrac_list;
+	list_t *other_list;
+	list_t *control_list;
+	list_t *accounting_list;
+	list_t *logging_list;
+	list_t *power_list;
+	list_t *sched_list;
+	list_t *topology_list;
+	list_t *timers_list;
+	list_t *debug_list;
+	list_t *proepilog_list;
+	list_t *resconf_list;
+	list_t *proctrac_list;
 
 	if (!config_list)
 		return;
@@ -2207,9 +2205,7 @@ static void _write_key_pairs(FILE* out, void *key_pairs)
 		    !xstrcasecmp(key_pair->name, "AcctGatherNodeFreq") ||
 		    !xstrcasecmp(key_pair->name, "AcctGatherProfileType") ||
 		    !xstrcasecmp(key_pair->name, "JobAcctGatherFrequency") ||
-		    !xstrcasecmp(key_pair->name, "JobAcctGatherType") ||
-		    !xstrcasecmp(key_pair->name, "ExtSensorsType") ||
-		    !xstrcasecmp(key_pair->name, "ExtSensorsFreq")) {
+		    !xstrcasecmp(key_pair->name, "JobAcctGatherType")) {
 			list_append(accounting_list, temp);
 			continue;
 		}
@@ -2390,7 +2386,7 @@ static void _write_key_pairs(FILE* out, void *key_pairs)
  */
 extern void slurm_print_key_pairs(FILE* out, void *key_pairs, char *title)
 {
-	List config_list = (List)key_pairs;
+	list_t *config_list = key_pairs;
 	list_itr_t *iter = NULL;
 	config_key_pair_t *key_pair;
 

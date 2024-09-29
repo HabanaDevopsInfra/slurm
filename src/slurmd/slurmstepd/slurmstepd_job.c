@@ -61,6 +61,7 @@
 #include "src/interfaces/acct_gather_profile.h"
 #include "src/interfaces/gres.h"
 #include "src/interfaces/jobacct_gather.h"
+#include "src/interfaces/switch.h"
 
 #include "src/slurmd/common/fname.h"
 #include "src/slurmd/slurmd/slurmd.h"
@@ -165,8 +166,6 @@ _job_init_task_info(stepd_step_rec_t *step, uint32_t **gtid,
 	}
 
 	if (step->flags & LAUNCH_MULTI_PROG) {
-		if (!xstrcmp(slurm_conf.switch_type, "switch/cray_aries"))
-			multi_prog_parse(step, gtid);
 		for (i = 0; i < step->node_tasks; i++){
 			multi_prog_get_argv(step->argv[1], step->env,
 					    gtid[node_id][i],
@@ -191,6 +190,9 @@ _task_info_destroy(stepd_step_task_info_t *t, uint16_t multi_prog)
 	slurm_mutex_lock(&t->mutex);
 	slurm_mutex_unlock(&t->mutex);
 	slurm_mutex_destroy(&t->mutex);
+	xfree(t->efname);
+	xfree(t->ifname);
+	xfree(t->ofname);
 	if (multi_prog) {
 		xfree(t->argv);
 	} /* otherwise, t->argv is a pointer to step->argv */
@@ -246,6 +248,10 @@ static void _slurm_cred_to_step_rec(slurm_cred_t *cred, stepd_step_rec_t *step)
 	}
 	step->alias_list = xstrdup(cred_arg->job_alias_list);
 	step->node_list = xstrdup(cred_arg->job_hostlist);
+
+	if (cred_arg->switch_step)
+		switch_g_duplicate_stepinfo(cred_arg->switch_step,
+					    &step->switch_step);
 
 	slurm_cred_unlock_args(cred);
 }
@@ -453,7 +459,6 @@ extern stepd_step_rec_t *stepd_step_rec_create(launch_tasks_request_msg_t *msg,
 
 	step->timelimit   = (time_t) -1;
 	step->flags       = msg->flags;
-	step->switch_job  = msg->switch_job;
 	step->open_mode   = msg->open_mode;
 	step->options     = msg->options;
 
@@ -522,6 +527,9 @@ batch_stepd_step_rec_create(batch_job_launch_msg_t *msg)
 	step->het_job_ntasks = NO_VAL;	/* Used to set env vars */
 	step->het_job_offset = NO_VAL;	/* Used to set labels and env vars */
 	step->job_core_spec = msg->job_core_spec;
+	step->cpu_freq_min = msg->cpu_freq_min;
+	step->cpu_freq_max = msg->cpu_freq_max;
+	step->cpu_freq_gov = msg->cpu_freq_gov;
 
 	step->batch   = true;
 	step->node_name  = xstrdup(conf->node_name);
@@ -682,7 +690,6 @@ stepd_step_rec_destroy(stepd_step_rec_t *step)
 		step->msg_handle = NULL;
 	}
 	xfree(step->node_name);
-	mpmd_free(step);
 	xfree(step->het_job_task_cnts);
 	if (step->het_job_nnodes != NO_VAL) {
 		for (i = 0; i < step->het_job_nnodes; i++)
@@ -693,6 +700,7 @@ stepd_step_rec_destroy(stepd_step_rec_t *step)
 	xfree(step->task_prolog);
 	xfree(step->task_epilog);
 	xfree(step->job_alloc_cores);
+	xfree(step->node_list);
 	xfree(step->step_alloc_cores);
 	xfree(step->task_cnts);
 	xfree(step->tres_bind);

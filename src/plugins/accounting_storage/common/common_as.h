@@ -41,10 +41,10 @@
 
 #include "src/common/assoc_mgr.h"
 
-extern int addto_update_list(List update_list, slurmdb_update_type_t type,
+extern int addto_update_list(list_t *update_list, slurmdb_update_type_t type,
 			     void *object);
 
-extern void dump_update_list(List update_list);
+extern void dump_update_list(list_t *update_list);
 
 extern int cluster_first_reg(char *host, uint16_t port, uint16_t rpc_version);
 
@@ -52,7 +52,7 @@ extern int set_usage_information(char **usage_table,
 				 slurmdbd_msg_type_t type,
 				 time_t *usage_start, time_t *usage_end);
 
-extern void merge_delta_qos_list(List qos_list, List delta_qos_list);
+extern void merge_delta_qos_list(list_t *qos_list, list_t *delta_qos_list);
 
 extern bool is_user_min_admin_level(void *db_conn, uid_t uid,
 				    slurmdb_admin_level_t min_level);
@@ -79,5 +79,10 @@ extern int archive_write_file(buf_t *buffer, char *cluster_name,
 			      time_t period_start, time_t period_end,
 			      char *arch_dir, char *arch_type,
 			      uint32_t archive_period);
+
+extern int as_build_step_start_msg(dbd_step_start_msg_t *req,
+				   step_record_t *step_ptr);
+extern int as_build_step_comp_msg(dbd_step_comp_msg_t *req,
+				  step_record_t *step_ptr);
 
 #endif

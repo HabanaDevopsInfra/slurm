@@ -174,14 +174,9 @@ static pthread_cond_t launch_cond = PTHREAD_COND_INITIALIZER;
 pthread_t thread_ipmi_id_launcher = 0;
 pthread_t thread_ipmi_id_run = 0;
 
-/*
- * DCMI context cannot be reused between threads and this plugin can be called
- * from different slurmd threads, so we need the __thread specifier.
- */
-__thread ipmi_ctx_t ipmi_dcmi_ctx = NULL;
 static int dcmi_cnt = 0;
 
-static int _read_ipmi_dcmi_values(void);
+static int _read_ipmi_dcmi_values(ipmi_ctx_t *ipmi_dcmi_ctx_p);
 static int _read_ipmi_non_dcmi_values(bool check_sensor_units_watts);
 
 static int _running_profile(void)
@@ -212,11 +207,12 @@ static uint64_t _get_additional_consumption(time_t time0, time_t time1,
 /*
  * _open_dcmi_context opens the inband ipmi device for DCMI power reading
  */
-static int _open_dcmi_context(void)
+static int _open_dcmi_context(ipmi_ctx_t *ipmi_dcmi_ctx_p)
 {
 	int ret;
+	ipmi_ctx_t ipmi_dcmi_ctx;
 
-	if (!dcmi_cnt || ipmi_dcmi_ctx)
+	if (!dcmi_cnt || *ipmi_dcmi_ctx_p)
 		return SLURM_SUCCESS;
 
 	ipmi_dcmi_ctx = ipmi_ctx_create();
@@ -246,17 +242,18 @@ static int _open_dcmi_context(void)
 		return SLURM_ERROR;
 	}
 
+	*ipmi_dcmi_ctx_p = ipmi_dcmi_ctx;
 	return SLURM_SUCCESS;
 }
 
-static void _close_dcmi_context(void)
+static void _close_dcmi_context(ipmi_ctx_t *ipmi_dcmi_ctx_p)
 {
-	if (!ipmi_dcmi_ctx)
+	if (!*ipmi_dcmi_ctx_p)
 		return;
 
-	ipmi_ctx_close(ipmi_dcmi_ctx);
-	ipmi_ctx_destroy(ipmi_dcmi_ctx);
-	ipmi_dcmi_ctx = NULL;
+	ipmi_ctx_close(*ipmi_dcmi_ctx_p);
+	ipmi_ctx_destroy(*ipmi_dcmi_ctx_p);
+	*ipmi_dcmi_ctx_p = NULL;
 }
 
 /*
@@ -350,9 +347,6 @@ static int _init_ipmi_config (void)
 	/* if (slurm_ipmi_conf.entity_sensor_names) */
 	/* 	sensor_reading_flags |= */
 	/* 		IPMI_MONITORING_SENSOR_READING_FLAGS_ENTITY_SENSOR_NAMES; */
-
-	if (_open_dcmi_context() != SLURM_SUCCESS)
-		return SLURM_ERROR;
 
 	return SLURM_SUCCESS;
 }
@@ -479,10 +473,12 @@ static int _find_power_sensor(void)
  * _get_dcmi_power_reading reads current power in Watt from the ipmi context
  * returns power in watts on success, a negative value on failure
  */
-static int _get_dcmi_power_reading(uint16_t dcmi_mode)
+static int _get_dcmi_power_reading(uint16_t dcmi_mode,
+				   ipmi_ctx_t *ipmi_dcmi_ctx_p)
 {
 	uint8_t mode;
 	uint8_t mode_attributes = 0;
+	ipmi_ctx_t ipmi_dcmi_ctx = *ipmi_dcmi_ctx_p;
 
 	uint64_t current_power;
 	fiid_obj_t dcmi_rs;
@@ -535,7 +531,7 @@ static int _get_dcmi_power_reading(uint16_t dcmi_mode)
 	return current_power;
 }
 
-static int _read_ipmi_dcmi_values(void)
+static int _read_ipmi_dcmi_values(ipmi_ctx_t *ipmi_dcmi_ctx_p)
 {
 	int i, dcmi_res;
 
@@ -543,7 +539,8 @@ static int _read_ipmi_dcmi_values(void)
 		if ((sensors[i].id != DCMI_MODE) &&
 		    (sensors[i].id != DCMI_ENH_MODE))
 			continue;
-		dcmi_res = _get_dcmi_power_reading(sensors[i].id);
+		dcmi_res = _get_dcmi_power_reading(sensors[i].id,
+						   ipmi_dcmi_ctx_p);
 		if (dcmi_res < 0)
 			return SLURM_ERROR;
 		sensors[i].last_update_watt = dcmi_res;
@@ -652,14 +649,14 @@ static int _read_ipmi_non_dcmi_values(bool check_sensor_units_watts)
 /*
  * _read_ipmi_values read the Power sensor and update last_update_watt and times
  */
-static int _read_ipmi_values(void)
+static int _read_ipmi_values(ipmi_ctx_t *ipmi_dcmi_ctx_p)
 {
 	uint32_t non_dcmi_cnt = sensors_len - dcmi_cnt;
 	int rc1 = 0, rc2 = 0;
 
 	/* Start by reading DCMI sensors */
 	if (dcmi_cnt)
-		rc1 = _read_ipmi_dcmi_values();
+		rc1 = _read_ipmi_dcmi_values(ipmi_dcmi_ctx_p);
 
 	if (non_dcmi_cnt)
 		rc2 = _read_ipmi_non_dcmi_values(false);
@@ -707,13 +704,13 @@ static void _update_energy(acct_gather_energy_t *e, uint32_t last_update_watt,
  * _thread_update_node_energy calls _read_ipmi_values and updates all values
  * for node consumption
  */
-static int _thread_update_node_energy(void)
+static int _thread_update_node_energy(ipmi_ctx_t *ipmi_dcmi_ctx_p)
 {
 	int rc = SLURM_SUCCESS;
 	uint16_t i;
 	static uint32_t readings = 0;
 
-	rc = _read_ipmi_values();
+	rc = _read_ipmi_values(ipmi_dcmi_ctx_p);
 
 	if (rc == SLURM_SUCCESS) {
 		/* sensors list */
@@ -759,14 +756,14 @@ static int _thread_update_node_energy(void)
 /*
  * _thread_init initializes values and conf for the ipmi thread
  */
-static int _thread_init(void)
+static int _thread_init(ipmi_ctx_t *ipmi_dcmi_ctx_p)
 {
 	static bool first = true;
 	static bool first_init = SLURM_ERROR;
 	int rc = SLURM_SUCCESS;
 	uint16_t i;
 
-	if (!first && (_open_dcmi_context() != SLURM_SUCCESS)) {
+	if (_open_dcmi_context(ipmi_dcmi_ctx_p) != SLURM_SUCCESS) {
 		error("Cannot open dcmi context for this thread.");
 		return SLURM_ERROR;
 	}
@@ -869,6 +866,7 @@ static void *_thread_ipmi_run(void *no_data)
 // need input (attr)
 	struct timeval tvnow;
 	struct timespec abs;
+	ipmi_ctx_t ipmi_dcmi_ctx = NULL;
 
 	flag_energy_accounting_shutdown = false;
 	log_flag(ENERGY, "ipmi-thread: launched");
@@ -877,7 +875,7 @@ static void *_thread_ipmi_run(void *no_data)
 	(void) pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 
 	slurm_mutex_lock(&ipmi_mutex);
-	if (_thread_init() != SLURM_SUCCESS) {
+	if (_thread_init(&ipmi_dcmi_ctx) != SLURM_SUCCESS) {
 		log_flag(ENERGY, "ipmi-thread: aborted");
 		slurm_mutex_unlock(&ipmi_mutex);
 
@@ -903,19 +901,17 @@ static void *_thread_ipmi_run(void *no_data)
 	abs.tv_nsec = tvnow.tv_usec * 1000;
 
 	//loop until slurm stop
+	slurm_mutex_lock(&ipmi_mutex);
 	while (!flag_energy_accounting_shutdown) {
-		slurm_mutex_lock(&ipmi_mutex);
-
-		_thread_update_node_energy();
+		_thread_update_node_energy(&ipmi_dcmi_ctx);
 
 		/* Sleep until the next time. */
 		abs.tv_sec += slurm_ipmi_conf.freq;
 		slurm_cond_timedwait(&ipmi_cond, &ipmi_mutex, &abs);
-
-		slurm_mutex_unlock(&ipmi_mutex);
 	}
+	slurm_mutex_unlock(&ipmi_mutex);
 
-	_close_dcmi_context();
+	_close_dcmi_context(&ipmi_dcmi_ctx);
 	log_flag(ENERGY, "ipmi-thread: ended");
 
 	return NULL;
@@ -976,7 +972,10 @@ static int _get_joules_task(uint16_t delta)
 
 	if (slurm_get_node_energy(conf->node_name, context_id, delta,
 				  &sensor_cnt, &energies)) {
-		error("_get_joules_task: can't get info from slurmd");
+		if (errno == ESLURMD_TOO_MANY_RPCS)
+			log_flag(ENERGY, "energy RPC limit reached on slurmd, request dropped");
+		else
+			error("%s: can't get info from slurmd", __func__);
 		return SLURM_ERROR;
 	}
 	if (first) {
@@ -1031,8 +1030,8 @@ static int _get_joules_task(uint16_t delta)
 			+ new->base_consumed_energy;
 		memcpy(old, new, sizeof(acct_gather_energy_t));
 
-		log_flag(ENERGY, "%s: consumed %"PRIu64" Joules (received %"PRIu64"(%u watts) from slurmd)",
-			 __func__, new->consumed_energy,
+		log_flag(ENERGY, "consumed %"PRIu64" Joules (received %"PRIu64"(%u watts) from slurmd)",
+			 new->consumed_energy,
 			 new->base_consumed_energy, new->current_watts);
 	}
 
@@ -1043,33 +1042,41 @@ static int _get_joules_task(uint16_t delta)
 	return SLURM_SUCCESS;
 }
 
-static void _get_node_energy(acct_gather_energy_t *energy)
+static void _sum_energy(acct_gather_energy_t *energy, acct_gather_energy_t *e)
+{
+	energy->base_consumed_energy += e->base_consumed_energy;
+	energy->ave_watts += e->ave_watts;
+	energy->consumed_energy += e->consumed_energy;
+	energy->current_watts += e->current_watts;
+	energy->previous_consumed_energy += e->previous_consumed_energy;
+
+	/* node poll_time is computed as the oldest poll_time of the sensors */
+	if (energy->poll_time == 0 || energy->poll_time > e->poll_time)
+		energy->poll_time = e->poll_time;
+}
+
+static void _get_node_energy(acct_gather_energy_t *energy, uint16_t sensor_cnt)
 {
 	uint16_t i, j, id;
-	acct_gather_energy_t *e;
 
 	/* find the "Node" description */
 	for (i = 0; i < descriptions_len; ++i)
 		if (xstrcmp(descriptions[i].label, NODE_DESC) == 0)
 			break;
 	/* not found, init is not finished or there is no watt sensors */
-	if (i >= descriptions_len)
+	if ((i >= descriptions_len) &&
+	    ((descriptions_len > 0) || (!sensor_cnt)))
 		return;
 
 	/* sum the energy of all sensors described for "Node" */
 	memset(energy, 0, sizeof(acct_gather_energy_t));
-	for (j = 0; j < descriptions[i].sensor_cnt; ++j) {
-		id = descriptions[i].sensor_idxs[j];
-		e = &sensors[id].energy;
-		energy->base_consumed_energy += e->base_consumed_energy;
-		energy->ave_watts += e->ave_watts;
-		energy->consumed_energy += e->consumed_energy;
-		energy->current_watts += e->current_watts;
-		energy->previous_consumed_energy += e->previous_consumed_energy;
-		/* node poll_time is computed as the oldest poll_time of
-		   the sensors */
-		if (energy->poll_time == 0 || energy->poll_time > e->poll_time)
-			energy->poll_time = e->poll_time;
+	if (descriptions_len > 0) {
+		for (j = 0; j < descriptions[i].sensor_cnt; ++j) {
+			id = descriptions[i].sensor_idxs[j];
+			_sum_energy(energy, &sensors[id].energy);
+		}
+	} else {
+		_sum_energy(energy, &sensors[0].energy);
 	}
 }
 
@@ -1110,8 +1117,6 @@ extern int fini(void)
 		ipmi_monitoring_ctx_destroy(ipmi_ctx);
 		ipmi_ctx = NULL;
 	}
-
-	_close_dcmi_context();
 
 	reset_slurm_ipmi_conf(&slurm_ipmi_conf);
 
@@ -1163,19 +1168,20 @@ extern int acct_gather_energy_p_get_data(enum acct_energy_type data_type,
 
 	switch (data_type) {
 	case ENERGY_DATA_NODE_ENERGY_UP:
-		slurm_mutex_lock(&ipmi_mutex);
 		if (running_in_slurmd()) {
-			if (_thread_init() == SLURM_SUCCESS)
-				_thread_update_node_energy();
+			/* Signal the thread to update node energy */
+			slurm_cond_signal(&ipmi_cond);
+			slurm_mutex_lock(&ipmi_mutex);
 		} else {
+			slurm_mutex_lock(&ipmi_mutex);
 			_get_joules_task(10);
 		}
-		_get_node_energy(energy);
+		_get_node_energy(energy, sensors_len);
 		slurm_mutex_unlock(&ipmi_mutex);
 		break;
 	case ENERGY_DATA_NODE_ENERGY:
 		slurm_mutex_lock(&ipmi_mutex);
-		_get_node_energy(energy);
+		_get_node_energy(energy, sensors_len);
 		slurm_mutex_unlock(&ipmi_mutex);
 		break;
 	case ENERGY_DATA_LAST_POLL:
@@ -1196,11 +1202,12 @@ extern int acct_gather_energy_p_get_data(enum acct_energy_type data_type,
 		slurm_mutex_unlock(&ipmi_mutex);
 		break;
 	case ENERGY_DATA_JOULES_TASK:
-		slurm_mutex_lock(&ipmi_mutex);
 		if (running_in_slurmd()) {
-			if (_thread_init() == SLURM_SUCCESS)
-				_thread_update_node_energy();
+			/* Signal the thread to update node energy */
+			slurm_cond_signal(&ipmi_cond);
+			slurm_mutex_lock(&ipmi_mutex);
 		} else {
+			slurm_mutex_lock(&ipmi_mutex);
 			_get_joules_task(10);
 		}
 		for (i = 0; i < sensors_len; ++i)
@@ -1214,12 +1221,6 @@ extern int acct_gather_energy_p_get_data(enum acct_energy_type data_type,
 		rc = SLURM_ERROR;
 		break;
 	}
-
-	/*
-	 * Close the dcmi context, since it has __thread on the variable each
-	 * thread will get a different pointer.
-	 */
-	_close_dcmi_context();
 
 	return rc;
 }
@@ -1540,187 +1541,110 @@ extern void acct_gather_energy_p_conf_set(int context_id_in,
 	verbose("%s loaded", plugin_name);
 }
 
-extern void acct_gather_energy_p_conf_values(List *data)
+extern void acct_gather_energy_p_conf_values(list_t **data)
 {
-	config_key_pair_t *key_pair;
-
 	xassert(*data);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIDriverType");
-	key_pair->value = xstrdup_printf("%u", slurm_ipmi_conf.driver_type);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMIDriverType", "%u",
+		     slurm_ipmi_conf.driver_type);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIDisableAutoProbe");
-	key_pair->value = xstrdup_printf("%u",
-					 slurm_ipmi_conf.disable_auto_probe);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMIDisableAutoProbe", "%u",
+		     slurm_ipmi_conf.disable_auto_probe);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIDriverAddress");
-	key_pair->value = xstrdup_printf("%u", slurm_ipmi_conf.driver_address);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMIDriverAddress", "%u",
+		     slurm_ipmi_conf.driver_address);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIRegisterSpacing");
-	key_pair->value = xstrdup_printf("%u",
-					 slurm_ipmi_conf.register_spacing);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMIRegisterSpacing", "%u",
+		     slurm_ipmi_conf.register_spacing);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIDriverDevice");
-	key_pair->value = xstrdup(slurm_ipmi_conf.driver_device);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMIDriverDevice", "%s",
+		     slurm_ipmi_conf.driver_device);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIProtocolVersion");
-	key_pair->value = xstrdup_printf("%u",
-					 slurm_ipmi_conf.protocol_version);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMIProtocolVersion", "%u",
+		     slurm_ipmi_conf.protocol_version);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIUsername");
-	key_pair->value = xstrdup(slurm_ipmi_conf.username);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMIUsername", "%s",
+		     slurm_ipmi_conf.username);
 
-	/* Don't give out the password */
-	/* key_pair = xmalloc(sizeof(config_key_pair_t)); */
-	/* key_pair->name = xstrdup("EnergyIPMIPassword"); */
-	/* key_pair->value = xstrdup(slurm_ipmi_conf.password); */
-	/* list_append(*data, key_pair); */
+	/*
+	 * Don't give out the password
+	 * add_key_pair(*data, "EnergyIPMIPassword", "%s",
+	 * 		slurm_ipmi_conf.password);
+	 */
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIPrivilegeLevel");
-	key_pair->value = xstrdup_printf("%u", slurm_ipmi_conf.privilege_level);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMIPrivilegeLevel", "%u",
+		     slurm_ipmi_conf.privilege_level);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIAuthenticationType");
-	key_pair->value = xstrdup_printf("%u",
-					 slurm_ipmi_conf.authentication_type);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMIAuthenticationType", "%u",
+		     slurm_ipmi_conf.authentication_type);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMICipherSuiteId");
-	key_pair->value = xstrdup_printf("%u", slurm_ipmi_conf.cipher_suite_id);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMICipherSuiteId", "%u",
+		     slurm_ipmi_conf.cipher_suite_id);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMISessionTimeout");
-	key_pair->value = xstrdup_printf("%u", slurm_ipmi_conf.session_timeout);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMISessionTimeout", "%u",
+		     slurm_ipmi_conf.session_timeout);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIRetransmissionTimeout");
-	key_pair->value = xstrdup_printf(
-		"%u", slurm_ipmi_conf.retransmission_timeout);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMIRetransmissionTimeout", "%u",
+		     slurm_ipmi_conf.retransmission_timeout);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIWorkaroundFlags");
-	key_pair->value = xstrdup_printf(
-		"%u", slurm_ipmi_conf.workaround_flags);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMIWorkaroundFlags", "%u",
+		     slurm_ipmi_conf.workaround_flags);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIRereadSdrCache");
-	key_pair->value = xstrdup(slurm_ipmi_conf.reread_sdr_cache
-				  ? "Yes" : "No");
-	list_append(*data, key_pair);
+	add_key_pair_bool(*data, "EnergyIPMIRereadSdrCache",
+			  slurm_ipmi_conf.reread_sdr_cache);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIIgnoreNonInterpretableSensors");
-	key_pair->value = xstrdup(
-		slurm_ipmi_conf.ignore_non_interpretable_sensors
-		? "Yes" : "No");
-	list_append(*data, key_pair);
+	add_key_pair_bool(*data, "EnergyIPMIIgnoreNonInterpretableSensors",
+			  slurm_ipmi_conf.ignore_non_interpretable_sensors);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIBridgeSensors");
-	key_pair->value = xstrdup(slurm_ipmi_conf.bridge_sensors
-				  ? "Yes" : "No");
-	list_append(*data, key_pair);
+	add_key_pair_bool(*data, "EnergyIPMIBridgeSensors",
+			  slurm_ipmi_conf.bridge_sensors);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIInterpretOemData");
-	key_pair->value = xstrdup(slurm_ipmi_conf.interpret_oem_data
-				  ? "Yes" : "No");
-	list_append(*data, key_pair);
+	add_key_pair_bool(*data, "EnergyIPMIInterpretOemData",
+			  slurm_ipmi_conf.interpret_oem_data);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMISharedSensors");
-	key_pair->value = xstrdup(slurm_ipmi_conf.shared_sensors
-				  ? "Yes" : "No");
-	list_append(*data, key_pair);
+	add_key_pair_bool(*data, "EnergyIPMISharedSensors",
+			  slurm_ipmi_conf.shared_sensors);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIDiscreteReading");
-	key_pair->value = xstrdup(slurm_ipmi_conf.discrete_reading
-				  ? "Yes" : "No");
-	list_append(*data, key_pair);
+	add_key_pair_bool(*data, "EnergyIPMIDiscreteReading",
+			  slurm_ipmi_conf.discrete_reading);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIIgnoreScanningDisabled");
-	key_pair->value = xstrdup(slurm_ipmi_conf.ignore_scanning_disabled
-				  ? "Yes" : "No");
-	list_append(*data, key_pair);
+	add_key_pair_bool(*data, "EnergyIPMIIgnoreScanningDisabled",
+			  slurm_ipmi_conf.ignore_scanning_disabled);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIAssumeBmcOwner");
-	key_pair->value = xstrdup(slurm_ipmi_conf.assume_bmc_owner
-				  ? "Yes" : "No");
-	list_append(*data, key_pair);
+	add_key_pair_bool(*data, "EnergyIPMIAssumeBmcOwner",
+			  slurm_ipmi_conf.assume_bmc_owner);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIEntitySensorNames");
-	key_pair->value = xstrdup(slurm_ipmi_conf.entity_sensor_names
-				  ? "Yes" : "No");
-	list_append(*data, key_pair);
+	add_key_pair_bool(*data, "EnergyIPMIEntitySensorNames",
+			  slurm_ipmi_conf.entity_sensor_names);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIFrequency");
-	key_pair->value = xstrdup_printf("%u", slurm_ipmi_conf.freq);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMIFrequency", "%u",
+		     slurm_ipmi_conf.freq);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMICalcAdjustment");
-	key_pair->value = xstrdup(slurm_ipmi_conf.adjustment
-				  ? "Yes" : "No");
-	list_append(*data, key_pair);
+	add_key_pair_bool(*data, "EnergyIPMICalcAdjustment",
+			  slurm_ipmi_conf.adjustment);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIPowerSensors");
-	key_pair->value =
-	    xstrdup_printf("%s", slurm_ipmi_conf.power_sensors);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMIPowerSensors", "%s",
+		     slurm_ipmi_conf.power_sensors);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMITimeout");
-	key_pair->value = xstrdup_printf("%u", slurm_ipmi_conf.timeout);
-	list_append(*data, key_pair);
+	add_key_pair(*data, "EnergyIPMITimeout", "%u",
+		     slurm_ipmi_conf.timeout);
 
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("EnergyIPMIVariable");
 	switch (slurm_ipmi_conf.variable) {
 	case IPMI_MONITORING_SENSOR_UNITS_CELSIUS:
-		key_pair->value = xstrdup("Temp");
+		add_key_pair(*data, "EnergyIPMIVariable", "%s", "Temp");
 		break;
 	case IPMI_MONITORING_SENSOR_UNITS_RPM:
-		key_pair->value = xstrdup("Fan");
+		add_key_pair(*data, "EnergyIPMIVariable", "%s", "Fan");
 		break;
 	case IPMI_MONITORING_SENSOR_UNITS_VOLTS:
-		key_pair->value = xstrdup("Voltage");
+		add_key_pair(*data, "EnergyIPMIVariable", "%s", "Voltage");
 		break;
 	case IPMI_MONITORING_SENSOR_UNITS_WATTS:
-		key_pair->value = xstrdup("Watts");
+		add_key_pair(*data, "EnergyIPMIVariable", "%s", "Watts");
 		break;
 	default:
-		key_pair->value = xstrdup("Unknown");
+		add_key_pair(*data, "EnergyIPMIVariable", "%s", "Unknown");
 		break;
 	}
-	list_append(*data, key_pair);
-
-	return;
 
 }

@@ -46,7 +46,7 @@
 #include "src/common/assoc_mgr.h"
 #include "src/common/xstring.h"
 
-#include "src/slurmctld/gres_ctld.h"
+#include "src/stepmgr/gres_stepmgr.h"
 
 #include "select_cons_tres.h"
 #include "job_test.h"
@@ -62,8 +62,8 @@
 #if defined (__APPLE__)
 extern slurm_conf_t slurm_conf __attribute__((weak_import));
 extern node_record_t **node_record_table_ptr __attribute__((weak_import));
-extern List part_list __attribute__((weak_import));
-extern List job_list __attribute__((weak_import));
+extern list_t *part_list __attribute__((weak_import));
+extern list_t *job_list __attribute__((weak_import));
 extern int node_record_count __attribute__((weak_import));
 extern time_t last_node_update __attribute__((weak_import));
 extern bitstr_t *avail_node_bitmap __attribute__((weak_import));
@@ -74,8 +74,8 @@ extern list_t *cluster_license_list __attribute__((weak_import));
 #else
 slurm_conf_t slurm_conf;
 node_record_t **node_record_table_ptr;
-List part_list;
-List job_list;
+list_t *part_list;
+list_t *job_list;
 int node_record_count;
 time_t last_node_update;
 bitstr_t *avail_node_bitmap;
@@ -132,7 +132,6 @@ const char plugin_name[] = "Trackable RESources (TRES) Selection plugin";
 const char plugin_type[] = "select/cons_tres";
 const uint32_t plugin_id      = SELECT_PLUGIN_CONS_TRES;
 const uint32_t plugin_version = SLURM_VERSION_NUMBER;
-const uint32_t pstate_version = 7;	/* version control on saved state */
 const uint16_t nodeinfo_magic = 0x8a5d;
 
 /* Global variables */
@@ -248,7 +247,7 @@ extern int select_p_state_restore(char *dir_name)
  * src/slurmctld/read_config.c. See select_p_node_init for the
  * whole story.
  */
-extern int select_p_job_init(List job_list)
+extern int select_p_job_init(list_t *job_list)
 {
 	/* nothing to initialize for jobs */
 	return SLURM_SUCCESS;
@@ -272,11 +271,6 @@ extern int select_p_node_init(void)
 	int i;
 	node_record_t *node_ptr;
 
-	if (!slurm_conf.select_type_param) {
-		info("%s SelectTypeParameters not specified, using default value: CR_Core_Memory",
-		     plugin_type);
-		slurm_conf.select_type_param = (CR_CORE | CR_MEMORY);
-	}
 	if (!(slurm_conf.select_type_param & (CR_CPU | CR_CORE | CR_SOCKET))) {
 		fatal("Invalid SelectTypeParameters: %s (%u), "
 		      "You need at least CR_(CPU|CORE|SOCKET)*",
@@ -348,7 +342,7 @@ extern int select_p_node_init(void)
 
 	for (i = 0; (node_ptr = next_node(&i)); i++) {
 		if ((slurm_conf.select_type_param & CR_SOCKET) &&
-		    (slurm_conf.conf_flags & CTL_CONF_ASRU) == 0)
+		    (slurm_conf.conf_flags & CONF_FLAG_ASRU) == 0)
 			_check_allocatable_sockets(node_ptr);
 
 		select_node_usage[node_ptr->index].node_state =
@@ -377,7 +371,7 @@ extern int select_p_node_init(void)
  * IN mode - SELECT_MODE_RUN_NOW   (0): try to schedule job now
  *           SELECT_MODE_TEST_ONLY (1): test if job can ever run
  *           SELECT_MODE_WILL_RUN  (2): determine when and where job can run
- * IN preemptee_candidates - List of pointers to jobs which can be preempted.
+ * IN preemptee_candidates - list of pointers to jobs which can be preempted.
  * IN/OUT preemptee_job_list - Pointer to list of job pointers. These are the
  *		jobs to be preempted to initiate the pending job. Not set
  *		if mode==SELECT_MODE_TEST_ONLY or input pointer is NULL.
@@ -387,8 +381,8 @@ extern int select_p_node_init(void)
 extern int select_p_job_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 			     uint32_t min_nodes, uint32_t max_nodes,
 			     uint32_t req_nodes, uint16_t mode,
-			     List preemptee_candidates,
-			     List *preemptee_job_list,
+			     list_t *preemptee_candidates,
+			     list_t **preemptee_job_list,
 			     resv_exc_t *resv_exc_ptr)
 {
 	int rc;
@@ -608,7 +602,7 @@ extern int select_p_job_expand(job_record_t *from_job_ptr,
 				}
 			}
 		}
-		if (to_job_ptr->details->whole_node == 1) {
+		if (to_job_ptr->details->whole_node & WHOLE_NODE_REQUIRED) {
 			to_job_ptr->total_cpus +=
 				node_record_table_ptr[i]->cpus_efctv;
 		} else {
@@ -617,15 +611,15 @@ extern int select_p_job_expand(job_record_t *from_job_ptr,
 		}
 	}
 	build_job_resources_cpu_array(new_job_resrcs_ptr);
-	gres_ctld_job_merge(from_job_ptr->gres_list_req,
-			    from_job_resrcs_ptr->node_bitmap,
-			    to_job_ptr->gres_list_req,
-			    to_job_resrcs_ptr->node_bitmap);
+	gres_stepmgr_job_merge(from_job_ptr->gres_list_req,
+			       from_job_resrcs_ptr->node_bitmap,
+			       to_job_ptr->gres_list_req,
+			       to_job_resrcs_ptr->node_bitmap);
 	/* copy the allocated gres */
-	gres_ctld_job_merge(from_job_ptr->gres_list_alloc,
-			    from_job_resrcs_ptr->node_bitmap,
-			    to_job_ptr->gres_list_alloc,
-			    to_job_resrcs_ptr->node_bitmap);
+	gres_stepmgr_job_merge(from_job_ptr->gres_list_alloc,
+			       from_job_resrcs_ptr->node_bitmap,
+			       to_job_ptr->gres_list_alloc,
+			       to_job_resrcs_ptr->node_bitmap);
 
 	/* Now swap data: "new" -> "to" and clear "from" */
 	free_job_resources(&to_job_ptr->job_resrcs);
@@ -669,7 +663,7 @@ extern int select_p_job_resized(job_record_t *job_ptr, node_record_t *node_ptr)
 	struct job_resources *job = job_ptr->job_resrcs;
 	part_res_record_t *p_ptr;
 	int i, n;
-	List gres_list;
+	list_t *gres_list;
 	bool old_job = false;
 
 	xassert(job_ptr);
@@ -705,9 +699,9 @@ extern int select_p_job_resized(job_record_t *job_ptr, node_record_t *node_ptr)
 			gres_list = node_usage[i].gres_list;
 		else
 			gres_list = node_ptr->gres_list;
-		gres_ctld_job_dealloc(job_ptr->gres_list_alloc, gres_list, n,
-				      job_ptr->job_id, node_ptr->name,
-				      old_job, true);
+		gres_stepmgr_job_dealloc(job_ptr->gres_list_alloc, gres_list, n,
+					 job_ptr->job_id, node_ptr->name,
+					 old_job, true);
 		gres_node_state_log(gres_list, node_ptr->name);
 
 		if (node_usage[i].alloc_memory < job->memory_allocated[n]) {
@@ -718,6 +712,10 @@ extern int select_p_job_resized(job_record_t *job_ptr, node_record_t *node_ptr)
 			node_usage[i].alloc_memory = 0;
 		} else
 			node_usage[i].alloc_memory -= job->memory_allocated[n];
+
+		if (node_usage[i].jobs)
+			list_delete_first(node_usage[i].jobs,
+					  slurm_find_ptr_in_list, job_ptr);
 
 		extract_job_resources_node(job, n);
 
@@ -769,9 +767,11 @@ extern int select_p_job_resized(job_record_t *job_ptr, node_record_t *node_ptr)
 		return SLURM_ERROR;
 	}
 
-
-	/* some node of job removed from core-bitmap, so rebuild core bitmaps */
-	part_data_build_row_bitmaps(p_ptr, NULL);
+	/*
+	 * some node of job removed from core-bitmap, so lets know _job_test()
+	 * to do part_data_build_row_bitmaps(p_ptr, NULL);
+	 */
+	p_ptr->rebuild_rows = true;
 
 	/*
 	 * Adjust the node_state of the node removed from this job.
@@ -915,7 +915,6 @@ extern int select_p_select_nodeinfo_unpack(select_nodeinfo_t **nodeinfo,
 					   buf_t *buffer,
 					   uint16_t protocol_version)
 {
-	uint32_t uint32_tmp;
 	select_nodeinfo_t *nodeinfo_ptr = NULL;
 
 	nodeinfo_ptr = select_p_select_nodeinfo_alloc();
@@ -924,8 +923,7 @@ extern int select_p_select_nodeinfo_unpack(select_nodeinfo_t **nodeinfo,
 	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		safe_unpack16(&nodeinfo_ptr->alloc_cpus, buffer);
 		safe_unpack64(&nodeinfo_ptr->alloc_memory, buffer);
-		safe_unpackstr_xmalloc(&nodeinfo_ptr->tres_alloc_fmt_str,
-				       &uint32_tmp, buffer);
+		safe_unpackstr(&nodeinfo_ptr->tres_alloc_fmt_str, buffer);
 		safe_unpackdouble(&nodeinfo_ptr->tres_alloc_weighted, buffer);
 	}
 
@@ -947,7 +945,7 @@ extern int select_p_select_nodeinfo_set_all(void)
 	int i, n;
 	uint32_t alloc_cpus, alloc_cores, total_node_cores, efctv_node_cores;
 	bitstr_t **alloc_core_bitmap = NULL;
-	List gres_list;
+	list_t *gres_list;
 
 	/*
 	 * only set this once when the last_node_update is newer than
@@ -967,6 +965,8 @@ extern int select_p_select_nodeinfo_set_all(void)
 	for (p_ptr = select_part_record; p_ptr; p_ptr = p_ptr->next) {
 		if (!p_ptr->row)
 			continue;
+		if (p_ptr->rebuild_rows)
+			part_data_build_row_bitmaps(p_ptr, NULL);
 		for (i = 0; i < p_ptr->num_rows; i++) {
 			if (!p_ptr->row[i].row_bitmap)
 				continue;
@@ -1044,8 +1044,9 @@ extern int select_p_select_nodeinfo_set_all(void)
 			gres_list = select_node_usage[n].gres_list;
 		else
 			gres_list = node_ptr->gres_list;
-		gres_ctld_set_node_tres_cnt(gres_list, nodeinfo->tres_alloc_cnt,
-					    false);
+		gres_stepmgr_set_node_tres_cnt(gres_list,
+					       nodeinfo->tres_alloc_cnt,
+					       false);
 
 		xfree(nodeinfo->tres_alloc_fmt_str);
 		nodeinfo->tres_alloc_fmt_str =
@@ -1194,7 +1195,7 @@ extern int select_p_get_info_from_plugin(enum select_plugindata_info info,
 {
 	int rc = SLURM_SUCCESS;
 	uint32_t *tmp_32 = (uint32_t *) data;
-	List *tmp_list = (List *) data;
+	list_t **tmp_list = data;
 
 	switch (info) {
 	case SELECT_CR_PLUGIN:
@@ -1215,6 +1216,7 @@ extern int select_p_reconfigure(void)
 {
 	list_itr_t *job_iterator;
 	job_record_t *job_ptr;
+	node_record_t *node_ptr;
 	int rc = SLURM_SUCCESS;
 
 	info("%s: reconfigure", plugin_type);
@@ -1232,6 +1234,9 @@ extern int select_p_reconfigure(void)
 	if (rc != SLURM_SUCCESS)
 		return rc;
 
+	for (int i = 0; (node_ptr = next_node(&i)); i++)
+		node_ptr->node_state &= (~NODE_STATE_BLOCKED);
+
 	/* reload job data */
 	job_iterator = list_iterator_create(job_list);
 	while ((job_ptr = list_next(job_iterator))) {
@@ -1246,6 +1251,11 @@ extern int select_p_reconfigure(void)
 			else	/* Gang schedule suspend */
 				(void) job_res_add_job(job_ptr,
 						       JOB_RES_ACTION_NORMAL);
+		}
+
+		if ((IS_JOB_RUNNING(job_ptr) || IS_JOB_SUSPENDED(job_ptr)) &&
+		    IS_JOB_WHOLE_TOPO(job_ptr)) {
+			node_mgr_make_node_blocked(job_ptr, true);
 		}
 	}
 	list_iterator_destroy(job_iterator);

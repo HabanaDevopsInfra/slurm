@@ -207,7 +207,7 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 
 	if ((ctx == NULL) || (ctx->magic != STEP_CTX_MAGIC)) {
 		error("%s: Not a valid slurm_step_ctx_t", __func__);
-		slurm_seterrno(EINVAL);
+		errno = EINVAL;
 		return SLURM_ERROR;
 	}
 
@@ -226,7 +226,7 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 
 	mpi_plugin_id = mpi_g_client_init((char **)&params->mpi_plugin_name);
 	if (!mpi_plugin_id) {
-		slurm_seterrno(SLURM_MPI_PLUGIN_NAME_INVALID);
+		errno = SLURM_MPI_PLUGIN_NAME_INVALID;
 		return SLURM_ERROR;
 	}
 
@@ -236,7 +236,7 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 	if ((ctx->launch_state->mpi_state =
 	     mpi_g_client_prelaunch(ctx->launch_state->mpi_step, &mpi_env))
 	    == NULL) {
-		slurm_seterrno(SLURM_MPI_PLUGIN_PRELAUNCH_SETUP_FAILED);
+		errno = SLURM_MPI_PLUGIN_PRELAUNCH_SETUP_FAILED;
 		return SLURM_ERROR;
 	}
 
@@ -294,7 +294,7 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 	launch.nnodes		= ctx->step_resp->step_layout->node_cnt;
 	launch.ntasks		= ctx->step_resp->step_layout->task_cnt;
 	launch.slurmd_debug	= params->slurmd_debug;
-	launch.switch_job	= ctx->step_resp->switch_job;
+	launch.switch_step = ctx->step_resp->switch_step;
 	launch.profile		= params->profile;
 	launch.task_prolog	= params->task_prolog;
 	launch.task_epilog	= params->task_epilog;
@@ -316,6 +316,7 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 	launch.cpt_compact_cnt = params->cpt_compact_cnt;
 	launch.cpt_compact_reps = params->cpt_compact_reps;
 	launch.tres_per_task	= ctx->step_req->tres_per_task;
+	launch.stepmgr = xstrdup(ctx->step_resp->stepmgr);
 
 	launch.threads_per_core	= params->threads_per_core;
 	launch.ntasks_per_board = params->ntasks_per_board;
@@ -391,6 +392,7 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 	launch.resp_port = xcalloc(launch.num_resp_port, sizeof(uint16_t));
 	memcpy(launch.resp_port, ctx->launch_state->resp_port,
 	       (sizeof(uint16_t) * launch.num_resp_port));
+
 	rc = _launch_tasks(ctx, &launch, params->msg_timeout,
 			   params->tree_width, launch.complete_nodelist);
 
@@ -401,6 +403,7 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 fail1:
 	xfree(launch.complete_nodelist);
 	xfree(launch.cwd);
+	xfree(launch.stepmgr);
 	env_array_free(env);
 	FREE_NULL_LIST(launch.options);
 	return rc;
@@ -432,13 +435,13 @@ extern int slurm_step_launch_add(slurm_step_ctx_t *ctx,
 
 	if (!ctx || (ctx->magic != STEP_CTX_MAGIC) || !ctx->step_resp) {
 		error("%s: Not a valid slurm_step_ctx_t", __func__);
-		slurm_seterrno(EINVAL);
+		errno = EINVAL;
 		return SLURM_ERROR;
 	}
 
 	mpi_plugin_id = mpi_g_client_init((char **)&params->mpi_plugin_name);
 	if (!mpi_plugin_id) {
-		slurm_seterrno(SLURM_MPI_PLUGIN_NAME_INVALID);
+		errno = SLURM_MPI_PLUGIN_NAME_INVALID;
 		return SLURM_ERROR;
 	}
 
@@ -492,7 +495,7 @@ extern int slurm_step_launch_add(slurm_step_ctx_t *ctx,
 	launch.nnodes		= ctx->step_resp->step_layout->node_cnt;
 	launch.ntasks		= ctx->step_resp->step_layout->task_cnt;
 	launch.slurmd_debug	= params->slurmd_debug;
-	launch.switch_job	= ctx->step_resp->switch_job;
+	launch.switch_step = ctx->step_resp->switch_step;
 	launch.profile		= params->profile;
 	launch.task_prolog	= params->task_prolog;
 	launch.task_epilog	= params->task_epilog;
@@ -801,7 +804,7 @@ extern void slurm_step_launch_fwd_signal(slurm_step_ctx_t *ctx, int signo)
 	signal_tasks_msg_t msg;
 	hostlist_t *hl;
 	char *name = NULL;
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	list_itr_t *itr;
 	ret_data_info_t *ret_data_info = NULL;
 	int rc = SLURM_SUCCESS;
@@ -1640,7 +1643,7 @@ static int _launch_tasks(slurm_step_ctx_t *ctx,
 	slurm_cred_arg_t *cred_args;
 #endif
 	slurm_msg_t msg;
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	list_itr_t *ret_itr;
 	ret_data_info_t *ret_data = NULL;
 	int rc = SLURM_SUCCESS;

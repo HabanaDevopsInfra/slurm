@@ -103,6 +103,7 @@ enum {
 	LONG_OPT_EXACT,
 	LONG_OPT_EXCLUSIVE,
 	LONG_OPT_EXPORT,
+	LONG_OPT_EXPORT_FILE,
 	LONG_OPT_EXTERNAL_LAUNCHER,
 	LONG_OPT_EXTRA,
 	LONG_OPT_GET_USER_ENV,
@@ -165,11 +166,13 @@ enum {
 	LONG_OPT_REQUEUE,
 	LONG_OPT_RESERVATION,
 	LONG_OPT_RESV_PORTS,
+	LONG_OPT_SEGMENT_SIZE,
 	LONG_OPT_SEND_LIBS,
 	LONG_OPT_SIGNAL,
 	LONG_OPT_SLURMD_DEBUG,
 	LONG_OPT_SOCKETSPERNODE,
 	LONG_OPT_SPREAD_JOB,
+	LONG_OPT_STEPMGR,
 	LONG_OPT_SWITCH_REQ,
 	LONG_OPT_SWITCH_WAIT,
 	LONG_OPT_SWITCHES,
@@ -212,6 +215,7 @@ typedef struct {
 typedef struct {
 	char *array_inx;		/* --array			*/
 	char *batch_features;		/* --batch			*/
+	char *export_file;		/* --export-file=file		*/
 	bool ignore_pbs;		/* --ignore-pbs			*/
 	int minsockets;			/* --minsockets=n		*/
 	int mincores;			/* --mincores=n			*/
@@ -273,7 +277,6 @@ typedef struct {
 	char *pty;			/* --pty[=fd]			*/
 	bool quit_on_intr;		/* --quit-on-interrupt		*/
 	int relative;			/* --relative			*/
-	int resv_port_cnt;		/* --resv_ports			*/
 	bool send_libs;			/* --send-libs			*/
 	int slurmd_debug;		/* --slurmd-debug		*/
 	char *task_epilog;		/* --task-epilog		*/
@@ -288,7 +291,6 @@ typedef struct {
 typedef struct {
 	bool set;			/* Has the option been set */
 	bool set_by_env;		/* Has the option been set by env var */
-	bool set_by_data;		/* Has the option been set by data_t */
 } slurm_opt_state_t;
 
 typedef struct {
@@ -312,7 +314,8 @@ typedef struct {
 	gid_t gid;			/* local gid			*/
 	char *chdir;			/* --chdir			*/
 	int ntasks;			/* --ntasks			*/
-	bool ntasks_set;		/* ntasks explicitly set	*/
+	bool ntasks_set;		/* ntasks explicit or implicitly set */
+	bool ntasks_opt_set;		/* ntasks explicitly set by user opt */
 	int cpus_per_task;		/* --cpus-per-task=n		*/
 	bool cpus_set;			/* cpus_per_task explicitly set	*/
 	int min_nodes;			/* --nodes=n			*/
@@ -400,6 +403,7 @@ typedef struct {
 	int get_user_env_mode;		/* --get-user-env=[S|L]		*/
 	char *wckey;			/* workload characterization key */
 	char *reservation;		/* --reservation		*/
+	int resv_port_cnt;		/* --resv_ports			*/
 	int req_switch;			/* min number of switches	*/
 	int wait4switch;		/* max time to wait for min switches */
 	char **spank_job_env;		/* SPANK controlled environment for job
@@ -409,10 +413,10 @@ typedef struct {
 	uint32_t cpu_freq_min;		/* Minimum cpu frequency	*/
 	uint32_t cpu_freq_max;		/* Maximum cpu frequency	*/
 	uint32_t cpu_freq_gov;		/* cpu frequency governor	*/
-	uint8_t power;			/* power management flags	*/
 	char *mcs_label;		/* mcs label			*/
 	time_t deadline;		/* ---deadline			*/
 	uint32_t delay_boot;		/* --delay-boot			*/
+	uint16_t segment_size;		/* --segment			*/
 	uint32_t step_het_comp_cnt;     /* How many components are in this het
 					 * step that is part of a non-hetjob. */
 	char *step_het_grps;		/* what het groups are used by step */
@@ -456,8 +460,8 @@ extern bool slurm_option_get_tres_per_tres(
 extern struct option *slurm_option_table_create(slurm_opt_t *opt,
 						char **opt_string);
 extern void slurm_option_table_destroy(struct option *optz);
-extern void slurm_option_update_tres_per_task_cpu(int cpus_per_task,
-						  char **tres_per_task_p);
+extern void slurm_option_update_tres_per_task(int cnt, char *tres_str,
+					      char **tres_per_task_p);
 
 /*
  * Process individual argument for the current job component
@@ -477,16 +481,6 @@ extern int slurm_process_option(slurm_opt_t *opt, int optval, const char *arg,
 extern void slurm_process_option_or_exit(slurm_opt_t *opt, int optval,
 					 const char *arg, bool set_by_env,
 					 bool early_pass);
-
-/*
- * Process incoming single component of Job data entry
- * IN opt - options to populate from job chunk
- * IN job - data containing job request
- * IN/OUT errors - data dictionary to populate with detailed errors
- * RET SLURM_SUCCESS or error
- */
-extern int slurm_process_option_data(slurm_opt_t *opt, int optval,
-				     const data_t *arg, data_t *errors);
 
 /*
  * Print all options that have been set through slurm_process_option()
@@ -515,11 +509,6 @@ extern bool slurm_option_set_by_cli(slurm_opt_t *opt, int optval);
  * Was the option set by an env var?
  */
 extern bool slurm_option_set_by_env(slurm_opt_t *opt, int optval);
-
-/*
- * Was the option set by an data_t value?
- */
-extern bool slurm_option_set_by_data(slurm_opt_t *opt, int optval);
 
 /*
  * Get option value by common option name.

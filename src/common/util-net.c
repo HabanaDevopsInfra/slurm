@@ -265,8 +265,8 @@ extern struct addrinfo *xgetaddrinfo(const char *hostname, const char *serv)
 	struct addrinfo *result = NULL;
 	struct addrinfo hints;
 	int err;
-	bool v4_enabled = slurm_conf.conf_flags & CTL_CONF_IPV4_ENABLED;
-	bool v6_enabled = slurm_conf.conf_flags & CTL_CONF_IPV6_ENABLED;
+	bool v4_enabled = slurm_conf.conf_flags & CONF_FLAG_IPV4_ENABLED;
+	bool v6_enabled = slurm_conf.conf_flags & CONF_FLAG_IPV6_ENABLED;
 
 	memset(&hints, 0, sizeof(hints));
 
@@ -366,12 +366,12 @@ static char *_getnameinfo(struct sockaddr *addr, socklen_t addrlen)
 	err = getnameinfo(addr, addrlen, hbuf, sizeof(hbuf), NULL, 0,
 			  NI_NAMEREQD);
 	if (err == EAI_SYSTEM) {
-		error("%s: getnameinfo() failed: %s: %m",
-		      __func__, gai_strerror(err));
+		log_flag(NET, "%s: getnameinfo(%pA) failed: %s: %m",
+			 __func__, addr, gai_strerror(err));
 		return NULL;
 	} else if (err) {
-		error("%s: getnameinfo() failed: %s",
-		      __func__, gai_strerror(err));
+		log_flag(NET, "%s: getnameinfo(%pA) failed: %s",
+			 __func__, addr, gai_strerror(err));
 		return NULL;
 	}
 

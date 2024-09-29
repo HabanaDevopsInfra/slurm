@@ -312,6 +312,12 @@ int env_array_overwrite_het_fmt(char ***array_ptr, const char *name,
 void env_array_set_environment(char **env_array);
 
 /*
+ * load environment from specified file name.
+ */
+char **env_array_from_file(const char *filename);
+
+
+/*
  * Write environment to specified file name.
  * IN newline - if true, write 1 env variable terminated with \n
  * 	if false, write 1 env variable terminated with \0
@@ -396,5 +402,12 @@ extern char *find_quote_token(char *tmp, char *sep, char **last);
  * environment as well.
  */
 extern void env_merge_filter(slurm_opt_t *opt, job_desc_msg_t *desc);
+
+/*
+ * Set the internal SLURM_PRIO_PROCESS environment variable to support
+ * the propagation of the users nice value and the "PropagatePrioProcess"
+ * config keyword.
+ */
+extern void set_prio_process_env(void);
 
 #endif

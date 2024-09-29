@@ -74,7 +74,7 @@
 #define	MAX_INPUT_FIELDS 128
 
 extern char *command_name;
-extern List clusters;
+extern list_t *clusters;
 extern char *cluster_names;
 extern int all_flag;	/* display even hidden partitions */
 extern int detail_flag;	/* display additional details */
@@ -157,6 +157,10 @@ extern int	scontrol_update_node (int argc, char **argv);
 extern int	scontrol_update_part (int argc, char **argv);
 extern int	scontrol_update_res (int argc, char **argv);
 extern int	scontrol_update_step (int argc, char **argv);
+
+/* power_node.c */
+extern int scontrol_power_nodes(char *node_list, bool power_up, bool asap,
+				bool force);
 
 /* reboot_node.c */
 extern int      scontrol_cancel_reboot(char *nodes);

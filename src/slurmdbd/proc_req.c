@@ -63,6 +63,8 @@
 #include "src/slurmdbd/slurmdbd.h"
 #include "src/slurmctld/slurmctld.h"
 
+#include "src/conmgr/conmgr.h"
+
 /* Local functions */
 static bool _validate_slurm_user(slurmdbd_conn_t *dbd_conn);
 static bool _validate_super_user(slurmdbd_conn_t *dbd_conn);
@@ -71,19 +73,6 @@ static int   _find_rpc_obj_in_list(void *x, void *key);
 static void _process_job_start(slurmdbd_conn_t *slurmdbd_conn,
 			       dbd_job_start_msg_t *job_start_msg,
 			       dbd_id_rc_msg_t *id_rc_msg);
-
-#ifndef NDEBUG
-/*
- * Used alongside the testsuite to signal that the RPC should be processed
- * as an untrusted user, rather than the "real" account. (Which in a lot of
- * testing is likely SlurmUser, and thus allowed to bypass many security
- * checks.
- *
- * Implemented with a thread-local variable to apply only to the current
- * RPC handling thread. Set by SLURM_DROP_PRIV bit in the slurm_msg_t flags.
- */
-__thread bool drop_priv = false;
-#endif
 
 /*
  * _validate_slurm_user - validate that the uid is authorized to see
@@ -167,7 +156,9 @@ static void _add_registered_cluster(slurmdbd_conn_t *db_conn)
 	}
 	list_iterator_destroy(itr);
 	if (!slurmdbd_conn) {
-		db_conn->conn_send = xmalloc(sizeof(slurm_persist_conn_t));
+		slurm_mutex_init(&db_conn->conn_send_lock);
+		slurm_mutex_lock(&db_conn->conn_send_lock);
+		db_conn->conn_send = xmalloc(sizeof(persist_conn_t));
 		db_conn->conn_send->cluster_name =
 			xstrdup(db_conn->conn->cluster_name);
 		db_conn->conn_send->fd = PERSIST_CONN_NOT_INITED;
@@ -181,6 +172,7 @@ static void _add_registered_cluster(slurmdbd_conn_t *db_conn)
 		db_conn->conn_send->timeout = 0;
 		db_conn->conn_send->r_uid = SLURM_AUTH_UID_ANY;
 		db_conn->conn_send->flags |= PERSIST_FLAG_RECONNECT;
+		slurm_mutex_unlock(&db_conn->conn_send_lock);
 		/*
 		 * We can't open a pipe back to the slurmctld right
 		 * now, the slurmctld might just be starting up and the
@@ -1324,6 +1316,9 @@ static int _get_usage(slurmdbd_conn_t *slurmdbd_conn, persist_msg_t *msg,
 	case DBD_GET_ASSOC_USAGE:
 		ret_type = DBD_GOT_ASSOC_USAGE;
 		break;
+	case DBD_GET_QOS_USAGE:
+		ret_type = DBD_GOT_QOS_USAGE;
+		break;
 	case DBD_GET_WCKEY_USAGE:
 		ret_type = DBD_GOT_WCKEY_USAGE;
 		break;
@@ -1376,9 +1371,10 @@ static int _get_users(slurmdbd_conn_t *slurmdbd_conn, persist_msg_t *msg,
 
 	user_cond = get_msg->cond;
 	if ((!user_cond->with_assocs && !user_cond->with_wckeys)
-	    && ((slurmdbd_conn->conn->version < 8)
-		|| (user_cond->assoc_cond->only_defs))) {
-		List cluster_list = user_cond->assoc_cond->cluster_list;
+	    && ((slurmdbd_conn->conn->version < 8) ||
+		(user_cond->assoc_cond->flags &
+		 ASSOC_COND_FLAG_ONLY_DEFS))) {
+		list_t *cluster_list = user_cond->assoc_cond->cluster_list;
 		/* load up with just this cluster to query against
 		 * since befor 2.2 we had only 1 default account so
 		 * send the default for this cluster. */
@@ -2419,6 +2415,9 @@ static void _process_job_start(slurmdbd_conn_t *slurmdbd_conn,
 	details.script_hash = job_start_msg->script_hash;
 	job.start_protocol_ver = slurmdbd_conn->conn->version;
 	job.start_time = job_start_msg->start_time;
+	details.std_err = job_start_msg->std_err;
+	details.std_in = job_start_msg->std_in;
+	details.std_out = job_start_msg->std_out;
 	details.submit_line = job_start_msg->submit_line;
 	job.time_limit = job_start_msg->timelimit;
 	job.tres_alloc_str = job_start_msg->tres_alloc_str;
@@ -2506,7 +2505,7 @@ static int _register_ctld(slurmdbd_conn_t *slurmdbd_conn, persist_msg_t *msg,
 	slurmdb_cluster_cond_t cluster_q;
 	slurmdb_cluster_rec_t cluster;
 	dbd_list_msg_t list_msg = { NULL };
-	List cluster_list;
+	list_t *cluster_list;
 
 	if (!_validate_slurm_user(slurmdbd_conn)) {
 		comment = "DBD_REGISTER_CTLD message from invalid uid";
@@ -2557,7 +2556,7 @@ static int _register_ctld(slurmdbd_conn_t *slurmdbd_conn, persist_msg_t *msg,
 		comment = slurm_strerror(errno);
 		rc = errno;
 	} else if (!list_count(cluster_list)) {
-		List add_list = list_create(NULL);
+		list_t *add_list = list_create(NULL);
 		list_append(add_list, &cluster);
 
 		cluster.name = slurmdbd_conn->conn->cluster_name;
@@ -3078,7 +3077,7 @@ static int _roll_usage(slurmdbd_conn_t *slurmdbd_conn, persist_msg_t *msg,
 	dbd_roll_usage_msg_t *get_msg = msg->data;
 	int rc = SLURM_SUCCESS;
 	char *comment = NULL;
-	List rollup_stats_list = NULL;
+	list_t *rollup_stats_list = NULL;
 	DEF_TIMERS;
 
 	info("DBD_ROLL_USAGE: called in CONN %d", slurmdbd_conn->conn->fd);
@@ -3434,7 +3433,7 @@ static int _shutdown(slurmdbd_conn_t *slurmdbd_conn, persist_msg_t *msg,
 
 	info("Shutdown request received from UID %u",
 	     slurmdbd_conn->conn->auth_uid);
-	pthread_kill(signal_handler_thread, SIGTERM);
+	shutdown_threads();
 
 	*out_buffer = slurm_persist_make_rc_msg(slurmdbd_conn->conn,
 						rc, comment, DBD_SHUTDOWN);
@@ -3478,8 +3477,18 @@ extern int proc_req(void *conn, persist_msg_t *msg, buf_t **out_buffer)
 		}
 	}
 
+	if (slurm_conf.debug_flags & DEBUG_FLAG_AUDIT_RPCS) {
+		slurm_addr_t cli_addr;
+		(void) slurm_get_peer_addr(slurmdbd_conn->conn->fd, &cli_addr);
+		log_flag(AUDIT_RPCS, "msg_type=%s uid=%u client=[%pA] protocol=%u",
+			 slurmdbd_msg_type_2_str(msg->msg_type, 1),
+			 slurmdbd_conn->conn->auth_uid,
+			 &cli_addr, slurmdbd_conn->conn->version);
+	}
+
 	switch (msg->msg_type) {
 	case REQUEST_PERSIST_INIT:
+	case REQUEST_PERSIST_INIT_TLS:
 		rc = _unpack_persist_init(slurmdbd_conn, msg, out_buffer);
 		break;
 	case DBD_ADD_ACCOUNTS:

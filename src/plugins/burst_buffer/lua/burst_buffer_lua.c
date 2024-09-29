@@ -249,43 +249,14 @@ static void _decr_lua_thread_cnt(void)
 	slurm_mutex_unlock(&lua_thread_mutex);
 }
 
-static int _job_info_to_string(lua_State *L)
-{
-	job_info_t *job_info;
-	char *msg;
-
-	/* Pushes the metatable of the table onto the stack */
-	if (!lua_getmetatable(L, -1)) {
-		error("job_info_to_string requires one argument - job_info table");
-		lua_pushinteger(L, SLURM_ERROR);
-		lua_pushstring(L, "job_info_to_string requires one argument - job_info table");
-		return 2;
-	}
-
-	/*
-	 * Pushes metatable["_job_info_ptr"] onto the stack, which is just a
-	 * pointer to job_info.
-	 */
-	lua_getfield(L, -1, "_job_info_ptr");
-	/* Now we can get the pointer to job_info from the top of the stack */
-	job_info = lua_touserdata(L, -1);
-
-	msg = slurm_sprint_job_info(job_info, 0);
-	lua_pushinteger(L, SLURM_SUCCESS);
-	lua_pushstring(L, msg);
-
-	return 2;
-}
-
-static const struct luaL_Reg slurm_functions [] = {
-	{ "job_info_to_string", _job_info_to_string },
-	{ NULL, NULL }
-};
-
 static void _loadscript_extra(lua_State *st)
 {
-	/* local setup */
-	slurm_lua_table_register(st, NULL, slurm_functions);
+        /* local setup */
+	/*
+	 * We may add functions later (like job_submit/lua and cli_filter/lua),
+	 * but for now we don't have any.
+	 */
+	//slurm_lua_table_register(st, NULL, slurm_functions);
 
 	/* Push this string to the top of the stack" */
 	lua_pushstring(st, SLURM_BB_BUSY);
@@ -511,8 +482,6 @@ static int _lua_job_info_field(lua_State *L, const job_info_t *job_info,
 		lua_pushinteger(L, job_info->pn_min_cpus);
 	} else if (!xstrcmp(name, "pn_min_tmp_disk")) {
 		lua_pushinteger(L, job_info->pn_min_tmp_disk);
-	} else if (!xstrcmp(name, "power_flags")) {
-		lua_pushinteger(L, job_info->power_flags);
 	} else if (!xstrcmp(name, "preempt_time")) {
 		lua_pushinteger(L, job_info->preempt_time);
 	} else if (!xstrcmp(name, "preemptable_time")) {
@@ -547,8 +516,6 @@ static int _lua_job_info_field(lua_State *L, const job_info_t *job_info,
 		lua_pushstring(L, job_info->selinux_context);
 	} else if (!xstrcmp(name, "shared")) {
 		lua_pushinteger(L, job_info->shared);
-	} else if (!xstrcmp(name, "show_flags")) {
-		lua_pushinteger(L, job_info->show_flags);
 	} else if (!xstrcmp(name, "site_factor")) {
 		lua_pushinteger(L, job_info->site_factor);
 	} else if (!xstrcmp(name, "sockets_per_board")) {
@@ -892,7 +859,7 @@ static int _run_lua_script(run_lua_args_t *args)
 {
 	int rc;
 	buf_t *info_buf = NULL;
-	List job_ids = NULL;
+	list_t *job_ids = NULL;
 	job_record_t *job_ptr;
 	slurmctld_lock_t job_read_lock = {
 		.conf = READ_LOCK, .job = READ_LOCK,
@@ -1051,7 +1018,7 @@ static void _recover_bb_state(void)
 	char *state_file = NULL, *data = NULL;
 	int data_allocated, data_read = 0;
 	uint16_t protocol_version = NO_VAL16;
-	uint32_t data_size = 0, rec_count = 0, name_len = 0;
+	uint32_t data_size = 0, rec_count = 0;
 	uint32_t id = 0, user_id = 0, group_id = 0;
 	uint64_t size = 0;
 	int i, state_fd;
@@ -1103,13 +1070,13 @@ static void _recover_bb_state(void)
 	safe_unpack32(&rec_count, buffer);
 	for (i = 0; i < rec_count; i++) {
 		if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
-			safe_unpackstr_xmalloc(&account,   &name_len, buffer);
+			safe_unpackstr(&account, buffer);
 			safe_unpack_time(&create_time, buffer);
 			safe_unpack32(&id, buffer);
-			safe_unpackstr_xmalloc(&name,      &name_len, buffer);
-			safe_unpackstr_xmalloc(&partition, &name_len, buffer);
-			safe_unpackstr_xmalloc(&pool,      &name_len, buffer);
-			safe_unpackstr_xmalloc(&qos,       &name_len, buffer);
+			safe_unpackstr(&name, buffer);
+			safe_unpackstr(&partition, buffer);
+			safe_unpackstr(&pool, buffer);
+			safe_unpackstr(&qos, buffer);
 			safe_unpack32(&user_id, buffer);
 			safe_unpack32(&group_id, buffer);
 			safe_unpack64(&size, buffer);
@@ -2342,7 +2309,7 @@ static void _free_orphan_alloc_rec(void *x)
  * that the burst buffer is in.
  */
 static void _recover_job_bb(job_record_t *job_ptr, bb_alloc_t *bb_alloc,
-			    time_t defer_time, List orphan_rec_list)
+			    time_t defer_time, list_t *orphan_rec_list)
 {
 	bb_job_t *bb_job;
 	uint16_t job_bb_state = bb_state_num(job_ptr->burst_buffer_state);
@@ -2450,7 +2417,7 @@ static void _recover_job_bb(job_record_t *job_ptr, bb_alloc_t *bb_alloc,
  */
 static void _purge_vestigial_bufs(void)
 {
-	List orphan_rec_list = list_create(_free_orphan_alloc_rec);
+	list_t *orphan_rec_list = list_create(_free_orphan_alloc_rec);
 	bb_alloc_t *bb_alloc = NULL;
 	time_t defer_time = time(NULL) + 60;
 	int i;
@@ -2971,7 +2938,7 @@ extern time_t bb_p_job_get_est_start(job_record_t *job_ptr)
 static int _identify_bb_candidate(void *x, void *arg)
 {
 	job_record_t *job_ptr = (job_record_t *) x;
-	List job_candidates = (List) arg;
+	list_t *job_candidates = arg;
 	bb_job_t *bb_job;
 	bb_job_queue_rec_t *job_rec;
 
@@ -3488,9 +3455,9 @@ static int _try_alloc_job_bb(void *x, void *arg)
 /*
  * Attempt to allocate resources and begin file staging for pending jobs.
  */
-extern int bb_p_job_try_stage_in(List job_queue)
+extern int bb_p_job_try_stage_in(list_t *job_queue)
 {
-	List job_candidates;
+	list_t *job_candidates;
 
 	slurm_mutex_lock(&bb_state.bb_mutex);
 	log_flag(BURST_BUF, "Mutex locked");

@@ -1,7 +1,6 @@
 # Makefile.am for slurmd/common
 
 AUTOMAKE_OPTIONS = foreign
-CLEANFILES = core.*
 
 AM_CPPFLAGS = -I$(top_srcdir) $(HWLOC_CPPFLAGS)
 
@@ -12,6 +11,7 @@ noinst_PROGRAMS = libslurmd_common.o
 
 libslurmd_common_la_SOURCES =    \
 	fname.c fname.h \
+	slurmd_common.c slurmd_common.h \
 	privileges.c privileges.h \
 	slurmd_cgroup.c slurmd_cgroup.h \
 	slurmstepd_init.c slurmstepd_init.h \

@@ -94,6 +94,7 @@ ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/auxdir/ax_check_compile_flag.m4 \
 	$(top_srcdir)/auxdir/ax_compare_version.m4 \
 	$(top_srcdir)/auxdir/ax_gcc_builtin.m4 \
+	$(top_srcdir)/auxdir/ax_have_epoll.m4 \
 	$(top_srcdir)/auxdir/ax_lib_hdf5.m4 \
 	$(top_srcdir)/auxdir/ax_pthread.m4 \
 	$(top_srcdir)/auxdir/gtk-2.0.m4 \
@@ -132,8 +133,8 @@ am__aclocal_m4_deps = $(top_srcdir)/auxdir/ax_check_compile_flag.m4 \
 	$(top_srcdir)/auxdir/x_ac_ptrace.m4 \
 	$(top_srcdir)/auxdir/x_ac_rdkafka.m4 \
 	$(top_srcdir)/auxdir/x_ac_readline.m4 \
-	$(top_srcdir)/auxdir/x_ac_rrdtool.m4 \
 	$(top_srcdir)/auxdir/x_ac_rsmi.m4 \
+	$(top_srcdir)/auxdir/x_ac_s2n.m4 \
 	$(top_srcdir)/auxdir/x_ac_selinux.m4 \
 	$(top_srcdir)/auxdir/x_ac_setproctitle.m4 \
 	$(top_srcdir)/auxdir/x_ac_sview.m4 \
@@ -234,6 +235,7 @@ EGREP = @EGREP@
 ETAGS = @ETAGS@
 EXEEXT = @EXEEXT@
 FGREP = @FGREP@
+FILECMD = @FILECMD@
 FREEIPMI_CPPFLAGS = @FREEIPMI_CPPFLAGS@
 FREEIPMI_LDFLAGS = @FREEIPMI_LDFLAGS@
 FREEIPMI_LIBS = @FREEIPMI_LIBS@
@@ -346,10 +348,11 @@ RDKAFKA_LDFLAGS = @RDKAFKA_LDFLAGS@
 RDKAFKA_LIBS = @RDKAFKA_LIBS@
 READLINE_LIBS = @READLINE_LIBS@
 RELEASE = @RELEASE@
-RRDTOOL_CPPFLAGS = @RRDTOOL_CPPFLAGS@
-RRDTOOL_LDFLAGS = @RRDTOOL_LDFLAGS@
-RRDTOOL_LIBS = @RRDTOOL_LIBS@
 RSMI_CPPFLAGS = @RSMI_CPPFLAGS@
+S2N_CPPFLAGS = @S2N_CPPFLAGS@
+S2N_DIR = @S2N_DIR@
+S2N_LDFLAGS = @S2N_LDFLAGS@
+S2N_LIBS = @S2N_LIBS@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
@@ -469,7 +472,6 @@ generated_html = \
 	contributor.html \
 	core_spec.html \
 	cpu_management.html \
-	cray.html \
 	dist_plane.html \
 	documentation.html \
 	dynamic_nodes.html \
@@ -489,6 +491,8 @@ generated_html = \
 	job_container_tmpfs.html \
 	job_exit_code.html \
 	job_launch.html \
+	job_reason_codes.html \
+	job_state_codes.html \
 	job_submit_plugins.html \
 	jwt.html \
 	kubernetes.html \
@@ -501,14 +505,12 @@ generated_html = \
 	mpi_guide.html \
 	multi_cluster.html \
 	network.html \
-	news.html \
 	nss_slurm.html \
 	openapi_release_notes.html \
 	overview.html \
 	pam_slurm_adopt.html \
 	platforms.html \
 	plugins.html \
-	power_mgmt.html \
 	power_save.html \
 	preempt.html \
 	prep_plugins.html \
@@ -521,11 +523,13 @@ generated_html = \
 	quickstart_admin.html \
 	quickstart.html \
 	related_software.html \
+	release_notes.html \
 	reservations.html \
 	resource_binding.html \
 	resource_limits.html \
 	rest.html \
 	rest_api.html \
+	rest_clients.html \
 	rest_quickstart.html \
 	rosetta.html \
 	sched_config.html \
@@ -537,6 +541,7 @@ generated_html = \
 	topology.html \
 	tres.html \
 	troubleshoot.html \
+	upgrades.html \
 	user_permissions.html \
 	wckey.html
 

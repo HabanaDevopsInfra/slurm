@@ -156,10 +156,18 @@ X_AC_HTTP_PARSER
 dnl Check for yaml parser
 X_AC_YAML
 
+dnl Check for epoll support
+AX_HAVE_EPOLL()
+if test "x$ax_cv_have_epoll" = "xyes"; then
+	AC_DEFINE(HAVE_EPOLL, 1, [Define to 1 if we have epoll(7) support])
+fi
+AM_CONDITIONAL(HAVE_EPOLL, [test "x$ax_cv_have_epoll" = "xyes" ])
+
 dnl Checks for compiler characteristics.
 dnl
 AC_PROG_GCC_TRADITIONAL([])
 
+AX_GCC_BUILTIN(__builtin_bswap64)
 AX_GCC_BUILTIN(__builtin_clzll)
 AX_GCC_BUILTIN(__builtin_ctzll)
 AX_GCC_BUILTIN(__builtin_popcountll)
@@ -230,11 +238,11 @@ X_AC_ONEAPI
 X_AC_HLML
 X_AC_PMIX
 X_AC_FREEIPMI
-X_AC_RRDTOOL
 X_AC_UCX
 X_AC_X11
 X_AC_SELINUX
 X_AC_RDKAFKA
+X_AC_S2N
 
 X_AC_CGROUP
 X_AC_BPF
@@ -368,6 +376,7 @@ AC_CONFIG_FILES([Makefile
 		 contribs/seff/Makefile
 		 contribs/sgather/Makefile
 		 contribs/sjobexit/Makefile
+		 contribs/slurm_completion_help/Makefile
 		 contribs/torque/Makefile
 		 doc/Makefile
 		 doc/html/Makefile
@@ -382,12 +391,14 @@ AC_CONFIG_FILES([Makefile
 		 src/api/Makefile
 		 src/bcast/Makefile
 		 src/common/Makefile
+		 src/conmgr/Makefile
 		 src/database/Makefile
 		 src/interfaces/Makefile
 		 src/lua/Makefile
 		 src/plugins/Makefile
 		 src/plugins/accounting_storage/Makefile
 		 src/plugins/accounting_storage/common/Makefile
+		 src/plugins/accounting_storage/ctld_relay/Makefile
 		 src/plugins/accounting_storage/mysql/Makefile
 		 src/plugins/accounting_storage/slurmdbd/Makefile
 		 src/plugins/acct_gather_energy/Makefile
@@ -429,16 +440,15 @@ AC_CONFIG_FILES([Makefile
 		 src/plugins/cred/munge/Makefile
 		 src/plugins/cred/none/Makefile
 		 src/plugins/data_parser/Makefile
-		 src/plugins/data_parser/v0.0.39/Makefile
 		 src/plugins/data_parser/v0.0.40/Makefile
 		 src/plugins/data_parser/v0.0.41/Makefile
-		 src/plugins/ext_sensors/Makefile
-		 src/plugins/ext_sensors/rrd/Makefile
+		 src/plugins/data_parser/v0.0.42/Makefile
 		 src/plugins/gpu/Makefile
 		 src/plugins/gpu/common/Makefile
 		 src/plugins/gpu/generic/Makefile
 		 src/plugins/gpu/hlml/Makefile
 		 src/plugins/gpu/nrt/Makefile
+		 src/plugins/gpu/nvidia/Makefile
 		 src/plugins/gpu/nvml/Makefile
 		 src/plugins/gpu/oneapi/Makefile
 		 src/plugins/gpu/rsmi/Makefile
@@ -449,7 +459,9 @@ AC_CONFIG_FILES([Makefile
 		 src/plugins/gres/nic/Makefile
 		 src/plugins/gres/shard/Makefile
 		 src/plugins/hash/Makefile
+		 src/plugins/hash/common_xkcp/Makefile
 		 src/plugins/hash/k12/Makefile
+		 src/plugins/hash/sha3/Makefile
 		 src/plugins/job_container/Makefile
 		 src/plugins/job_container/tmpfs/Makefile
 		 src/plugins/job_submit/Makefile
@@ -510,9 +522,13 @@ AC_CONFIG_FILES([Makefile
 		 src/plugins/site_factor/example/Makefile
 		 src/plugins/switch/Makefile
 		 src/plugins/switch/hpe_slingshot/Makefile
+		 src/plugins/switch/nvidia_imex/Makefile
 		 src/plugins/task/Makefile
 		 src/plugins/task/affinity/Makefile
 		 src/plugins/task/cgroup/Makefile
+		 src/plugins/tls/Makefile
+		 src/plugins/tls/none/Makefile
+		 src/plugins/tls/s2n/Makefile
 		 src/plugins/topology/Makefile
 		 src/plugins/topology/3d_torus/Makefile
 		 src/plugins/topology/block/Makefile
@@ -544,16 +560,15 @@ AC_CONFIG_FILES([Makefile
 		 src/slurmrestd/plugins/auth/jwt/Makefile
 		 src/slurmrestd/plugins/auth/local/Makefile
 		 src/slurmrestd/plugins/openapi/Makefile
-		 src/slurmrestd/plugins/openapi/dbv0.0.39/Makefile
 		 src/slurmrestd/plugins/openapi/slurmctld/Makefile
 		 src/slurmrestd/plugins/openapi/slurmdbd/Makefile
-		 src/slurmrestd/plugins/openapi/v0.0.39/Makefile
 		 src/sprio/Makefile
 		 src/squeue/Makefile
 		 src/sreport/Makefile
 		 src/srun/Makefile
 		 src/sshare/Makefile
 		 src/sstat/Makefile
+		 src/stepmgr/Makefile
 		 src/strigger/Makefile
 		 src/sview/Makefile
 		 testsuite/Makefile

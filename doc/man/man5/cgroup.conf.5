@@ -1,4 +1,4 @@
-.TH "cgroup.conf" "5" "Slurm Configuration File" "January 2023" "Slurm Configuration File"
+.TH "cgroup.conf" "5" "Slurm Configuration File" "July 2024" "Slurm Configuration File"
 
 .SH "NAME"
 cgroup.conf \- Slurm configuration file for the cgroup support
@@ -31,13 +31,23 @@ cgroup controllers should be mounted. The default \fIPATH\fR is /sys/fs/cgroup.
 .IP
 
 .TP
-\fBCgroupPlugin\fR=\fI<cgroup/v1|cgroup/v2|autodetect>\fR
+\fBCgroupPlugin\fR=\fI<cgroup/v1|cgroup/v2|autodetect|disabled>\fR
 Specify the plugin to be used when interacting with the cgroup subsystem.
-Supported values at the moment are "cgroup/v1" which supports the legacy
-interface of cgroup v1, "cgroup/v2" for unified architecture, or "autodetect"
-which tries to determine which cgroup version does your system provide.
-This is useful if nodes have support for different cgroup versions.
-The default value is "autodetect".
+Supported values are "disabled", to completely disable any interaction with
+the cgroups, "cgroup/v1" which supports the legacy interface of cgroup v1,
+"cgroup/v2" for the unified cgroup2 architecture, and "autodetect" which tries
+to determine which cgroup version does your system provide. "autodetect" is
+useful to have a single configuration in clusters where nodes can have different
+cgroup versions. The default value is "autodetect".
+.IP
+
+.TP
+\fBSystemdTimeout\fR=\fI<number>\fR
+On slow systems like virtual machines or when systemd is busy, it can take
+a lot of time to initialize and prepare the scope for slurmd during startup.
+Slurm will wait a maximum of this amount of time (in miliseconds) for the
+scope to be ready before failing. Only applies to cgroup/v2.
+The default is 1000 ms.
 .IP
 
 .TP
@@ -56,10 +66,13 @@ to \fBIgnoreSystemd\fR but only in the case that a dbus call does not succeed.
 
 .TP
 \fBEnableControllers\fR=\fI<yes|no>\fR
-Only for cgroup/v2 and generally for development and testing. It gets the
-available controllers from the root (\fBCgroupMountPoint\fR, by default
-/sys/fs/cgroup/) and makes them available in all levels of the cgroup tree until
-it reaches Slurm's cgroup leaf.
+Only for cgroup/v2 and generally for development, testing, when running on old
+kernels and/or old systemd versions (e.g. RHEL8, systemd < 244) where not all
+the controllers are enabled in the cgroup tree. With this parameter, slurmd gets
+the available controllers from root's cgroup.controllers file
+(\fBCgroupMountPoint\fR, by default /sys/fs/cgroup/cgroup.controllers) and makes
+them available in all levels of the cgroup tree until it reaches Slurm's cgroup
+leaf.
 .IP
 
 .SH "TASK/CGROUP PLUGIN"
@@ -78,8 +91,8 @@ the job/step exceeds the hard limit, then it might trigger Out Of Memory (OOM)
 events (including oom\-kill) which will be logged to kernel log ring buffer
 (dmesg in Linux). Setting AllowedRAMSpace above 100 may cause system Out of
 Memory (OOM) events as it allows job/step to allocate more memory than
-configured to the nodes.  Reducing configured node available memory to avoid
-system OOM events is suggested.  Setting AllowedRAMSpace below 100 will result
+configured to the nodes. Reducing configured node available memory to avoid
+system OOM events is suggested. Setting AllowedRAMSpace below 100 will result
 in jobs receiving less memory than allocated and soft memory limit will set to
 the same value as the hard limit.
 Also see \fBConstrainRAMSpace\fR.
@@ -89,9 +102,9 @@ The default value is 100.
 .TP
 \fBAllowedSwapSpace\fR=<number>
 Constrain the job cgroup swap space to this percentage of the allocated
-memory.  The default value is 0, which means that RAM+Swap will be limited
+memory. The default value is 0, which means that RAM+Swap will be limited
 to \fBAllowedRAMSpace\fR. The supplied percentage may be expressed as a
-floating point number, e.g. 50.5.  If the limit is exceeded, the job steps
+floating point number, e.g. 50.5. If the limit is exceeded, the job steps
 will be killed and a warning message will be written to standard error.
 Also see \fBConstrainSwapSpace\fR.
 \fBNOTE\fR: Setting AllowedSwapSpace to 0 does not restrict the Linux kernel
@@ -119,7 +132,7 @@ The default value is "no".
 \fBConstrainRAMSpace\fR=<yes|no>
 If configured to "yes" then constrain the job's RAM usage by setting
 the memory soft limit to the allocated memory and the hard limit to
-the allocated memory * \fBAllowedRAMSpace\fR.  The default value is "no", in
+the allocated memory * \fBAllowedRAMSpace\fR. The default value is "no", in
 which case the job's RAM limit will be set to its swap space limit if
 \fBConstrainSwapSpace\fR is set to "yes". CR_*_Memory must be set in slurm.conf
 for this parameter to take any effect.
@@ -270,7 +283,7 @@ any later version.
 .LP
 Slurm is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
 details.
 
 .SH "SEE ALSO"

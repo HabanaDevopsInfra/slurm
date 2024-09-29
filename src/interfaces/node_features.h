@@ -81,8 +81,9 @@ extern bool node_features_g_node_power(void);
 /* Set's the node's active features based upon job constraints.
  * NOTE: Executed by the slurmd daemon.
  * IN active_features - New active features
+ * OUT need_reboot - indicate if feature update requires subsequent reboot
  * RET error code */
-extern int node_features_g_node_set(char *active_features);
+extern int node_features_g_node_set(char *active_features, bool *need_reboot);
 
 /* Get this node's current and available MCDRAM and NUMA settings from BIOS.
  * avail_modes IN/OUT - available modes, must be xfreed
@@ -137,6 +138,6 @@ extern bool node_features_g_user_update(uid_t uid);
 extern uint32_t node_features_g_boot_time(void);
 
 /* Get node features plugin configuration */
-extern List node_features_g_get_config(void);
+extern list_t *node_features_g_get_config(void);
 
 #endif

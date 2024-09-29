@@ -68,7 +68,7 @@ typedef struct slurm_preempt_ops {
 
 typedef struct {
 	job_record_t *preemptor;
-	List preemptee_job_list;
+	list_t *preemptee_job_list;
 } preempt_candidates_t;
 
 /*
@@ -277,13 +277,13 @@ extern int preempt_g_fini(void)
 	return rc;
 }
 
-extern List slurm_find_preemptable_jobs(job_record_t *job_ptr)
+extern list_t *slurm_find_preemptable_jobs(job_record_t *job_ptr)
 {
 	preempt_candidates_t candidates	= { .preemptor = job_ptr };
 
 	/* Validate the preemptor job */
 
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return NULL;
@@ -326,7 +326,7 @@ extern uint16_t slurm_job_preempt_mode(job_record_t *job_ptr)
 {
 	uint16_t data;
 
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return PREEMPT_MODE_OFF;
@@ -377,7 +377,7 @@ extern bool slurm_preemption_enabled(void)
 {
 	bool data = false;
 
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return false;
@@ -396,7 +396,7 @@ extern uint32_t slurm_job_get_grace_time(job_record_t *job_ptr)
 {
 	uint32_t data = 0;
 
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return 0;
@@ -453,6 +453,7 @@ static int _job_check_grace_internal(void *x, void *arg)
 			job_signal(job_ptr, SIGCONT, 0, 0, 0);
 			job_signal(job_ptr, SIGTERM, 0, 0, 0);
 		}
+		job_ptr->bit_flags |= GRACE_PREEMPT;
 	} else
 		rc = 1;
 
@@ -491,7 +492,7 @@ extern uint32_t slurm_job_preempt(job_record_t *job_ptr,
 {
 	int rc = SLURM_ERROR;
 
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return rc;
@@ -550,7 +551,7 @@ extern uint32_t slurm_job_preempt(job_record_t *job_ptr,
 extern bool preempt_g_job_preempt_check(job_queue_rec_t *preemptor,
 					job_queue_rec_t *preemptee)
 {
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return false;
@@ -561,7 +562,7 @@ extern bool preempt_g_job_preempt_check(job_queue_rec_t *preemptor,
 extern bool preempt_g_preemptable(
 	job_record_t *preemptee, job_record_t *preemptor)
 {
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return false;
@@ -573,7 +574,7 @@ extern int preempt_g_get_data(job_record_t *job_ptr,
 			      slurm_preempt_data_type_t data_type,
 			      void *data)
 {
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return SLURM_SUCCESS;

@@ -48,7 +48,7 @@
 
 static void _dump_users(ctxt_t *ctxt, slurmdb_user_cond_t *user_cond)
 {
-	List user_list = NULL;
+	list_t *user_list = NULL;
 
 	if (!db_query_list(ctxt, &user_list, slurmdb_users_get, user_cond))
 		DUMP_OPENAPI_RESP_SINGLE(OPENAPI_USERS_RESP, user_list, ctxt);
@@ -292,8 +292,7 @@ static void _add_users_association(ctxt_t *ctxt,
 	ret_str = slurmdb_users_add_cond(ctxt->db_conn, add_assoc, user);
 
 	if ((rc = errno))
-		resp_error(ctxt, rc, __func__,
-			   "slurmdb_users_add_cond() failed");
+		resp_error(ctxt, rc, "slurmdb_users_add_cond", "%s", ret_str);
 	else
 		db_query_commit(ctxt);
 
@@ -324,7 +323,7 @@ static void _delete_user(ctxt_t *ctxt, char *user_name)
 	slurmdb_user_cond_t user_cond = {
 		.assoc_cond = &assoc_cond,
 	};
-	List user_list = NULL;
+	list_t *user_list = NULL;
 
 	assoc_cond.user_list = list_create(NULL);
 	list_append(assoc_cond.user_list, user_name);

@@ -195,6 +195,19 @@ scontrol_parse_part_options (int argc, char **argv, int *update_cnt_ptr,
 			}
 			(*update_cnt_ptr)++;
 		}
+		else if (!xstrncasecmp(tag, "ExclusiveTopo", MAX(taglen, 1))) {
+			if (xstrncasecmp(val, "NO", MAX(vallen, 1)) == 0)
+				part_msg_ptr->flags |= PART_FLAG_EXC_TOPO_CLR;
+			else if (xstrncasecmp(val, "YES", MAX(vallen, 1)) == 0)
+				part_msg_ptr->flags |= PART_FLAG_EXCLUSIVE_TOPO;
+			else {
+				exit_code = 1;
+				error("Invalid input: %s", argv[i]);
+				error("Acceptable ExclusiveTopo values are YES and NO");
+				return SLURM_ERROR;
+			}
+			(*update_cnt_ptr)++;
+		}
 		else if (xstrncasecmp(tag, "Hidden", MAX(taglen, 1)) == 0) {
 			if (xstrncasecmp(val, "NO", MAX(vallen, 1)) == 0)
 				part_msg_ptr->flags |= PART_FLAG_HIDDEN_CLR;
@@ -317,9 +330,13 @@ scontrol_parse_part_options (int argc, char **argv, int *update_cnt_ptr,
 		}
 		else if (xstrncasecmp(tag, "PreemptMode", MAX(taglen, 3)) == 0) {
 			uint16_t new_mode = preempt_mode_num(val);
-			if (new_mode != NO_VAL16)
+			if (new_mode != NO_VAL16) {
+				if (new_mode & PREEMPT_MODE_GANG) {
+					error("PreemptMode=GANG is a cluster-wide option and cannot be set at partition level");
+					return SLURM_ERROR;
+				}
 				part_msg_ptr->preempt_mode = new_mode;
-			else {
+			} else {
 				error("Invalid input: %s", argv[i]);
 				return SLURM_ERROR;
 			}
@@ -500,7 +517,7 @@ scontrol_update_part (int argc, char **argv)
 
 	if (slurm_update_partition(&part_msg)) {
 		exit_code = 1;
-		return slurm_get_errno ();
+		return errno;
 	} else
 		return SLURM_SUCCESS;
 }
@@ -546,7 +563,7 @@ scontrol_create_part (int argc, char **argv)
 	if (slurm_create_partition(&part_msg)) {
 		exit_code = 1;
 		slurm_perror("Error creating the partition");
-		return slurm_get_errno ();
+		return errno;
 	} else
 		return SLURM_SUCCESS;
 }

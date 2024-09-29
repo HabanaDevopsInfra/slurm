@@ -72,6 +72,8 @@ typedef struct {
 	bitstr_t *node_bitmap;	/* bitmap of nodes with this configuration */
 	char *nodes;		/* name of nodes with this configuration */
 	uint64_t real_memory;	/* MB real memory on the node */
+	uint16_t res_cores_per_gpu; /* number of cores per GPU to allow
+				     * to only GPU jobs */
 	uint16_t threads;	/* number of threads per core */
 	uint32_t tmp_disk;	/* MB total storage in TMP_FS file system */
 	uint16_t tot_sockets;	/* number of sockets per node */
@@ -80,9 +82,9 @@ typedef struct {
 	uint32_t weight;	/* arbitrary priority of node for
 				 * scheduling work on */
 } config_record_t;
-extern List config_list;	/* list of config_record entries */
+extern list_t *config_list;	/* list of config_record entries */
 
-extern List front_end_list;	/* list of slurm_conf_frontend_t entries */
+extern list_t *front_end_list;	/* list of slurm_conf_frontend_t entries */
 
 typedef struct node_record node_record_t;
 struct node_record {
@@ -106,7 +108,6 @@ struct node_record {
 	uint16_t cpus_efctv;		/* count of effective cpus on the node.
 					   i.e. cpus minus specialized cpus*/
 	acct_gather_energy_t *energy;	/* power consumption data */
-	ext_sensors_data_t *ext_sensors; /* external sensor data */
 	char *extra;			/* arbitrary string */
 	data_t *extra_data;		/* Data serialized from extra */
 	char *features;			/* node's available features, used only
@@ -117,10 +118,13 @@ struct node_record {
 					 * use for scheduling purposes */
 	uint64_t free_mem;		/* Free memory in MiB */
 	time_t free_mem_time;		/* Time when free_mem last set */
+	char *gpu_spec;                 /* node's cores reserved for GPU jobs */
+	bitstr_t *gpu_spec_bitmap;	/* node gpu core specialization
+					 * bitmap */
 	char *gres;			/* node's generic resources, used only
 					 * for state save/restore, DO NOT
 					 * use for scheduling purposes */
-	List gres_list;			/* list of gres state info managed by
+	list_t *gres_list;		/* list of gres state info managed by
 					 * plugins */
 	uint32_t index;			/* Index into node_record_table_ptr */
 	char *instance_id;		/* cloud instance id */
@@ -161,6 +165,8 @@ struct node_record {
 					 * set, ignore if no reason is set. */
 	uint32_t reason_uid;		/* User that set the reason, ignore if
 					 * no reason is set. */
+	uint16_t res_cores_per_gpu;	/* number of cores per GPU to allow to
+					 * only GPU jobs */
 	time_t resume_after;		/* automatically resume DOWN or DRAINED
 					 * node at this point in time */
 	uint16_t resume_timeout; 	/* time required in order to perform a
@@ -335,13 +341,12 @@ extern int add_node_record(char *alias, config_record_t *config_ptr,
 			   node_record_t **node_ptr);
 
 /*
- * Add existing record to node_record_table_ptr
+ * Add existing record to node_record_table_ptr at specific index
  *
- * e.g. Preserving dynamic nodes after a reconfig.
  * Node must fit in currently allocated node_record_count/MaxNodeCount.
  * node_ptr->config_ptr is added to the the global config_list.
  */
-extern void insert_node_record(node_record_t *node_ptr);
+extern void insert_node_record_at(node_record_t *node_ptr, int index);
 
 /*
  * Delete node from node_record_table_ptr.
@@ -412,7 +417,7 @@ extern int node_name2bitmap (char *node_names, bool best_effort,
 			     bitstr_t **bitmap);
 
 /* Purge the contents of a node record */
-extern void purge_node_rec(node_record_t *node_ptr);
+extern void purge_node_rec(void *in);
 
 /*
  * rehash_node - build a hash table of the node_record entries.
@@ -514,5 +519,15 @@ extern char *node_conf_nodestr_tokenize(char *s, char **save_ptr);
  *                      size of the cluster.
  */
 extern void node_conf_create_cluster_core_bitmap(bitstr_t **core_bitmap);
+
+extern void node_record_pack(void *in,
+			     uint16_t protocol_version,
+			     buf_t *buffer);
+extern int node_record_unpack(void **out,
+			      uint16_t protocol_version,
+			      buf_t *buffer);
+
+/* Create config_record_t from a packed node_record_t */
+extern config_record_t *config_record_from_node_record(node_record_t *node_ptr);
 
 #endif /* !_HAVE_NODE_CONF_H */

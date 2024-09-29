@@ -98,6 +98,7 @@ ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/auxdir/ax_check_compile_flag.m4 \
 	$(top_srcdir)/auxdir/ax_compare_version.m4 \
 	$(top_srcdir)/auxdir/ax_gcc_builtin.m4 \
+	$(top_srcdir)/auxdir/ax_have_epoll.m4 \
 	$(top_srcdir)/auxdir/ax_lib_hdf5.m4 \
 	$(top_srcdir)/auxdir/ax_pthread.m4 \
 	$(top_srcdir)/auxdir/gtk-2.0.m4 \
@@ -136,8 +137,8 @@ am__aclocal_m4_deps = $(top_srcdir)/auxdir/ax_check_compile_flag.m4 \
 	$(top_srcdir)/auxdir/x_ac_ptrace.m4 \
 	$(top_srcdir)/auxdir/x_ac_rdkafka.m4 \
 	$(top_srcdir)/auxdir/x_ac_readline.m4 \
-	$(top_srcdir)/auxdir/x_ac_rrdtool.m4 \
 	$(top_srcdir)/auxdir/x_ac_rsmi.m4 \
+	$(top_srcdir)/auxdir/x_ac_s2n.m4 \
 	$(top_srcdir)/auxdir/x_ac_selinux.m4 \
 	$(top_srcdir)/auxdir/x_ac_setproctitle.m4 \
 	$(top_srcdir)/auxdir/x_ac_sview.m4 \
@@ -157,8 +158,9 @@ CONFIG_CLEAN_VPATH_FILES =
 PROGRAMS = $(noinst_PROGRAMS)
 LTLIBRARIES = $(noinst_LTLIBRARIES)
 libslurmd_common_la_LIBADD =
-am_libslurmd_common_la_OBJECTS = fname.lo privileges.lo \
-	slurmd_cgroup.lo slurmstepd_init.lo set_oomadj.lo xcpuinfo.lo
+am_libslurmd_common_la_OBJECTS = fname.lo slurmd_common.lo \
+	privileges.lo slurmd_cgroup.lo slurmstepd_init.lo \
+	set_oomadj.lo xcpuinfo.lo
 libslurmd_common_la_OBJECTS = $(am_libslurmd_common_la_OBJECTS)
 AM_V_lt = $(am__v_lt_@AM_V@)
 am__v_lt_ = $(am__v_lt_@AM_DEFAULT_V@)
@@ -188,7 +190,8 @@ depcomp = $(SHELL) $(top_srcdir)/auxdir/depcomp
 am__maybe_remake_depfiles = depfiles
 am__depfiles_remade = ./$(DEPDIR)/fname.Plo ./$(DEPDIR)/privileges.Plo \
 	./$(DEPDIR)/set_oomadj.Plo ./$(DEPDIR)/slurmd_cgroup.Plo \
-	./$(DEPDIR)/slurmstepd_init.Plo ./$(DEPDIR)/xcpuinfo.Plo
+	./$(DEPDIR)/slurmd_common.Plo ./$(DEPDIR)/slurmstepd_init.Plo \
+	./$(DEPDIR)/xcpuinfo.Plo
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -267,6 +270,7 @@ EGREP = @EGREP@
 ETAGS = @ETAGS@
 EXEEXT = @EXEEXT@
 FGREP = @FGREP@
+FILECMD = @FILECMD@
 FREEIPMI_CPPFLAGS = @FREEIPMI_CPPFLAGS@
 FREEIPMI_LDFLAGS = @FREEIPMI_LDFLAGS@
 FREEIPMI_LIBS = @FREEIPMI_LIBS@
@@ -379,10 +383,11 @@ RDKAFKA_LDFLAGS = @RDKAFKA_LDFLAGS@
 RDKAFKA_LIBS = @RDKAFKA_LIBS@
 READLINE_LIBS = @READLINE_LIBS@
 RELEASE = @RELEASE@
-RRDTOOL_CPPFLAGS = @RRDTOOL_CPPFLAGS@
-RRDTOOL_LDFLAGS = @RRDTOOL_LDFLAGS@
-RRDTOOL_LIBS = @RRDTOOL_LIBS@
 RSMI_CPPFLAGS = @RSMI_CPPFLAGS@
+S2N_CPPFLAGS = @S2N_CPPFLAGS@
+S2N_DIR = @S2N_DIR@
+S2N_LDFLAGS = @S2N_LDFLAGS@
+S2N_LIBS = @S2N_LIBS@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
@@ -485,13 +490,13 @@ top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 AUTOMAKE_OPTIONS = foreign
-CLEANFILES = core.*
 AM_CPPFLAGS = -I$(top_srcdir) $(HWLOC_CPPFLAGS)
 
 # making a .la
 noinst_LTLIBRARIES = libslurmd_common.la
 libslurmd_common_la_SOURCES = \
 	fname.c fname.h \
+	slurmd_common.c slurmd_common.h \
 	privileges.c privileges.h \
 	slurmd_cgroup.c slurmd_cgroup.h \
 	slurmstepd_init.c slurmstepd_init.h \
@@ -570,6 +575,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/privileges.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/set_oomadj.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/slurmd_cgroup.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/slurmd_common.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/slurmstepd_init.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/xcpuinfo.Plo@am__quote@ # am--include-marker
 
@@ -683,7 +689,6 @@ install-strip:
 mostlyclean-generic:
 
 clean-generic:
-	-test -z "$(CLEANFILES)" || rm -f $(CLEANFILES)
 
 distclean-generic:
 	-test -z "$(CONFIG_CLEAN_FILES)" || rm -f $(CONFIG_CLEAN_FILES)
@@ -702,6 +707,7 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/privileges.Plo
 	-rm -f ./$(DEPDIR)/set_oomadj.Plo
 	-rm -f ./$(DEPDIR)/slurmd_cgroup.Plo
+	-rm -f ./$(DEPDIR)/slurmd_common.Plo
 	-rm -f ./$(DEPDIR)/slurmstepd_init.Plo
 	-rm -f ./$(DEPDIR)/xcpuinfo.Plo
 	-rm -f Makefile
@@ -753,6 +759,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/privileges.Plo
 	-rm -f ./$(DEPDIR)/set_oomadj.Plo
 	-rm -f ./$(DEPDIR)/slurmd_cgroup.Plo
+	-rm -f ./$(DEPDIR)/slurmd_common.Plo
 	-rm -f ./$(DEPDIR)/slurmstepd_init.Plo
 	-rm -f ./$(DEPDIR)/xcpuinfo.Plo
 	-rm -f Makefile

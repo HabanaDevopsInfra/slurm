@@ -67,8 +67,8 @@
  * for details.
  */
 strong_alias(_xstrcat,		slurm_xstrcat);
-strong_alias(_xstrcatat,	slurm_xstrcatat);
 strong_alias(_xstrncat,		slurm_xstrncat);
+strong_alias(_xstrncatat,	slurm_xstrncatat);
 strong_alias(_xstrcatchar,	slurm_xstrcatchar);
 strong_alias(_xstrftimecat,	slurm_xstrftimecat);
 strong_alias(_xiso8601timecat,	slurm_xiso8601timecat);
@@ -94,6 +94,7 @@ strong_alias(xstrcasecmp,       slurm_xstrcasecmp);
 strong_alias(xstrncasecmp,      slurm_xstrncasecmp);
 strong_alias(xstrstr,           slurm_xstrstr);
 strong_alias(xstrcasestr,       slurm_xstrcasestr);
+strong_alias(xbase64_from_base64url, slurm_xbase64_from_base64url);
 
 /*
  * Ensure that a string has enough space to add 'needed' characters.
@@ -144,29 +145,29 @@ void _xstrcat(char **str1, const char *str2)
  * Append str2 onto str at pos, * expanding buf as needed. pos is updated to the
  * end of the appended string.
  *
- * Meant to be used in loops contructing longer strings that are performance
+ * Meant to be used in loops constructing longer strings that are performance
  * sensitive, as xstrcat() needs to re-seek to the end of str making the string
  * construction worse by another O(log(strlen)) factor.
  */
-void _xstrcatat(char **str, char **pos, const char *str2)
+void _xstrncatat(char **str, char **pos, const char *str2, ssize_t append_len)
 {
-	size_t orig_len, append_len;
+	size_t orig_len;
 
 	if (!str2)
 		return;
 
-	append_len = strlen(str2);
+	if (append_len < 0)
+		append_len = strlen(str2);
 
 	/* No string yet to append to, so return a copy of str2. */
 	if (!*str) {
-		*str = xstrdup(str2);
+		*str = xstrndup(str2, append_len);
 		*pos = *str + append_len;
 		return;
 	}
 
 	if (!*pos) {
 		orig_len = strlen(*str);
-		*pos = *str + orig_len;
 	} else {
 		xassert(*pos >= *str);
 		orig_len = *pos - *str;
@@ -359,7 +360,7 @@ void _xstrfmtcat(char **str, const char *fmt, ...)
  * expanding buf as needed. pos is updated to the end of the appended
  * string.
  *
- * Meant to be used in loops contructing longer strings that are performance
+ * Meant to be used in loops constructing longer strings that are performance
  * sensitive, as xstrfmtcat() needs to re-seek to the end of str making the
  * string construction worse by another O(log(strlen)) factor.
  */
@@ -385,7 +386,6 @@ void _xstrfmtcatat(char **str, char **pos, const char *fmt, ...)
 
 	if (!*pos) {
 		orig_len = strlen(*str);
-		*pos = *str + orig_len;
 	} else {
 		xassert(*pos >= *str);
 		orig_len = *pos - *str;
@@ -897,4 +897,35 @@ extern char *xstring_bytes2printable(const unsigned char *string, int len,
 	}
 
 	return str;
+}
+
+extern char *xbase64_from_base64url(const char *in)
+{
+	char *out;
+	int i;
+
+	/* extra padding in case the padding was stripped off */
+	out = xmalloc(strlen(in) + 3);
+
+	for (i = 0; i < strlen(in); i++) {
+		switch (in[i]) {
+		case '-':
+			out[i] = '+';
+			break;
+		case '_':
+			out[i] = '/';
+			break;
+		default:
+			out[i] = in[i];
+		}
+	}
+
+	/*
+	 * Fix padding in case it was trimmed.
+	 * String length must be a multiple of 4.
+	 */
+	for (int padding = 4 - (i % 4); padding < 4 && padding; padding--)
+		out[i++] = '=';
+
+	return out;
 }

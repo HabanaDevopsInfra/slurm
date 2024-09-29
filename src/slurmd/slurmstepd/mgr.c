@@ -52,6 +52,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <pwd.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -91,7 +92,6 @@
 #include "src/common/util-net.h"
 #include "src/common/x11_util.h"
 #include "src/common/xmalloc.h"
-#include "src/common/xsignal.h"
 #include "src/common/xstring.h"
 
 #include "src/interfaces/acct_gather_profile.h"
@@ -101,14 +101,18 @@
 #include "src/interfaces/job_container.h"
 #include "src/interfaces/jobacct_gather.h"
 #include "src/interfaces/mpi.h"
+#include "src/interfaces/prep.h"
 #include "src/interfaces/proctrack.h"
 #include "src/interfaces/switch.h"
 #include "src/interfaces/task.h"
+
+#include "src/conmgr/conmgr.h"
 
 #include "src/slurmd/common/fname.h"
 #include "src/slurmd/common/privileges.h"
 #include "src/slurmd/common/set_oomadj.h"
 #include "src/slurmd/common/slurmd_cgroup.h"
+#include "src/slurmd/common/slurmd_common.h"
 #include "src/slurmd/common/xcpuinfo.h"
 
 #include "src/slurmd/slurmd/slurmd.h"
@@ -144,8 +148,12 @@ typedef struct kill_thread {
 	int       secs;
 } kill_thread_t;
 
-static pthread_t x11_signal_handler_thread = 0;
-static int sig_array[] = {SIGTERM, 0};
+#if defined(__linux__)
+typedef struct {
+	stepd_step_rec_t *step;
+	int id;
+} spank_task_args_t;
+#endif
 
 /*
  * Prototypes
@@ -172,8 +180,6 @@ static void _random_sleep(stepd_step_rec_t *step);
 static int  _run_script_as_user(const char *name, const char *path,
 				stepd_step_rec_t *step,
 				int max_wait, char **env);
-static void _unblock_signals(void);
-static void *_x11_signal_handler(void *arg);
 
 /*
  * Batch step management prototypes:
@@ -209,6 +215,7 @@ mgr_launch_tasks_setup(launch_tasks_request_msg_t *msg, slurm_addr_t *cli,
 	step->accel_bind_type = msg->accel_bind_type;
 	step->tres_bind = xstrdup(msg->tres_bind);
 	step->tres_freq = xstrdup(msg->tres_freq);
+	step->stepmgr = xstrdup(msg->stepmgr);
 
 	return step;
 }
@@ -796,6 +803,22 @@ _one_step_complete_msg(stepd_step_rec_t *step, int first, int last)
 		       step_complete.rank, first, last);
 	}
 
+	if (step->stepmgr) {
+		slurm_msg_t resp_msg;
+
+		slurm_msg_t_init(&resp_msg);
+
+		slurm_conf_get_addr(step->stepmgr, &req.address,
+				    req.flags);
+		slurm_msg_set_r_uid(&req, slurm_conf.slurmd_user_id);
+		msg.send_to_stepmgr = true;
+		debug3("sending complete to step_ctld host:%s",
+		       step->stepmgr);
+		if (slurm_send_recv_node_msg(&req, &resp_msg, 0))
+			return;
+		goto finished;
+	}
+
 	/* Retry step complete RPC send to slurmctld indefinitely.
 	 * Prevent orphan job step if slurmctld is down */
 	i = 1;
@@ -914,6 +937,180 @@ extern void set_job_state(stepd_step_rec_t *step, slurmstepd_state_t new_state)
 	slurm_mutex_unlock(&step->state_mutex);
 }
 
+/*
+ * Run SPANK functions within the job container.
+ * WARNING: This is running as a separate process, but sharing the parent's
+ * memory space. Be careful not to leak memory, or free resources that the
+ * parent needs to continue processing. Only use _exit() here, otherwise
+ * any plugins that registered their own fini() hooks will wreck the parent.
+ */
+#if defined(__linux__)
+static int _spank_user_child(void *arg)
+{
+	stepd_step_rec_t *step = arg;
+	struct priv_state sprivs;
+	int rc = 0;
+
+	if (container_g_join(step->step_id.job_id, step->uid)) {
+		error("container_g_join(%u): %m", step->step_id.job_id);
+		_exit(-1);
+	}
+
+	if (drop_privileges(step, true, &sprivs, true) < 0) {
+		error("drop_privileges: %m");
+		_exit(-1);
+	}
+
+	if (spank_user(step) < 0)
+		rc = 1;
+
+	/*
+	 * This is taken from the end of reclaim_privileges(). The child does
+	 * not need to reclaim here since we simply exit, so instead clean up
+	 * the structure and the lock so that the parent can continue to
+	 * operate.
+	 */
+	xfree(sprivs.gid_list);
+	auth_setuid_unlock();
+
+	_exit(rc);
+}
+
+static int _spank_task_post_fork_child(void *arg)
+{
+	spank_task_args_t *args = arg;
+	stepd_step_rec_t *step = args->step;
+
+	if (container_g_join(step->step_id.job_id, step->uid)) {
+		error("container_g_join(%u): %m", step->step_id.job_id);
+		_exit(-1);
+	}
+
+	if (spank_task_post_fork(step, args->id) < 0)
+		_exit(1);
+
+	_exit(0);
+}
+
+static int _spank_task_exit_child(void *arg)
+{
+	spank_task_args_t *args = arg;
+	stepd_step_rec_t *step = args->step;
+
+	if (container_g_join(step->step_id.job_id, step->uid)) {
+		error("container_g_join(%u): %m", step->step_id.job_id);
+		_exit(-1);
+	}
+
+	if (spank_task_exit(step, args->id) < 0)
+		_exit(1);
+
+	_exit(0);
+}
+#endif
+
+static int _run_spank_func(step_fn_t spank_func, stepd_step_rec_t *step, int id,
+			   struct priv_state *sprivs)
+{
+	int rc = SLURM_SUCCESS;
+
+#if defined(__linux__)
+	if (slurm_conf.conf_flags & CONF_FLAG_CONTAIN_SPANK) {
+		pid_t pid = -1;
+		int flags = CLONE_VM | SIGCHLD;
+		char *stack = NULL;
+		int status = 0;
+		spank_task_args_t *args = NULL;
+
+		/*
+		 * To enter the container, the process cannot share CLONE_FS
+		 * with another process. However, the spank plugins require
+		 * access to global memory that cannot be easily be shipped to
+		 * another process.
+		 *
+		 * clone() + CLONE_VM allows the new process to have distinct
+		 * filesystem attribites, but share memory space. By allowing
+		 * the current process to continue executing, shared locks can
+		 * be released allowing the new process to operate normally.
+		 */
+		if ((spank_func == SPANK_STEP_TASK_EXIT) &&
+		    spank_has_task_exit()) {
+			args = xmalloc(sizeof(*args));
+			args->step = step;
+			args->id = id;
+			stack = xmalloc(STACK_SIZE);
+			pid = clone(_spank_task_exit_child,
+				    stack + STACK_SIZE, flags, args);
+		} else if ((spank_func == SPANK_STEP_TASK_POST_FORK) &&
+			   spank_has_task_post_fork()) {
+			args = xmalloc(sizeof(*args));
+			args->step = step;
+			args->id = id;
+			stack = xmalloc(STACK_SIZE);
+			pid = clone(_spank_task_post_fork_child,
+				    stack + STACK_SIZE, flags, args);
+		} else if ((spank_func == SPANK_STEP_USER_INIT) &&
+			   spank_has_user_init()) {
+			/*
+			 * spank_user_init() runs as the user, but setns()
+			 * requires CAP_SYS_ADMIN. Reclaim privileges here so
+			 * setns() will function.
+			 */
+			if (reclaim_privileges(sprivs) < 0) {
+				error("Unable to reclaim privileges");
+				rc = 1;
+				goto fail;
+			}
+
+			stack = xmalloc(STACK_SIZE);
+			pid = clone(_spank_user_child,
+				    stack + STACK_SIZE, flags, step);
+		} else {
+			/* no action required */
+			return rc;
+		}
+
+		if (pid == -1) {
+			error("clone failed before spank call: %m");
+			rc = SLURM_ERROR;
+		} else {
+			waitpid(pid, &status, 0);
+			if (WEXITSTATUS(status))
+				rc = SLURM_ERROR;
+		}
+
+		if (spank_func == SPANK_STEP_USER_INIT) {
+			if (drop_privileges(step, true, sprivs, true) < 0) {
+				error("drop_privileges: %m");
+				rc = 2;
+			}
+		}
+
+fail:
+		xfree(args);
+		xfree(stack);
+		return rc;
+	}
+#endif
+	/*
+	 * Default case is to run these spank functions normally. To allow a
+	 * different exit path, set rc = SLURM_ERROR if the plugstack call
+	 * fails.
+	 */
+	if ((spank_func == SPANK_STEP_TASK_EXIT) &&
+	    (spank_task_exit(step, id) < 0)) {
+		rc = SLURM_ERROR;
+	} else if ((spank_func == SPANK_STEP_TASK_POST_FORK) &&
+		   (spank_task_post_fork(step, id) < 0)) {
+		rc = SLURM_ERROR;
+	} else if ((spank_func == SPANK_STEP_USER_INIT) &&
+		   (spank_user(step) < 0)) {
+		rc = SLURM_ERROR;
+	}
+
+	return rc;
+}
+
 static bool _need_join_container()
 {
 	/*
@@ -945,62 +1142,72 @@ static void _shutdown_x11_forward(stepd_step_rec_t *step)
 		error("%s: Unable to reclaim privileges", __func__);
 }
 
-static void *_x11_signal_handler(void *arg)
+static void _x11_signal_handler(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	static bool run_once = false;
+	static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+	bool bail = false;
 	stepd_step_rec_t *step = (stepd_step_rec_t *) arg;
-	int sig, status;
-	sigset_t set;
 	pid_t cpid, pid;
 
-	(void) pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-	(void) pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+	if (conmgr_args.status == CONMGR_WORK_STATUS_CANCELLED) {
+		debug4("%s: cancelled", __func__);
+		return;
+	}
 
-	while (1) {
-		xsignal_sigset_create(sig_array, &set);
-		if (sigwait(&set, &sig) == EINTR)
-			continue;
+	/*
+	 * Protect against race of SIGTERM and step shutdown causing this
+	 * function to run more than once.
+	 */
+	slurm_mutex_lock(&mutex);
+	if (run_once)
+		bail = true;
+	run_once = true;
+	slurm_mutex_unlock(&mutex);
 
-		switch (sig) {
-		case SIGTERM:	/* kill -15 */
-			debug("Terminate signal (SIGTERM) received");
-			if (!_need_join_container()) {
-				_shutdown_x11_forward(step);
-				return NULL;
-			}
-			if ((cpid = fork()) == 0) {
-				if (container_g_join(step->step_id.job_id,
-						     step->uid) !=
-				    SLURM_SUCCESS) {
-					error("%s: cannot join container",
-					      __func__);
-					_exit(1);
-				}
-				_shutdown_x11_forward(step);
-				_exit(0);
-			} else if (cpid < 0) {
-				error("%s: fork: %m", __func__);
-			} else {
-				pid = waitpid(cpid, &status, 0);
-				if (pid < 0)
-					error("%s: waitpid failed: %m",
-					      __func__);
-				else if (!WIFEXITED(status))
-					error("%s: child terminated abnormally",
-					      __func__);
-				else if (WEXITSTATUS(status))
-					error("%s: child returned non-zero",
-					      __func__);
-			}
-			return NULL;
-		default:
-			error("Invalid signal (%d) received", sig);
+	if (bail) {
+		debug4("%s: Already run. bailing.", __func__);
+		return;
+	}
+
+	debug("Terminate signal (SIGTERM) received");
+
+	if (!_need_join_container()) {
+		_shutdown_x11_forward(step);
+		return;
+	}
+	if ((cpid = fork()) == 0) {
+		if (container_g_join(step->step_id.job_id,
+				     step->uid) !=
+		    SLURM_SUCCESS) {
+			error("%s: cannot join container",
+			      __func__);
+			_exit(1);
 		}
+		_shutdown_x11_forward(step);
+		_exit(0);
+	} else if (cpid < 0) {
+		error("%s: fork: %m", __func__);
+	} else {
+		int status;
+
+		pid = waitpid(cpid, &status, 0);
+		if (pid < 0)
+			error("%s: waitpid failed: %m",
+			      __func__);
+		else if (!WIFEXITED(status))
+			error("%s: child terminated abnormally",
+			      __func__);
+		else if (WEXITSTATUS(status))
+			error("%s: child returned non-zero",
+			      __func__);
 	}
 }
 
 static int _set_xauthority(stepd_step_rec_t *step)
 {
 	struct priv_state sprivs = { 0 };
+	int rc = SLURM_SUCCESS;
 
 	if (drop_privileges(step, true, &sprivs, false) < 0) {
 		error("%s: Unable to drop privileges before xauth", __func__);
@@ -1010,7 +1217,7 @@ static int _set_xauthority(stepd_step_rec_t *step)
 	if (x11_set_xauth(step->x11_xauthority, step->x11_magic_cookie,
 			  step->x11_display)) {
 		error("%s: failed to run xauth", __func__);
-		return SLURM_ERROR;
+		rc =  SLURM_ERROR;
 	}
 
 	if (reclaim_privileges(&sprivs) < 0) {
@@ -1018,7 +1225,55 @@ static int _set_xauthority(stepd_step_rec_t *step)
 		return SLURM_ERROR;
 	}
 
-	return SLURM_SUCCESS;
+	return rc;
+}
+
+static int _run_prolog_epilog(stepd_step_rec_t *step, bool is_epilog)
+{
+	int rc = SLURM_SUCCESS;
+	job_env_t job_env;
+	list_t *tmp_list;
+
+	memset(&job_env, 0, sizeof(job_env));
+
+	tmp_list = gres_g_prep_build_env(step->job_gres_list, step->node_list);
+	gres_g_prep_set_env(&job_env.gres_job_env, tmp_list, step->nodeid);
+	FREE_NULL_LIST(tmp_list);
+
+	job_env.jobid = step->step_id.job_id;
+	job_env.step_id = SLURM_EXTERN_CONT;
+	job_env.node_list = step->node_list;
+	job_env.het_job_id = step->het_job_id;
+	job_env.partition = step->msg->cred->arg->job_partition;
+	job_env.spank_job_env = step->msg->spank_job_env;
+	job_env.spank_job_env_size = step->msg->spank_job_env_size;
+	job_env.work_dir = step->cwd;
+	job_env.uid = step->uid;
+	job_env.gid = step->gid;
+
+	if (!is_epilog)
+		rc = run_prolog(&job_env, step->msg->cred);
+	else
+		rc = run_epilog(&job_env, step->msg->cred);
+
+	if (job_env.gres_job_env) {
+		for (int i = 0; job_env.gres_job_env[i]; i++)
+			xfree(job_env.gres_job_env[i]);
+		xfree(job_env.gres_job_env);
+	}
+
+	if (rc) {
+		int term_sig = 0, exit_status = 0;
+		if (WIFSIGNALED(rc))
+			term_sig = WTERMSIG(rc);
+		else if (WIFEXITED(rc))
+			exit_status = WEXITSTATUS(rc);
+		error("[job %u] %s failed status=%d:%d", step->step_id.job_id,
+		      is_epilog ? "epilog" : "prolog", exit_status, term_sig);
+		rc = is_epilog ? ESLURMD_EPILOG_FAILED : ESLURMD_PROLOG_FAILED;
+	}
+
+	return rc;
 }
 
 static int _spawn_job_container(stepd_step_rec_t *step)
@@ -1070,9 +1325,7 @@ static int _spawn_job_container(stepd_step_rec_t *step)
 			return SLURM_ERROR;
 		}
 
-		xsignal_block(sig_array);
-		slurm_thread_create(&x11_signal_handler_thread,
-				    _x11_signal_handler, step);
+		conmgr_add_work_signal(SIGTERM, _x11_signal_handler, step);
 
 		debug("x11 forwarding local display is %d", step->x11_display);
 		debug("x11 forwarding local xauthority is %s",
@@ -1125,7 +1378,6 @@ static int _spawn_job_container(stepd_step_rec_t *step)
 		setsid();
 		set_oom_adj(0);	/* the tasks may be killed by OOM */
 		acct_gather_profile_g_child_forked();
-		_unblock_signals();
 		/*
 		 * Need to exec() something for proctrack/linuxproc to
 		 * work, it will not keep a process named "slurmstepd"
@@ -1165,10 +1417,14 @@ static int _spawn_job_container(stepd_step_rec_t *step)
 	if (!slurm_conf.job_acct_gather_freq)
 		jobacct_gather_stat_task(0, true);
 
-	if (spank_task_post_fork(step, -1) < 0) {
+	if (_run_spank_func(SPANK_STEP_TASK_POST_FORK, step, -1, NULL) < 0) {
 		error("spank extern task post-fork failed");
 		rc = SLURM_ERROR;
+	} else if (slurm_conf.prolog_flags & PROLOG_FLAG_RUN_IN_JOB) {
+		rc = _run_prolog_epilog(step, false);
+	}
 
+	if (rc != SLURM_SUCCESS) {
 		/*
 		 * Failure before the tasks have even started, so we will need
 		 * to mark all of them as failed unless there is already an
@@ -1194,6 +1450,12 @@ static int _spawn_job_container(stepd_step_rec_t *step)
 
 	while ((wait4(pid, &status, 0, &rusage) < 0) && (errno == EINTR)) {
 		;	       /* Wait until above process exits from signal */
+	}
+
+	/* Wait for all steps other than extern (this one) to complete */
+	if (!pause_for_job_completion(jobid, MAX(slurm_conf.kill_wait, 5),
+				      true)) {
+		warning("steps did not complete quickly");
 	}
 
 	/* remove all tracked tasks */
@@ -1247,10 +1509,7 @@ static int _spawn_job_container(stepd_step_rec_t *step)
 	task_g_post_step(step);
 
 fail1:
-	if (x11_signal_handler_thread) {
-		(void) pthread_kill(x11_signal_handler_thread, SIGTERM);
-		slurm_thread_join(x11_signal_handler_thread);
-	}
+	conmgr_add_work_fifo(_x11_signal_handler, step);
 
 	debug2("%s: Before call to spank_fini()", __func__);
 	if (spank_fini(step) < 0)
@@ -1271,6 +1530,15 @@ fail1:
 		step_complete.step_rc = rc;
 
 	stepd_send_step_complete_msgs(step);
+
+	if (slurm_conf.prolog_flags & PROLOG_FLAG_RUN_IN_JOB) {
+		/* Force all other steps to end before epilog starts */
+		pause_for_job_completion(jobid, 0, true);
+
+		int epilog_rc = _run_prolog_epilog(step, true);
+		epilog_complete(step->step_id.job_id, step->node_list,
+				epilog_rc);
+	}
 
 	return rc;
 }
@@ -1368,7 +1636,7 @@ job_manager(stepd_step_rec_t *step)
 	    (mpi_g_slurmstepd_prefork(step, &step->env) != SLURM_SUCCESS)) {
 		error("Failed mpi_g_slurmstepd_prefork");
 		rc = SLURM_ERROR;
-		goto fail3;
+		goto fail2;
 	}
 
 	if (!step->batch && (step->step_id.step_id != SLURM_INTERACTIVE_STEP) &&
@@ -1399,7 +1667,7 @@ job_manager(stepd_step_rec_t *step)
 	if ((rc = _fork_all_tasks(step, &io_initialized)) < 0) {
 		debug("_fork_all_tasks failed");
 		rc = ESLURMD_EXECVE_FAILED;
-		goto fail3;
+		goto fail2;
 	}
 
 	/*
@@ -1409,7 +1677,7 @@ job_manager(stepd_step_rec_t *step)
 	 * launch to happen.
 	 */
 	if ((rc != SLURM_SUCCESS) || !io_initialized)
-		goto fail3;
+		goto fail2;
 
 	io_close_task_fds(step);
 
@@ -1441,12 +1709,6 @@ job_manager(stepd_step_rec_t *step)
 	acct_gather_profile_g_node_step_end();
 	set_job_state(step, SLURMSTEPD_STEP_ENDING);
 
-fail3:
-	if (!step->batch && (step->step_id.step_id != SLURM_INTERACTIVE_STEP) &&
-	    (switch_g_job_fini(step->switch_job) < 0)) {
-		error("switch_g_job_fini: %m");
-	}
-
 fail2:
 	/*
 	 * First call switch_g_job_postfini() - In at least one case,
@@ -1468,8 +1730,14 @@ fail2:
 	step_terminate_monitor_stop();
 	if (!step->batch && (step->step_id.step_id != SLURM_INTERACTIVE_STEP)) {
 		/* This sends a SIGKILL to the pgid */
-		if (switch_g_job_postfini(step) < 0)
-			error("switch_g_job_postfini: %m");
+		if (switch_g_job_postfini(step) < 0) {
+                        error("switch_g_job_postfini: %m");
+			/*
+			 * Drain the node since resources might still be kept.
+			 * (E.g, cxi_service for switch/hpe_slingshot.)
+			 */
+			stepd_drain_node("switch_g_job_postfini failed");
+		}
 	}
 
 	/*
@@ -1756,7 +2024,7 @@ static int exec_wait_kill_child (struct exec_wait_info *e)
  *  Send all children in exec_wait_list SIGKILL.
  *  Returns 0 for success or  < 0 on failure.
  */
-static int exec_wait_kill_children (List exec_wait_list)
+static int exec_wait_kill_children(list_t *exec_wait_list)
 {
 	int rc = 0;
 	int count;
@@ -1794,20 +2062,6 @@ static void prepare_stdio (stepd_step_rec_t *step, stepd_step_task_info_t *task)
 	return;
 }
 
-static void _unblock_signals (void)
-{
-	sigset_t set;
-	int i;
-
-	for (i = 0; slurmstepd_blocked_signals[i]; i++) {
-		/* eliminate pending signals, then set to default */
-		xsignal(slurmstepd_blocked_signals[i], SIG_IGN);
-		xsignal(slurmstepd_blocked_signals[i], SIG_DFL);
-	}
-	sigemptyset(&set);
-	xsignal_set_mask (&set);
-}
-
 /*
  * fork and exec N tasks
  */
@@ -1818,8 +2072,9 @@ _fork_all_tasks(stepd_step_rec_t *step, bool *io_initialized)
 	int i;
 	struct priv_state sprivs;
 	jobacct_id_t jobacct_id;
-	List exec_wait_list = NULL;
+	list_t *exec_wait_list = NULL;
 	uint32_t node_offset = 0, task_offset = 0;
+	char saved_cwd[PATH_MAX];
 
 	if (step->het_job_node_offset != NO_VAL)
 		node_offset = step->het_job_node_offset;
@@ -1830,6 +2085,11 @@ _fork_all_tasks(stepd_step_rec_t *step, bool *io_initialized)
 	START_TIMER;
 
 	xassert(step != NULL);
+
+	if (!getcwd(saved_cwd, sizeof(saved_cwd))) {
+		error ("Unable to get current working directory: %m");
+		strlcpy(saved_cwd, "/tmp", sizeof(saved_cwd));
+	}
 
 	if (task_g_pre_setuid(step)) {
 		error("Failed to invoke task plugins: one of task_p_pre_setuid functions returned error");
@@ -1932,18 +2192,26 @@ _fork_all_tasks(stepd_step_rec_t *step, bool *io_initialized)
 		}
 	}
 
-	if (spank_user (step) < 0) {
-		error("spank_user failed.");
-		rc = SLURM_ERROR;
+	if ((rc = _run_spank_func(SPANK_STEP_USER_INIT, step, -1, &sprivs))) {
+		if (rc < 0) {
+			error("spank_user failed.");
+			rc = SLURM_ERROR;
 
-		step->task[0]->estatus = W_EXITCODE(1, 0);
-		step->task[0]->exited = true;
-		slurm_mutex_lock(&step_complete.lock);
-		if (!step_complete.step_rc)
-			step_complete.step_rc = rc;
-		slurm_mutex_unlock(&step_complete.lock);
-
-		goto fail4;
+			step->task[0]->estatus = W_EXITCODE(1, 0);
+			step->task[0]->exited = true;
+			slurm_mutex_lock(&step_complete.lock);
+			if (!step_complete.step_rc)
+				step_complete.step_rc = rc;
+			slurm_mutex_unlock(&step_complete.lock);
+			goto fail4;
+		} else {
+			/*
+			 * A drop_privileges() or reclaim_privileges() failed,
+			 * In this case, bail out skipping the redundant
+			 * reclaim.
+			 */
+			goto fail2;
+		}
 	}
 
 	exec_wait_list = list_create ((ListDelF) _exec_wait_info_destroy);
@@ -2000,8 +2268,6 @@ _fork_all_tasks(stepd_step_rec_t *step, bool *io_initialized)
 
 			/* log_fini(); */ /* note: moved into exec_task() */
 
-			_unblock_signals();
-
 			/*
 			 *  Need to setup stdio before setpgid() is called
 			 *   in case we are setting up a tty. (login_tty()
@@ -2054,7 +2320,7 @@ _fork_all_tasks(stepd_step_rec_t *step, bool *io_initialized)
 		/* Don't bother erroring out here */
 	}
 
-	if (chdir(sprivs.saved_cwd) < 0) {
+	if (chdir(saved_cwd) < 0) {
 		error ("Unable to return to working directory");
 	}
 
@@ -2102,7 +2368,7 @@ _fork_all_tasks(stepd_step_rec_t *step, bool *io_initialized)
 			goto fail2;
 		}
 
-		if (spank_task_post_fork (step, i) < 0) {
+		if (_run_spank_func(SPANK_STEP_TASK_POST_FORK, step, i, NULL) < 0) {
 			error ("spank task %d post-fork failed", i);
 			rc = SLURM_ERROR;
 
@@ -2148,7 +2414,7 @@ _fork_all_tasks(stepd_step_rec_t *step, bool *io_initialized)
 	return rc;
 
 fail4:
-	if (chdir (sprivs.saved_cwd) < 0) {
+	if (chdir(saved_cwd) < 0) {
 		error ("Unable to return to working directory");
 	}
 fail3:
@@ -2257,7 +2523,7 @@ static int
 _wait_for_any_task(stepd_step_rec_t *step, bool waitflag)
 {
 	stepd_step_task_info_t *t = NULL;
-	int rc, status = 0;
+	int rc = 0, status = 0;
 	pid_t pid;
 	int completed = 0;
 	jobacctinfo_t *jobacct = NULL;
@@ -2356,11 +2622,10 @@ _wait_for_any_task(stepd_step_rec_t *step, bool waitflag)
 					error("--task-epilog failed status=%d",
 					      rc);
 			}
-
-			if (spank_task_exit(step, t->id) < 0) {
+			if (_run_spank_func(SPANK_STEP_TASK_EXIT, step, t->id,
+					    NULL) < 0)
 				error ("Unable to spank task %d at exit",
 				       t->id);
-			}
 			rc = task_g_post_term(step, t);
 			if (rc == ENOMEM)
 				step->oom_error = true;
@@ -2397,19 +2662,22 @@ _wait_for_all_tasks(stepd_step_rec_t *step)
 
 	for (i = 0; i < tasks_left; ) {
 		int rc;
-		rc = _wait_for_any_task(step, true);
-		if (rc != -1) {
-			i += rc;
-			if (i < tasks_left) {
-				/* To limit the amount of traffic back
-				 * we will sleep a bit to make sure we
-				 * have most if not all the tasks
-				 * completed before we return */
-				usleep(100000);	/* 100 msec */
-				rc = _wait_for_any_task(step, false);
-				if (rc != -1)
-					i += rc;
-			}
+		if ((rc = _wait_for_any_task(step, true)) == -1) {
+			error("%s: No child processes. node_tasks:%u, expected:%d, reaped:%d",
+			      __func__, step->node_tasks, tasks_left, i);
+			break;
+		}
+
+		i += rc;
+		if (i < tasks_left) {
+			/* To limit the amount of traffic back
+			 * we will sleep a bit to make sure we
+			 * have most if not all the tasks
+			 * completed before we return */
+			usleep(100000);	/* 100 msec */
+			rc = _wait_for_any_task(step, false);
+			if (rc != -1)
+				i += rc;
 		}
 
 		if (i < tasks_left) {

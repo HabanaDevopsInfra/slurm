@@ -50,20 +50,18 @@
 #include "src/slurmrestd/rest_auth.h"
 
 static pthread_rwlock_t paths_lock = PTHREAD_RWLOCK_INITIALIZER;
-static List paths = NULL;
+static list_t *paths = NULL;
 static data_parser_t **parsers; /* symlink to parser array */
 serializer_flags_t yaml_flags = SER_FLAGS_PRETTY;
 serializer_flags_t json_flags = SER_FLAGS_PRETTY;
 
-#define MAGIC 0xDFFEAAAE
 #define MAGIC_HEADER_ACCEPT 0xDF9EAABE
 
 typedef struct {
-	int magic;
+#define PATH_MAGIC 0xDFFEA1AE
+	int magic; /* PATH_MAGIC */
 	/* unique tag per path */
 	int tag;
-	/* handler's callback to call on match */
-	openapi_handler_t callback;
 	/* handler's ctxt callback to call on match */
 	const openapi_path_binding_t *op_path;
 	/* meta info from plugin */
@@ -87,11 +85,9 @@ static const char *_name(const on_http_request_args_t *args)
 
 static void _check_path_magic(const path_t *path)
 {
-	xassert(path->magic == MAGIC);
+	xassert(path->magic == PATH_MAGIC);
 	xassert(path->tag >= 0);
-	xassert(path->callback || path->op_path->callback);
-	xassert(!!path->callback !=
-		(path->op_path && !!path->op_path->callback));
+	xassert(path->op_path->callback);
 }
 
 static void _free_path(void *x)
@@ -103,7 +99,7 @@ static void _free_path(void *x)
 
 	_check_path_magic(path);
 
-	path->magic = ~MAGIC;
+	path->magic = ~PATH_MAGIC;
 	xfree(path);
 }
 
@@ -145,94 +141,23 @@ static int _match_path_key(void *x, void *ptr)
 		return 0;
 }
 
-static int _bind(const char *str_path, openapi_handler_t callback,
-		 const openapi_path_binding_t *op_path, int callback_tag,
-		 data_parser_t *parser, const openapi_resp_meta_t *meta)
-{
-	int path_tag;
-	path_t *path;
-
-	slurm_rwlock_wrlock(&paths_lock);
-
-	debug3("%s: binding %s to 0x%"PRIxPTR,
-	       __func__, str_path,
-	       (callback ? (uintptr_t) callback :
-		(uintptr_t) op_path->callback));
-
-	path_tag = register_path_tag(str_path);
-	if (path_tag == -1) {
-		debug("%s: skipping path: %s",
-		      __func__, str_path);
-		slurm_rwlock_unlock(&paths_lock);
-		return ESLURM_DATA_PATH_NOT_FOUND;
-	}
-
-	if ((path = list_find_first(paths, _match_path_key, &path_tag)))
-		goto exists;
-
-	/* add new path */
-	debug4("%s: new path %s with path_tag %d callback_tag %d",
-	       __func__, str_path, path_tag, callback_tag);
-	print_path_tag_methods(path_tag);
-
-	path = xmalloc(sizeof(*path));
-	path->magic = MAGIC;
-	path->tag = path_tag;
-	path->parser = parser;
-	list_append(paths, path);
-
-exists:
-	path->callback = callback;
-	path->op_path = op_path;
-	path->meta = meta;
-	path->callback_tag = callback_tag;
-
-	slurm_rwlock_unlock(&paths_lock);
-
-	return SLURM_SUCCESS;
-}
-
-extern int bind_operation_handler(const char *str_path,
-				  openapi_handler_t callback, int callback_tag)
-{
-	int rc;
-
-	if (!xstrstr(str_path, OPENAPI_DATA_PARSER_PARAM))
-		return _bind(str_path, callback, NULL, callback_tag, NULL,
-			     NULL);
-
-	for (int i = 0; parsers[i]; i++) {
-		char *path = xstrdup(str_path);
-
-		xstrsubstitute(path, OPENAPI_DATA_PARSER_PARAM,
-			       data_parser_get_plugin_version(parsers[i]));
-
-		rc = _bind(path, callback, NULL, callback_tag, parsers[i],
-			   NULL);
-
-		xfree(path);
-
-		if (rc)
-			return rc;
-	}
-
-	return SLURM_SUCCESS;
-}
-
 static int _add_binded_path(const char *path_str,
 			    const openapi_path_binding_t *op_path,
 			    const openapi_resp_meta_t *meta,
 			    data_parser_t *parser)
 {
-	int tag;
+	int tag, rc;
 	path_t *path;
 
 	slurm_rwlock_wrlock(&paths_lock);
-	tag = register_path_binding(path_str, op_path, meta, parser);
+	rc = register_path_binding(path_str, op_path, meta, parser, &tag);
 	slurm_rwlock_unlock(&paths_lock);
 
-	if (tag == -1)
-		return ESLURM_DATA_PATH_NOT_FOUND;
+	if (rc == ESLURM_NOT_SUPPORTED)
+		return SLURM_SUCCESS;
+
+	if (rc)
+		return rc;
 
 	/* path should never be a duplicate */
 	xassert(!list_find_first(paths, _match_path_key, &tag));
@@ -243,7 +168,7 @@ static int _add_binded_path(const char *path_str,
 	print_path_tag_methods(tag);
 
 	path = xmalloc(sizeof(*path));
-	path->magic = MAGIC;
+	path->magic = PATH_MAGIC;
 	path->tag = tag;
 	path->parser = parser;
 	path->op_path = op_path;
@@ -258,7 +183,6 @@ extern int bind_operation_path(const openapi_path_binding_t *op_path,
 			       const openapi_resp_meta_t *meta)
 {
 	int rc = SLURM_SUCCESS;
-	openapi_resp_single_t openapi_response = {0};
 	data_t *resp;
 
 	if (!(op_path->flags & OP_BIND_DATA_PARSER)) {
@@ -286,23 +210,7 @@ extern int bind_operation_path(const openapi_path_binding_t *op_path,
 	xassert(xstrstr(op_path->path, OPENAPI_DATA_PARSER_PARAM));
 
 	for (int i = 0; !rc && parsers[i]; i++) {
-		char *path = NULL;
-
-		/*
-		 * Skip parser if openapi resp is not supported
-		 * TODO: check to be removed after data_parser/v0.0.39 removed
-		 */
-		data_set_null(resp);
-		if (DATA_DUMP(parsers[i], OPENAPI_RESP, openapi_response,
-			      resp)) {
-			debug4("%s: skipping %s for %s",
-			       __func__,
-			       data_parser_get_plugin_version(parsers[i]),
-			       op_path->path);
-			continue;
-		}
-
-		path = xstrdup(op_path->path);
+		char *path = xstrdup(op_path->path);
 
 		xstrsubstitute(path, OPENAPI_DATA_PARSER_PARAM,
 			       data_parser_get_plugin_version(parsers[i]));
@@ -310,47 +218,13 @@ extern int bind_operation_path(const openapi_path_binding_t *op_path,
 		rc = _add_binded_path(path, op_path, meta, parsers[i]);
 
 		xfree(path);
-		if (rc && (rc != ESLURM_DATA_PATH_NOT_FOUND))
+		if (rc)
 			break;
 	}
 
 	FREE_NULL_DATA(resp);
 
 	return rc;
-}
-
-static int _rm_path_callback(void *x, void *ptr)
-{
-	path_t *path = (path_t *)x;
-	bool mc = (path->callback == ptr);
-	bool mctxt = (path->op_path ? (path->op_path->callback == ptr) : false);
-
-	_check_path_magic(path);
-
-	if (!mc && !mctxt)
-		return 0;
-
-	debug5("%s: removing tag %d for callback=0x%"PRIxPTR,
-	       __func__, path->tag, (uintptr_t) ptr);
-	unregister_path_tag(path->tag);
-
-	return 1;
-}
-
-extern int unbind_operation_handler(openapi_handler_t callback)
-{
-	return ESLURM_NOT_SUPPORTED;
-}
-
-extern int unbind_operation_ctxt_handler(openapi_ctxt_handler_t callback)
-{
-	slurm_rwlock_wrlock(&paths_lock);
-
-	if (paths)
-		list_delete_all(paths, _rm_path_callback, callback);
-
-	slurm_rwlock_unlock(&paths_lock);
-	return SLURM_ERROR;
 }
 
 static int _operations_router_reject(const on_http_request_args_t *args,
@@ -421,8 +295,12 @@ static int _get_query(on_http_request_args_t *args, data_t **query,
 {
 	int rc = SLURM_SUCCESS;
 
-	/* post will have query in the body otherwise it is in the URL */
-	if (args->method == HTTP_REQUEST_POST)
+	/*
+	 * RFC 7230 3.3:
+	 * 	The presence of a message body in a request is signaled by a
+	 * 	Content-Length or Transfer-Encoding header field.
+	 */
+	if (args->body_length > 0)
 		rc = serialize_g_string_to_data(query, args->body,
 						args->body_length, read_mime);
 	else
@@ -439,7 +317,7 @@ static int _get_query(on_http_request_args_t *args, data_t **query,
 
 }
 
-static void _parse_http_accept_entry(char *entry, List l)
+static void _parse_http_accept_entry(char *entry, list_t *l)
 {
 	char *save_ptr = NULL;
 	char *token = NULL;
@@ -499,9 +377,9 @@ static void _http_accept_list_delete(void *x)
 	xfree(obj);
 }
 
-static List _parse_http_accept(const char *accept)
+static list_t *_parse_http_accept(const char *accept)
 {
-	List l = list_create(_http_accept_list_delete);
+	list_t *l = list_create(_http_accept_list_delete);
 	xassert(accept);
 	char *save_ptr = NULL;
 	char *token = NULL;
@@ -536,7 +414,7 @@ static int _resolve_mime(on_http_request_args_t *args, const char **read_mime,
 	}
 
 	if (args->accept) {
-		List accept = _parse_http_accept(args->accept);
+		list_t *accept = _parse_http_accept(args->accept);
 		http_header_accept_t *ptr = NULL;
 		list_itr_t *itr = list_iterator_create(accept);
 		while ((ptr = list_next(itr))) {
@@ -570,10 +448,24 @@ static int _resolve_mime(on_http_request_args_t *args, const char **read_mime,
 			args, "Accept content type is unknown",
 			HTTP_STATUS_CODE_ERROR_UNSUPPORTED_MEDIA_TYPE, NULL);
 
-	if (args->method != HTTP_REQUEST_POST && args->body_length > 0)
+	/*
+	 * RFC7230 3.3: Allows for any request to have a BODY but doesn't require
+	 * the server do anything with it.
+	 *	Request message framing is independent of method semantics, even
+	 *	if the method does not define any use for a message body.
+	 * RFC7231 Appendix B:
+	 *	To be consistent with the method-neutral parsing algorithm of
+	 *	[RFC7230], the definition of GET has been relaxed so that
+	 *	requests can have a body, even though a body has no meaning for
+	 *	GET.  (Section 4.3.1)
+	 *
+	 * In order to avoid confusing the client when their query or body gets
+	 * ignored, reject request when both query and body are provided.
+	 */
+	if ((args->body_length > 0) && args->query && args->query[0])
 		return _operations_router_reject(
 			args,
-			"Unexpected http body provided for non-POST method",
+			"Unexpected HTTP body provided when URL Query provided",
 			HTTP_STATUS_CODE_ERROR_BAD_REQUEST, NULL);
 
 	if (xstrcasecmp(*read_mime, MIME_TYPE_URL_ENCODED) &&
@@ -601,8 +493,7 @@ static int _resolve_mime(on_http_request_args_t *args, const char **read_mime,
 }
 
 static int _call_handler(on_http_request_args_t *args, data_t *params,
-			 data_t *query, openapi_handler_t callback,
-			 const openapi_path_binding_t *op_path,
+			 data_t *query, const openapi_path_binding_t *op_path,
 			 int callback_tag, const char *write_mime,
 			 data_parser_t *parser, const openapi_resp_meta_t *meta,
 			 const char *plugin)
@@ -612,25 +503,15 @@ static int _call_handler(on_http_request_args_t *args, data_t *params,
 	char *body = NULL;
 	http_status_code_t e;
 
-	if (callback) {
-		xassert(!op_path);
-		debug3("%s: [%s] BEGIN: calling handler: 0x%"PRIXPTR"[%d] for path: %s",
-		       __func__, _name(args), (uintptr_t) callback,
-		       callback_tag, args->path);
+	xassert(op_path);
+	debug3("%s: [%s] BEGIN: calling ctxt handler: 0x%"PRIXPTR"[%d] for path: %s",
+	       __func__, _name(args), (uintptr_t) op_path->callback,
+	       callback_tag, args->path);
 
-		rc = callback(_name(args), args->method, params, query,
-			      callback_tag, resp, args->context->auth, parser);
-	} else {
-		xassert(op_path);
-		debug3("%s: [%s] BEGIN: calling ctxt handler: 0x%"PRIXPTR"[%d] for path: %s",
-		       __func__, _name(args), (uintptr_t) op_path->callback,
-		       callback_tag, args->path);
-
-		rc = wrap_openapi_ctxt_callback(_name(args), args->method,
-						params, query, callback_tag,
-						resp, args->context->auth,
-						parser, op_path, meta);
-	}
+	rc = wrap_openapi_ctxt_callback(_name(args), args->method, params,
+					query, callback_tag, resp,
+					args->context->auth, parser, op_path,
+					meta);
 
 	/*
 	 * Clear auth context after callback is complete. Client has to provide
@@ -705,8 +586,8 @@ static int _call_handler(on_http_request_args_t *args, data_t *params,
 	}
 
 	debug3("%s: [%s] END: calling handler: (0x%"PRIXPTR") callback_tag %d for path: %s rc[%d]=%s status[%d]=%s",
-	       __func__, _name(args), (uintptr_t) callback, callback_tag,
-	       args->path, rc, slurm_strerror(rc), e,
+	       __func__, _name(args), (uintptr_t) op_path->callback,
+	       callback_tag, args->path, rc, slurm_strerror(rc), e,
 	       get_http_status_code_string(e));
 
 	xfree(body);
@@ -722,7 +603,6 @@ extern int operations_router(on_http_request_args_t *args)
 	data_t *params = NULL;
 	int path_tag;
 	path_t *path = NULL;
-	openapi_handler_t callback = NULL;
 	int callback_tag;
 	const char *read_mime = NULL, *write_mime = NULL, *plugin = NULL;
 	data_parser_t *parser = NULL;
@@ -755,14 +635,14 @@ extern int operations_router(on_http_request_args_t *args)
 	_check_path_magic(path);
 
 	/* clone over the callback info to release lock */
-	callback = path->callback;
 	callback_tag = path->callback_tag;
 	parser = path->parser;
 	slurm_rwlock_unlock(&paths_lock);
 
 	debug5("%s: [%s] found callback handler: (0x%"PRIXPTR") callback_tag=%d path=%s parser=%s",
-	       __func__, _name(args), (uintptr_t) callback, callback_tag,
-	       args->path, (parser ? data_parser_get_plugin(parser) : ""));
+	       __func__, _name(args), (uintptr_t) path->op_path->callback,
+	       callback_tag, args->path,
+	       (parser ? data_parser_get_plugin(parser) : ""));
 
 	if ((rc = _resolve_mime(args, &read_mime, &write_mime, &plugin)))
 		goto cleanup;
@@ -770,9 +650,8 @@ extern int operations_router(on_http_request_args_t *args)
 	if ((rc = _get_query(args, &query, read_mime)))
 		goto cleanup;
 
-	rc = _call_handler(args, params, query, callback, path->op_path,
-			   callback_tag, write_mime, parser, path->meta,
-			   plugin);
+	rc = _call_handler(args, params, query, path->op_path, callback_tag,
+			   write_mime, parser, path->meta, plugin);
 
 cleanup:
 	FREE_NULL_DATA(query);

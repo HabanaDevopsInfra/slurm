@@ -44,7 +44,7 @@
  * IN job_ptr - job's pointer
  * IN mc_ptr - job's multi-core specs, NO_VAL and INFINITE mapped to zero
  * IN sock_gres_list - list of sock_gres_t entries built by
- *	gres_sched_create_sock_gres_list()
+ *	gres_sock_list_create()
  * IN sockets - Count of sockets on the node
  * IN cores_per_socket - Count of cores per socket on the node
  * IN cpus_per_core - Count of CPUs per core on the node
@@ -62,7 +62,7 @@
  */
 extern void gres_filter_sock_core(job_record_t *job_ptr,
 				  gres_mc_data_t *mc_ptr,
-				  List sock_gres_list,
+				  list_t *sock_gres_list,
 				  uint16_t sockets,
 				  uint16_t cores_per_socket,
 				  uint16_t cpus_per_core,
@@ -75,6 +75,9 @@ extern void gres_filter_sock_core(job_record_t *job_ptr,
 				  bool first_pass,
 				  bitstr_t *avail_core,
 				  char *node_name,
-				  uint16_t cr_type);
+				  uint16_t cr_type,
+				  uint16_t res_cores_per_gpu,
+				  int node_i,
+				  uint16_t **cores_per_sock_limit);
 
 #endif

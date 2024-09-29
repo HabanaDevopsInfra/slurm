@@ -99,6 +99,9 @@ typedef enum {
 	DATA_PARSER_OPENAPI_ACCOUNT_QUERY_PTR, /* openapi_account_query_t* */
 	DATA_PARSER_ACCOUNT_CONDITION, /* slurmdb_account_cond_t */
 	DATA_PARSER_ACCOUNT_CONDITION_PTR, /* slurmdb_account_cond_t* */
+	DATA_PARSER_ACCOUNT_CONDITION_WITH_ASSOC_V40, /* slurmdb_account_cond_t->flags&SLURMDB_ACCT_FLAG_WASSOC - TODO: Remove with v0.0.40 */
+	DATA_PARSER_ACCOUNT_CONDITION_WITH_WCOORD_V40, /* slurmdb_account_cond_t->flags&SLURMDB_ACCT_FLAG_WCOORD - TODO: Remove with v0.0.40 */
+	DATA_PARSER_ACCOUNT_CONDITION_WITH_DELETED_V40, /* slurmdb_account_cond_t->flags&SLURMDB_ACCT_FLAG_DELETED - TODO: Remove with v0.0.40 */
 	DATA_PARSER_ACCOUNT_LIST, /* list of slurmdb_account_rec_t* */
 	DATA_PARSER_ACCOUNT, /* slurmdb_account_rec_t */
 	DATA_PARSER_ACCOUNT_PTR, /* slurmdb_account_rec_t* */
@@ -122,7 +125,8 @@ typedef enum {
 	DATA_PARSER_ASSOC_SHORT_PTR, /* slurmdb_assoc_rec_t* (for id only) */
 	DATA_PARSER_ASSOC, /* slurmdb_assoc_rec_t */
 	DATA_PARSER_ASSOC_PTR, /* slurmdb_assoc_rec_t* */
-	DATA_PARSER_ASSOC_FLAGS, /* slurmdb_assoc_rec_t->flags & ASSOC_FLAG_* */
+	DATA_PARSER_ASSOC_FLAGS, /* slurmdb_assoc_flags_t */
+	DATA_PARSER_ASSOC_CONDITION_FLAGS, /* slurmdb_assoc_cond_t->flags & ASSOC_FLAG_COND_* */
 	DATA_PARSER_ASSOC_USAGE, /* slurmdb_assoc_usage_t */
 	DATA_PARSER_ASSOC_USAGE_PTR, /* slurmdb_assoc_usage_t* */
 	DATA_PARSER_ASSOC_REC_SET, /* slurmdb_assoc_rec_t */
@@ -131,6 +135,13 @@ typedef enum {
 	DATA_PARSER_OPENAPI_ASSOCS_REMOVED_RESP_PTR, /* openapi_resp_single_t* */
 	DATA_PARSER_ASSOC_CONDITION, /* slurmdb_assoc_cond_t */
 	DATA_PARSER_ASSOC_CONDITION_PTR, /* slurmdb_assoc_cond_t* */
+	DATA_PARSER_ASSOC_CONDITION_WITH_DELETED_OLD, /* slurmdb_assoc_cond_t->flags&ASSOC_COND_FLAG_WITH_DELETED */
+	DATA_PARSER_ASSOC_CONDITION_WITH_USAGE_OLD, /* slurmdb_assoc_cond_t->flags&ASSOC_COND_FLAG_WITH_USAGE */
+	DATA_PARSER_ASSOC_CONDITION_ONLY_DEFS_OLD, /* slurmdb_assoc_cond_t->flags&ASSOC_COND_ONLY_DEFS */
+	DATA_PARSER_ASSOC_CONDITION_RAW_QOS_OLD, /* slurmdb_assoc_cond_t->flags&ASSOC_COND_RAW_QOS */
+	DATA_PARSER_ASSOC_CONDITION_SUB_ACCTS_OLD, /* slurmdb_assoc_cond_t->flags&ASSOC_COND_SUB_ACCTS */
+	DATA_PARSER_ASSOC_CONDITION_WOPI_OLD, /* slurmdb_assoc_cond_t->flags&ASSOC_COND_WOPI */
+	DATA_PARSER_ASSOC_CONDITION_WOPL_OLD, /* slurmdb_assoc_cond_t->flags&ASSOC_COND_WOPL */
 	DATA_PARSER_CLASSIFICATION_TYPE, /* slurmdb_classification_type_t */
 	DATA_PARSER_CLUSTER_ACCT_REC_LIST, /* list of slurmdb_cluster_accounting_rec_t* */
 	DATA_PARSER_CLUSTER_ACCT_REC, /* slurmdb_cluster_accounting_rec_t */
@@ -174,6 +185,9 @@ typedef enum {
 	DATA_PARSER_JOB_CONDITION_DB_FLAGS, /* uint32_t - SLURMDB_JOB_FLAG_* */
 	DATA_PARSER_JOB_CONDITION_SUBMIT_TIME, /* slurmdb_job_cond_t->usage_start&flags */
 	DATA_PARSER_JOB_CONDITION_PTR, /* slurmdb_job_cond_t* */
+	DATA_PARSER_JOB_STDIN, /* slurmdb_job_rec_t->std_in */
+	DATA_PARSER_JOB_STDOUT, /* slurmdb_job_rec_t->std_out */
+	DATA_PARSER_JOB_STDERR, /* slurmdb_job_rec_t->std_err */
 	DATA_PARSER_OPENAPI_SLURMDBD_JOBS_RESP, /* openapi_resp_single_t */
 	DATA_PARSER_OPENAPI_SLURMDBD_JOBS_RESP_PTR, /* openapi_resp_single_t* */
 	DATA_PARSER_OPENAPI_SLURMDBD_JOB_PARAM, /* openapi_job_param_t */
@@ -216,6 +230,8 @@ typedef enum {
 	DATA_PARSER_QOS_PREEMPT_MODES, /* slurmdb_qos_rec_t->preempt_mode & QOS_FLAG_* */
 	DATA_PARSER_QOS_CONDITION, /* slurmdb_qos_cond_t */
 	DATA_PARSER_QOS_CONDITION_PTR, /* slurmdb_qos_cond_t* */
+	DATA_PARSER_QOS_CONDITION_WITH_DELETED_OLD, /* slurmdb_qos_cond_t->flags&QOS_COND_FLAG_WITH_DELETED - TODO: Remove with v0.0.42 */
+	DATA_PARSER_QOS_CONDITION_FLAGS, /* slurmdb_qos_cond_t->flags & QOS_FLAG_COND_* */
 	DATA_PARSER_OPENAPI_SLURMDBD_QOS_RESP, /* openapi_resp_single_t */
 	DATA_PARSER_OPENAPI_SLURMDBD_QOS_RESP_PTR, /* openapi_resp_single_t* */
 	DATA_PARSER_OPENAPI_SLURMDBD_QOS_REMOVED_RESP, /* openapi_resp_single_t */
@@ -239,7 +255,6 @@ typedef enum {
 	DATA_PARSER_STATS_USER_PTR, /* slurmdb_rpc_obj_t* */
 	DATA_PARSER_ROLLUP_STATS, /* slurmdb_rollup_stats_t */
 	DATA_PARSER_ROLLUP_STATS_PTR, /* slurmdb_rollup_stats_t* */
-	DATA_PARSER_STEP_CPUFREQ_GOV, /* slurmdb_step_rec_t.req_cpufreq_gov (uint32_t) of CPU_FREQ_* flags */
 	DATA_PARSER_SLURM_STEP_ID, /* slurm_step_id_t */
 	DATA_PARSER_SLURM_STEP_ID_PTR, /* slurm_step_id_t* */
 	DATA_PARSER_SLURM_STEP_ID_STRING, /* slurm_step_id_t -> SELECTED_STEP */
@@ -337,6 +352,13 @@ typedef enum {
 	DATA_PARSER_OPENAPI_PING_ARRAY_RESP_PTR, /* openapi_resp_single_t* */
 	DATA_PARSER_CONTROLLER_PING_MODE, /* char * - verbose controller mode */
 	DATA_PARSER_CONTROLLER_PING_RESULT, /* bool - "UP" or "DOWN" */
+	DATA_PARSER_SLURMDBD_PING, /* controller_ping_t */
+	DATA_PARSER_SLURMDBD_PING_PTR, /* controller_ping_t* */
+	DATA_PARSER_SLURMDBD_PING_ARRAY, /* controller_ping_t (NULL terminated array) */
+	DATA_PARSER_OPENAPI_SLURMDBD_PING_RESP, /* openapi_resp_single_t */
+	DATA_PARSER_OPENAPI_SLURMDBD_PING_RESP_PTR, /* openapi_resp_single_t* */
+	DATA_PARSER_SLURMDBD_PING_MODE, /* char * - verbose slurmdbd mode */
+	DATA_PARSER_SLURMDBD_PING_RESULT, /* bool - "UP" or "DOWN" */
 	DATA_PARSER_NODE, /* node_info_t */
 	DATA_PARSER_NODE_PTR, /* node_info_t* */
 	DATA_PARSER_NODE_ARRAY, /* node_info_t** (NULL terminated) */
@@ -409,7 +431,7 @@ typedef enum {
 	DATA_PARSER_ALLOCATED_CPUS, /* DEPRECATED v41: uint32_t if slurm_conf.select_type_param & CR_CPU */
 	DATA_PARSER_HOSTLIST, /* hostlist_t* */
 	DATA_PARSER_HOSTLIST_STRING, /* char * - acts like hostlist_t* */
-	DATA_PARSER_POWER_FLAGS, /* uint8_t & SLURM_POWER_FLAGS_* */
+	DATA_PARSER_POWER_FLAGS, /* REMOVED 24.05: uint8_t & SLURM_POWER_FLAGS_* */
 	DATA_PARSER_PARTITION_INFO, /* partition_info_t */
 	DATA_PARSER_PARTITION_INFO_PTR, /* partition_info_t* */
 	DATA_PARSER_PARTITION_INFO_MSG, /* partition_info_msg_t */
@@ -422,10 +444,10 @@ typedef enum {
 	DATA_PARSER_OPENAPI_PARTITION_PARAM_PTR, /* openapi_partition_param_t* */
 	DATA_PARSER_OPENAPI_PARTITIONS_QUERY, /* openapi_partitions_query_t */
 	DATA_PARSER_OPENAPI_PARTITIONS_QUERY_PTR, /* openapi_partitions_query_t* */
-	DATA_PARSER_EXT_SENSORS_DATA, /* ext_sensors_data_t */
-	DATA_PARSER_EXT_SENSORS_DATA_PTR, /* ext_sensors_data_t* */
-	DATA_PARSER_POWER_MGMT_DATA, /* power_mgmt_data_t */
-	DATA_PARSER_POWER_MGMT_DATA_PTR, /* power_mgmt_data_t* */
+	DATA_PARSER_EXT_SENSORS_DATA, /* REMOVED 24.05: ext_sensors_data_t */
+	DATA_PARSER_EXT_SENSORS_DATA_PTR, /* REMOVED 24.05: ext_sensors_data_t* */
+	DATA_PARSER_POWER_MGMT_DATA, /* REMOVED 24.05: power_mgmt_data_t */
+	DATA_PARSER_POWER_MGMT_DATA_PTR, /* REMOVED 24.05: power_mgmt_data_t* */
 	DATA_PARSER_RESERVATION_INFO, /* reserve_info_t */
 	DATA_PARSER_RESERVATION_INFO_PTR, /* reserve_info_t* */
 	DATA_PARSER_RESERVATION_FLAGS, /* uint64_t & RESERVE_FLAG_* */
@@ -455,9 +477,14 @@ typedef enum {
 	DATA_PARSER_OPENAPI_JOB_SUBMIT_RESPONSE_PTR, /* job_submit_response_t* */
 	DATA_PARSER_JOB_SUBMIT_REQ, /* job_submit_request_t */
 	DATA_PARSER_JOB_SUBMIT_REQ_PTR, /* job_submit_request_t */
+	DATA_PARSER_OPENAPI_JOB_ALLOC_RESP, /* openapi_job_alloc_response_t */
+	DATA_PARSER_OPENAPI_JOB_ALLOC_RESP_PTR, /* openapi_job_alloc_response_t* */
+	DATA_PARSER_JOB_ALLOC_REQ, /* openapi_job_alloc_request_t */
+	DATA_PARSER_JOB_ALLOC_REQ_PTR, /* openapi_job_alloc_request_t* */
 	DATA_PARSER_JOB_DESC_MSG, /* job_desc_msg_t */
 	DATA_PARSER_JOB_DESC_MSG_ARGV, /* job_desc_msg_t->argv+argc */
 	DATA_PARSER_JOB_DESC_MSG_CPU_FREQ, /* job_desc_msg_t->cpu_freq* */
+	DATA_PARSER_JOB_DESC_MSG_CRON_ENTRY, /* cron_entry_t * */
 	DATA_PARSER_JOB_DESC_MSG_ENV, /* job_desc_msg_t->env* */
 	DATA_PARSER_JOB_DESC_MSG_NODES, /* job_desc_msg_t->min/max_cpus */
 	DATA_PARSER_JOB_DESC_MSG_SPANK_ENV, /* job_desc_msg_t->spank_env* */
@@ -473,6 +500,8 @@ typedef enum {
 	DATA_PARSER_JOB_DESC_MSG_RLIMIT_AS, /* job_desc_msg_t->environment */
 	DATA_PARSER_JOB_DESC_MSG_PTR, /* job_desc_msg_t* */
 	DATA_PARSER_JOB_DESC_MSG_LIST, /* list_t of job_desc_msg_t* */
+	DATA_PARSER_JOB_DESC_MSG_TASK_DISTRIBUTION, /* job_desc_msg_t->plane_size and job_desc_msg_t->task_dist */
+	DATA_PARSER_JOB_DESC_MSG_PLANE_SIZE, /* job_desc_msg_t->plane_size and job_desc_msg_t->task_dist */
 	DATA_PARSER_STRING_ARRAY, /* char** (NULL terminated) */
 	DATA_PARSER_STRING_LIST, /* list_t of char* */
 	DATA_PARSER_SIGNAL, /* uint16_t - UNIX process signal */
@@ -545,6 +574,20 @@ typedef enum {
 	DATA_PARSER_JOB_STATE_RESP_JOB, /* job_state_response_job_t */
 	DATA_PARSER_JOB_STATE_RESP_JOB_PTR, /* job_state_response_job_t* */
 	DATA_PARSER_JOB_STATE_RESP_JOB_JOB_ID, /* job_state_response_job_t->job_id,array_job_id,array_task_id_bitmap */
+	DATA_PARSER_KILL_JOBS_MSG, /* kill_jobs_msg_t */
+	DATA_PARSER_KILL_JOBS_MSG_PTR, /* kill_jobs_msg_t* */
+	DATA_PARSER_KILL_JOBS_MSG_JOBS_ARRAY, /* kill_jobs_msg_t->jobs_array,jobs_cnt */
+	DATA_PARSER_KILL_JOBS_RESP_MSG, /* kill_jobs_resp_msg_t */
+	DATA_PARSER_KILL_JOBS_RESP_MSG_PTR, /* kill_jobs_resp_msg_t* */
+	DATA_PARSER_KILL_JOBS_RESP_JOB, /* kill_jobs_resp_job_t */
+	DATA_PARSER_KILL_JOBS_RESP_JOB_PTR, /* kill_jobs_resp_job_t* */
+	DATA_PARSER_OPENAPI_KILL_JOBS_RESP, /* openapi_kill_jobs_resp_t */
+	DATA_PARSER_OPENAPI_KILL_JOBS_RESP_PTR, /* openapi_kill_jobs_resp_t* */
+	DATA_PARSER_OPENAPI_KILL_JOB_RESP, /* openapi_kill_jobs_resp_t */
+	DATA_PARSER_OPENAPI_KILL_JOB_RESP_PTR, /* openapi_kill_jobs_resp_t* */
+	DATA_PARSER_PRIORITY_BY_PARTITION, /* slurm_job_info_t */
+	DATA_PARSER_PART_PRIO, /* part_prio_t */
+	DATA_PARSER_PART_PRIO_PTR,
 	DATA_PARSER_TYPE_MAX
 } data_parser_type_t;
 
@@ -567,12 +610,16 @@ typedef struct data_parser_s data_parser_t;
 
 /* data_parser plugin for current Slurm version */
 #define SLURM_DATA_PARSER_VERSION \
-	("data_parser/v" XSTRINGIFY(SLURM_API_AGE) "." \
+	"data_parser/v" XSTRINGIFY(SLURM_API_AGE) "." \
 	 XSTRINGIFY(SLURM_API_REVISION) "." \
-	 XSTRINGIFY(SLURM_API_CURRENT))
+	 XSTRINGIFY(SLURM_API_CURRENT)
 
 /* Separator character for parameters for a given data_parser plugin list */
 #define SLURM_DATA_PARSER_PLUGIN_PARAMS_CHAR "+"
+
+/* data_parser plugin for current Slurm version with complex mode active */
+#define SLURM_DATA_PARSER_VERSION_COMPLEX \
+	SLURM_DATA_PARSER_VERSION SLURM_DATA_PARSER_PLUGIN_PARAMS_CHAR "complex"
 
 /*
  * Initialize new data parser against given plugin
@@ -752,8 +799,7 @@ extern int data_parser_g_dump(data_parser_t *parser, data_parser_type_t type,
  * Generate meta instance for a CLI command
  */
 extern openapi_resp_meta_t *data_parser_cli_meta(int argc, char **argv,
-						 const char *mime_type,
-						 const char *data_parser);
+						 const char *mime_type);
 
 #define DATA_PARSER_DUMP_CLI_CTXT_MAGIC 0x1BA211B3
 typedef struct {
@@ -796,8 +842,7 @@ extern int data_parser_dump_cli_stdout(data_parser_type_t type, void *obj,
 		__typeof__(src) *src_ptr = &src;                              \
 		if (!src.OPENAPI_RESP_STRUCT_META_FIELD_NAME)                 \
 			src.OPENAPI_RESP_STRUCT_META_FIELD_NAME =             \
-				data_parser_cli_meta(argc, argv, mime_type,   \
-						     data_parser_str);        \
+				data_parser_cli_meta(argc, argv, mime_type);  \
 		if (!src.OPENAPI_RESP_STRUCT_ERRORS_FIELD_NAME)               \
 			src.OPENAPI_RESP_STRUCT_ERRORS_FIELD_NAME =           \
 				dump_ctxt.errors =                            \

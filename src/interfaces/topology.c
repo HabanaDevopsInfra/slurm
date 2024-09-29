@@ -58,6 +58,7 @@ typedef struct slurm_topo_ops {
 	int		(*build_config)		( void );
 	int (*eval_nodes) (topology_eval_t *topo_eval);
 
+	int (*whole_topo) (bitstr_t *node_mask);
 	bool		(*node_ranking)		( void );
 	int		(*get_node_addr)	( char* node_name,
 						  char** addr,
@@ -83,6 +84,7 @@ static const char *syms[] = {
 	"plugin_id",
 	"topology_p_build_config",
 	"topology_p_eval_nodes",
+	"topology_p_whole_topo",
 	"topology_p_generate_node_ranking",
 	"topology_p_get_node_addr",
 	"topology_p_split_hostlist",
@@ -155,7 +157,7 @@ extern int topology_g_fini(void)
 
 extern int topology_get_plugin_id(void)
 {
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	return *(ops.plugin_id);
 }
@@ -165,7 +167,7 @@ extern int topology_g_build_config(void)
 	int rc;
 	DEF_TIMERS;
 
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	START_TIMER;
 	rc = (*(ops.build_config))();
@@ -176,9 +178,16 @@ extern int topology_g_build_config(void)
 
 extern int topology_g_eval_nodes(topology_eval_t *topo_eval)
 {
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	return (*(ops.eval_nodes))(topo_eval);
+}
+
+extern int topology_g_whole_topo(bitstr_t *node_mask)
+{
+	xassert(plugin_inited);
+
+	return (*(ops.whole_topo))(node_mask);
 }
 
 /*
@@ -187,7 +196,7 @@ extern int topology_g_eval_nodes(topology_eval_t *topo_eval)
  */
 extern bool topology_g_generate_node_ranking(void)
 {
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	return (*(ops.node_ranking))();
 }
@@ -195,7 +204,7 @@ extern bool topology_g_generate_node_ranking(void)
 extern int topology_g_get_node_addr(char *node_name, char **addr,
 				    char **pattern)
 {
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	return (*(ops.get_node_addr))(node_name,addr,pattern);
 }
@@ -212,6 +221,9 @@ extern int topology_g_split_hostlist(hostlist_t *hl,
 	nnodes = nnodex = 0;
 	xassert(g_context);
 
+	if (!tree_width)
+		tree_width = slurm_conf.tree_width;
+
 	if (slurm_conf.debug_flags & DEBUG_FLAG_ROUTE) {
 		/* nnodes has to be set here as the hl is empty after the
 		 * split_hostlise call.  */
@@ -221,9 +233,6 @@ extern int topology_g_split_hostlist(hostlist_t *hl,
 		     buf, tree_width);
 		xfree(buf);
 	}
-
-	if (!tree_width)
-		tree_width = slurm_conf.tree_width;
 
 	rc = (*(ops.split_hostlist))(hl, sp_hl, count, tree_width);
 	if (!rc && !(*count))
@@ -248,7 +257,7 @@ extern int topology_g_split_hostlist(hostlist_t *hl,
 
 extern int topology_g_get(topology_data_t type, void *data)
 {
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	return (*(ops.get))(type, data);
 }
@@ -256,19 +265,24 @@ extern int topology_g_get(topology_data_t type, void *data)
 extern int topology_g_topology_pack(dynamic_plugin_data_t *topoinfo,
 				    buf_t *buffer, uint16_t protocol_version)
 {
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
+
+	/* Always pack the plugin_id */
+	pack32(active_topo_id, buffer);
+	if (!topoinfo)
+		return SLURM_SUCCESS;
 
 	if (topoinfo->plugin_id != active_topo_id)
 		return SLURM_ERROR;
 
-	pack32(*(ops.plugin_id), buffer);
 	return (*(ops.topoinfo_pack))(topoinfo->data, buffer, protocol_version);
 }
 
 extern int topology_g_topology_print(dynamic_plugin_data_t *topoinfo,
 				     char *nodes_list, char **out)
 {
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
+	xassert(topoinfo);
 
 	if (topoinfo->plugin_id != active_topo_id)
 		return SLURM_ERROR;
@@ -281,7 +295,7 @@ extern int topology_g_topology_unpack(dynamic_plugin_data_t **topoinfo,
 {
 	dynamic_plugin_data_t *topoinfo_ptr = NULL;
 
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	topoinfo_ptr = xmalloc(sizeof(dynamic_plugin_data_t));
 	*topoinfo = topoinfo_ptr;
@@ -319,7 +333,7 @@ extern int topology_g_topology_free(dynamic_plugin_data_t *topoinfo)
 {
 	int rc = SLURM_SUCCESS;
 
-	xassert(plugin_inited);
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (topoinfo) {
 		if (topoinfo->data)

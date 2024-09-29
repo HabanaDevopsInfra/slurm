@@ -45,7 +45,7 @@
 static void _dump_assoc_cond(ctxt_t *ctxt, slurmdb_assoc_cond_t *cond,
 			     bool only_one)
 {
-	List assoc_list = NULL;
+	list_t *assoc_list = NULL;
 
 	if (!db_query_list(ctxt, &assoc_list, slurmdb_associations_get, cond) &&
 	    (only_one && (list_count(assoc_list) > 1))) {
@@ -63,7 +63,7 @@ static void _delete_assoc(ctxt_t *ctxt, slurmdb_assoc_cond_t *assoc_cond,
 			  bool only_one)
 {
 	int rc = SLURM_SUCCESS;
-	List removed = NULL;
+	list_t *removed = NULL;
 
 	rc = db_query_list(ctxt, &removed, slurmdb_associations_remove,
 			   assoc_cond);
@@ -85,8 +85,8 @@ static void _delete_assoc(ctxt_t *ctxt, slurmdb_assoc_cond_t *assoc_cond,
 static void _diff_tres(char **dst, char *mod)
 {
 	list_itr_t *itr;
-	List dst_list = NULL;
-	List mod_list = NULL;
+	list_t *dst_list = NULL;
+	list_t *mod_list = NULL;
 	slurmdb_tres_rec_t *tres;
 
 	if (!*dst || !*dst[0]) {
@@ -260,7 +260,7 @@ static int _foreach_update_assoc(void *x, void *arg)
 		.partition_list = list_create(NULL),
 		.user_list = list_create(NULL),
 	};
-	List assoc_list = NULL;
+	list_t *assoc_list = NULL;
 
 	if (assoc->parent_acct && !assoc->parent_acct[0])
 		xfree(assoc->parent_acct);
@@ -375,6 +375,9 @@ extern int op_handler_associations(ctxt_t *ctxt)
 		if (DATA_PARSE(ctxt->parser, ASSOC_CONDITION_PTR, assoc_cond,
 			       ctxt->query, ctxt->parent_path))
 			goto cleanup;
+
+		if (!assoc_cond)
+			assoc_cond = xmalloc(sizeof(*assoc_cond));
 
 		if (assoc_cond->usage_start && !assoc_cond->usage_end)
 			assoc_cond->usage_end = time(NULL);

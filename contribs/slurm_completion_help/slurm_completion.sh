@@ -702,7 +702,7 @@ function __slurm_ctld_status() {
 # Determine if a slurmdbd will respond
 function __slurm_dbd_status() {
 	local output exit_code
-	output=$(true) # TODO: need 'sacctmgr ping'
+	output=$(sacctmgr ping 2>/dev/null)
 	exit_code=$?
 
 	if ((exit_code == 0)); then
@@ -1539,9 +1539,6 @@ function __slurm_comp_common_flags() {
 		"append"
 		"truncate"
 	)
-	local power_flags=(
-		"level"
-	)
 	local profile_types=(
 		"all"
 		"energy"
@@ -1604,6 +1601,7 @@ function __slurm_comp_common_flags() {
 	-x | --exclude) __slurm_compreply_list "$(__slurm_nodes)" "ALL" "true" ;;
 	--exclusive) __slurm_compreply "${exclusive_types[*]}" ;;
 	--export) __slurm_compreply "${export_types[*]}" ;;
+	--export-file) _filedir ;;
 	--get-user-env) __slurm_compreply "${env_modes[*]}" ;;
 	--gid) __slurm_compreply "$(__slurm_linux_groups) $(__slurm_linux_gids)" ;;
 	--gpu-bind) __slurm_compreply "${gpubind_types[*]}" ;;
@@ -1635,7 +1633,6 @@ function __slurm_comp_common_flags() {
 	--open-mode?(s)) __slurm_compreply "${open_modes[*]}" ;;
 	-o | --output) _filedir ;;
 	-p | --partition?(s)) __slurm_compreply_list "$(__slurm_partitions)" ;;
-	--power) __slurm_compreply_list "${power_flags[*]}" ;;
 	--prefer?(s)) __slurm_compreply_list "$(__slurm_features)" ;;
 	--profile?(s)) __slurm_compreply_list "${profile_types[*]}" ;;
 	--prolog) _filedir ;;
@@ -2327,6 +2324,8 @@ function __slurm_comp_sacctmgr_spec_qos() {
 		"maxtresperaccount="
 		"maxtrespernode="
 		"maxtresperuser="
+		"maxtresrunminsperaccount="
+		"maxtresrunminsperuser="
 		"maxwalldurationperjob="
 		"minpriothreshold="
 		"mintresperjob="
@@ -3143,6 +3142,7 @@ function __slurm_comp_sacctmgr_flags() {
 }
 
 # sacctmgr completion handler
+# https://slurm.schedmd.com/sacctmgr.html
 function _sacctmgr() {
 	local cur prev words cword split
 	__slurm_compinit "$1" || return
@@ -3158,6 +3158,7 @@ function _sacctmgr() {
 		"list" "show"
 		"load"
 		"modify" "update"
+		"ping"
 		"reconfigure"
 		"remove" "delete"
 		"shutdown"
@@ -3256,6 +3257,9 @@ function __slurm_comp_sbcast_flags() {
 	--exclude?(s)) _filedir -d ;;
 	-j | --jobid?(s)) __slurm_compreply "$(__slurm_jobs) $(__slurm_jobsteps)" ;;
 	--send-lib?(s)) __slurm_compreply "$(__slurm_boolean)" ;;
+	-s | --size) ;;
+	-t | --timeout) ;;
+	-F | --treewidth) ;;
 	*) return 1 ;;
 	esac
 
@@ -3498,6 +3502,66 @@ function __scontrol_pidinfo() {
 	_pids # TODO: return only slurm pids
 }
 
+# completion handler for: scontrol power up *
+function __scontrol_power_up() {
+	local parameters=(
+	)
+
+	__slurm_log_debug "$(__func__): prev='$prev' cur='$cur'"
+	__slurm_log_trace "$(__func__): #parameters[@]='${#parameters[@]}'"
+	__slurm_log_trace "$(__func__): parameters[*]='${parameters[*]}'"
+
+	case "${prev}" in
+	up) __slurm_compreply_list "$(__slurm_nodes)" "ALL" "true" ;;
+	*)
+		$split && return
+		__slurm_compreply_param "${parameters[*]}"
+		;;
+	esac
+}
+
+# completion handler for: scontrol power down *
+function __scontrol_power_down() {
+	local parameters=(
+		"asap"
+		"force"
+	)
+
+	__slurm_log_debug "$(__func__): prev='$prev' cur='$cur'"
+	__slurm_log_trace "$(__func__): #parameters[@]='${#parameters[@]}'"
+	__slurm_log_trace "$(__func__): parameters[*]='${parameters[*]}'"
+
+	case "${prev}" in
+	down|asap|force) __slurm_compreply_list "$(__slurm_nodes)" "ALL" "true" ;;
+	*)
+		$split && return
+		__slurm_compreply_param "${parameters[*]}"
+		;;
+	esac
+}
+
+# completion handler for: scontrol power *
+function __scontrol_power() {
+	local subcmds=(
+		"up"
+		"down"
+	)
+	local subcmd
+	subcmd="$(__slurm_find_subcmd "${subcmds[*]}")"
+
+	__slurm_log_debug "$(__func__): prev='$prev' cur='$cur'"
+	__slurm_log_debug "$(__func__): subcmd='$subcmd'"
+	__slurm_log_trace "$(__func__): #subcmds[@]='${#subcmds[@]}'"
+	__slurm_log_trace "$(__func__): subcmds[*]='${subcmds[*]}'"
+
+	if [[ -z ${subcmd-} ]]; then
+		__slurm_compreply "${subcmds[*]}"
+	else
+		comp_cmd="${comp_cmd}_${subcmd//[^[:alnum:]]/}"
+		__slurm_comp_command "${comp_cmd}"
+	fi
+}
+
 # completion handler for: scontrol listpids *
 function __scontrol_listpids() {
 	__slurm_compreply_list "$(__slurm_jobs)"
@@ -3657,7 +3721,6 @@ function __scontrol_setdebugflags() {
 		"dependency"
 		"elasticsearch"
 		"energy"
-		"extsensors"
 		"federation"
 		"frontend"
 		"gang"
@@ -3682,7 +3745,7 @@ function __scontrol_setdebugflags() {
 		"switch"
 		"tracejobs"
 		"triggers"
-		"workqueue"
+		"conmgr"
 	)
 	local _debug_flags=()
 	local parameters=(
@@ -4483,6 +4546,7 @@ function _scontrol() {
 		"pidinfo"
 		"listpids"
 		"ping"
+		"power"
 		"reboot"
 		"reconfigure"
 		"release"

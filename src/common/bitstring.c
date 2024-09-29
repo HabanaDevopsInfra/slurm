@@ -137,8 +137,6 @@ strong_alias(bitfmt2int,	slurm_bitfmt2int);
 strong_alias(bit_fmt_hexmask,	slurm_bit_fmt_hexmask);
 strong_alias(bit_fmt_hexmask_trim, slurm_bit_fmt_hexmask_trim);
 strong_alias(bit_unfmt_hexmask,	slurm_bit_unfmt_hexmask);
-strong_alias(bit_fmt_binmask,	slurm_bit_fmt_binmask);
-strong_alias(bit_unfmt_binmask,	slurm_bit_unfmt_binmask);
 strong_alias(bit_fls,		slurm_bit_fls);
 strong_alias(bit_fls_from_bit,	slurm_bit_fls_from_bit);
 strong_alias(bit_fill_gaps,	slurm_bit_fill_gaps);
@@ -236,10 +234,24 @@ bitstr_t *bit_alloc(bitoff_t nbits)
 	bitstr_t *new;
 
 	_assert_valid_size(nbits);
-	new = xmalloc(_bitstr_words(nbits) * sizeof(bitstr_t));
+	new = xcalloc(_bitstr_words(nbits), sizeof(bitstr_t));
 
 	_bitstr_magic(new) = BITSTR_MAGIC;
 	_bitstr_bits(new) = nbits;
+
+	return new;
+}
+
+static bitstr_t *bit_alloc_nz(bitoff_t nbits)
+{
+	bitstr_t *new;
+
+	_assert_valid_size(nbits);
+	new = xcalloc_nz(_bitstr_words(nbits), sizeof(bitstr_t));
+
+	_bitstr_magic(new) = BITSTR_MAGIC;
+	_bitstr_bits(new) = nbits;
+
 	return new;
 }
 
@@ -877,9 +889,8 @@ bit_copy(bitstr_t *b)
 
 	newsize_bits  = bit_size(b);
 	len = (_bitstr_words(newsize_bits) - BITSTR_OVERHEAD)*sizeof(bitstr_t);
-	new = bit_alloc(newsize_bits);
-	if (new)
-		memcpy(&new[BITSTR_OVERHEAD], &b[BITSTR_OVERHEAD], len);
+	new = bit_alloc_nz(newsize_bits);
+	memcpy(&new[BITSTR_OVERHEAD], &b[BITSTR_OVERHEAD], len);
 
 	return new;
 }
@@ -1127,7 +1138,6 @@ bit_rotate_copy(bitstr_t *b1, int32_t n, bitoff_t nbits)
 	}
 
 	new = bit_alloc(nbits);
-	bit_nclear(new,0,nbits-1);
 
 	/* bits shifting up */
 	for (bit = 0; bit < (bitsize-wrapbits); bit++) {
@@ -1165,6 +1175,93 @@ bit_rotate(bitstr_t *b1, int32_t n)
 }
 
 /*
+ * find first set n
+ * return position of nth set bit in bitstr word
+ * minimal validity checking: if n > set_count, return 63
+ * if n == 0, return 0
+ */
+static bitoff_t _ffsn(bitstr_t b, bitoff_t n)
+{
+	uint64_t mask = 0xFFFFFFFFu;
+	uint32_t size = 32u;
+	bitstr_t base = 0u;
+
+	while (size > 0) {
+		if (n > hweight(b & mask)) {
+			base += size;
+			size >>= 1;
+			mask |= mask << size;
+		} else {
+			size >>= 1;
+			mask >>= size;
+		}
+	}
+	return base;
+}
+
+/*
+ * return the bit position of the nth set bit
+ * if n > bit_set_count(b), return the position of the last set bit
+ * return -1 if b is empty or n == 0
+ */
+bitoff_t bit_nth_set(bitstr_t *b, bitoff_t n)
+{
+	bitoff_t bit, bit_cnt, last_bit;
+	bitstr_t mask = -1;
+	bitstr_t last_mask = -1;
+	uint32_t count, last_count, last_word;
+
+	_assert_bitstr_valid(b);
+	if (n <= 0)
+		return -1;
+	bit_cnt = _bitstr_bits(b);
+	last_word = _bit_word(bit_cnt);
+
+	last_bit = -1;
+	for (bit = 0; bit < bit_cnt; bit += BITSTR_WORD_SIZE){
+		if (_bit_word(bit) == last_word)
+			mask = _bit_nmask(bit_cnt);
+		count = hweight(b[_bit_word(bit)] & mask);
+		if (count > 0){
+			last_bit = bit;
+			last_count = count;
+		}
+		if (n <= count)
+			break;
+		n -= count;
+	}
+
+	/* b has no set bits */
+	if (last_bit < 0)
+		return -1;
+	if (_bit_word(last_bit) == last_word)
+		last_mask = _bit_nmask(bit_cnt);
+
+	/*
+	 * if last_bit != bit, n > set_count.
+	 * find position of last bit in last non-empty word
+	 */
+	return last_bit + _ffsn(b[_bit_word(last_bit)] & last_mask,
+	                        (last_bit == bit) ? n : last_count);
+}
+
+/*
+ * Clear all bits after the first n set bits
+ */
+void bit_pick_firstn(bitstr_t *b, bitoff_t n)
+{
+	_assert_bitstr_valid(b);
+	bitoff_t nth_bit = bit_nth_set(b, n);
+	/*
+	 * b is empty or nth bit is at the last position.
+	 * Nothing to do in either case
+	 */
+	if (((nth_bit + 1) == _bitstr_bits(b)) || (nth_bit < 0))
+		return;
+	bit_nclear(b, nth_bit + 1, _bitstr_bits(b) - 1);
+}
+
+/*
  * build a bitmap containing the first nbits of b which are set
  */
 bitstr_t *
@@ -1179,8 +1276,6 @@ bit_pick_cnt(bitstr_t *b, bitoff_t nbits)
 		return NULL;
 
 	new = bit_alloc(bit_size(b));
-	if (new == NULL)
-		return NULL;
 
 	while ((bit < _bitstr_bits(b)) && (count < nbits)) {
 		int32_t word = _bit_word(bit);
@@ -1267,7 +1362,7 @@ char *bit_fmt_full(bitstr_t *b)
 {
 	int32_t word;
 	bitoff_t start, bit;
-	char *str = NULL, *comma = "";
+	char *str = NULL, *pos = NULL, *comma = "";
 	_assert_bitstr_valid(b);
 
 	for (bit = 0; bit < _bitstr_bits(b); ) {
@@ -1283,11 +1378,12 @@ char *bit_fmt_full(bitstr_t *b)
 				bit++;
 			}
 			if (bit == start)	/* add single bit position */
-				xstrfmtcat(str, "%s%"BITSTR_FMT"",
-					   comma, start);
+				xstrfmtcatat(str, &pos, "%s%"BITSTR_FMT"",
+					     comma, start);
 			else 			/* add bit position range */
-				xstrfmtcat(str, "%s%"BITSTR_FMT"-%"BITSTR_FMT,
-					   comma, start, bit);
+				xstrfmtcatat(str, &pos,
+					     "%s%"BITSTR_FMT"-%"BITSTR_FMT,
+					     comma, start, bit);
 			comma = ",";
 		}
 		bit++;
@@ -1306,7 +1402,7 @@ char *bit_fmt_range(bitstr_t *b, int offset, int len)
 {
 	int32_t word;
 	bitoff_t start, fini_bit, bit;
-	char *str = NULL, *comma = "";
+	char *str = NULL, *pos = NULL, *comma = "";
 	_assert_bitstr_valid(b);
 
 	fini_bit = MIN(_bitstr_bits(b), offset + len);
@@ -1323,12 +1419,13 @@ char *bit_fmt_range(bitstr_t *b, int offset, int len)
 				bit++;
 			}
 			if (bit == start) {	/* add single bit position */
-				xstrfmtcat(str, "%s%"BITSTR_FMT"",
-					   comma, (start - offset));
+				xstrfmtcatat(str, &pos, "%s%"BITSTR_FMT"",
+					     comma, (start - offset));
 			} else {		/* add bit position range */
-				xstrfmtcat(str, "%s%"BITSTR_FMT"-%"BITSTR_FMT,
-					   comma, (start - offset),
-					   (bit - offset));
+				xstrfmtcatat(str, &pos,
+					     "%s%"BITSTR_FMT"-%"BITSTR_FMT,
+					     comma, (start - offset),
+					     (bit - offset));
 			}
 			comma = ",";
 		}
@@ -1342,8 +1439,7 @@ char *bit_fmt_range(bitstr_t *b, int offset, int len)
  * Convert range string format, e.g. "0-5,42" to bitmap
  * Ret 0 on success, -1 on error
  */
-int
-bit_unfmt(bitstr_t *b, char *str)
+extern int bit_unfmt(bitstr_t *b, const char *str)
 {
 	int32_t *intvec;
 	int rc = 0;
@@ -1368,7 +1464,7 @@ bit_unfmt(bitstr_t *b, char *str)
  * output: an array of integers
  * NOTE: the caller must xfree the returned memory
  */
-int32_t *bitfmt2int(char *bit_str_ptr)
+extern int32_t *bitfmt2int(const char *bit_str_ptr)
 {
 	int32_t *bit_int_ptr, i, bit_inx, size, sum, start_val;
 	char *tmp = NULL;
@@ -1427,34 +1523,6 @@ int32_t *bitfmt2int(char *bit_str_ptr)
 	}
 	bit_int_ptr[bit_inx] = -1;
 	return bit_int_ptr;
-}
-
-/*
- * intbitfmt - convert a array of integer (start/end) pairs
- *	terminated by -1 (e.g. "0, 30, 45, 45, 50, 60, -1") to a
- *	string describing bitmap (output from bit_fmt, e.g. "0-30,45,50-60")
- * input: int array
- * output: char *
- * NOTE: the caller must xfree the returned memory
- */
-char *
-inx2bitfmt (int32_t *inx)
-{
-	int32_t j = 0;
-	char *bit_char_ptr = NULL;
-
-	if (inx == NULL)
-		return NULL;
-
-	while (inx[j] >= 0) {
-		if (bit_char_ptr)
-			xstrfmtcat(bit_char_ptr, ",%d-%d", inx[j], inx[j+1]);
-		else
-			xstrfmtcat(bit_char_ptr, "%d-%d", inx[j], inx[j+1]);
-		j += 2;
-	}
-
-	return bit_char_ptr;
 }
 
 int inx2bitstr(bitstr_t *b, int32_t *inx)
@@ -1705,67 +1773,6 @@ int bit_unfmt_hexmask(bitstr_t * bitmap, const char* str)
 		bit_index += 4;
 	}
 	return rc;
-}
-
-/* bit_fmt_binmask
- *
- * Given a bitstr_t, allocate and return a binary string in the form of:
- *                            "0001010\0"
- *                             ^     ^
- *                             |     |
- *                            MSB   LSB
- *   bitmap (IN)  bitmap to format
- *   RETURN       formatted string
- */
-char * bit_fmt_binmask(bitstr_t * bitmap)
-{
-	char *retstr, *ptr;
-	char current;
-	bitoff_t i;
-	bitoff_t bitsize = bit_size(bitmap);
-
-	/* 1 bits per ASCII '0'-'1' */
-	bitoff_t charsize = bitsize;
-
-	retstr = xmalloc(charsize + 1);
-
-	retstr[charsize] = '\0';
-	ptr = &retstr[charsize - 1];
-	for (i=0; i < bitsize;) {
-		current = 0;
-		if (bit_test(bitmap,i++)) current |= 0x1;
-		current += '0';
-		*ptr-- = current;
-	}
-
-	return retstr;
-}
-
-/* bit_unfmt_binmask
- *
- * Given a binary mask string "0001010\0", convert to a bitstr_t *
- *                             ^     ^
- *                             |     |
- *                            MSB   LSB
- *   bitmap (OUT)  bitmap to update
- *   str (IN)      hex mask string to unformat
- */
-void bit_unfmt_binmask(bitstr_t * bitmap, const char* str)
-{
-	int32_t bit_index = 0, len = strlen(str);
-	const char *curpos = str + len - 1;
-	char current;
-	bitoff_t bitsize = bit_size(bitmap);
-
-	bit_nclear(bitmap, 0, bitsize - 1);
-	while (curpos >= str) {
-		current = (int32_t) *curpos;
-		current -= '0';
-		if ((current & 1) && (bit_index   < bitsize))
-			bit_set(bitmap, bit_index);
-		curpos--;
-		bit_index++;
-	}
 }
 
 /* Find the bit set at pos (0 - bitstr_bits) in bitstr b.

@@ -49,103 +49,90 @@
 #include "src/slurmctld/slurmctld.h"
 #include "src/slurmd/slurmstepd/slurmstepd_job.h"
 
-/* opaque data structures - no peeking! */
-#ifndef __switch_jobinfo_t_defined
-#  define __switch_jobinfo_t_defined
-   typedef struct switch_jobinfo   switch_jobinfo_t;
-#endif
-typedef struct slurm_switch_context slurm_switch_context_t;
-
 /*******************************************\
  * GLOBAL SWITCH STATE MANAGEMENT FUNCIONS *
 \*******************************************/
 
 /* initialize the switch plugin */
-extern int  switch_init(bool only_default);
+extern int switch_g_init(bool only_default);
 
 /* terminate the switch plugin and free all memory */
-extern int switch_fini (void);
+extern int switch_g_fini(void);
 
 /* save any global switch state to a file within the specified directory
  * the actual file name used in plugin specific
- * IN dir_name - directory into which switch state is saved
  * RET         - slurm error code
  */
-extern int  switch_g_save   (char *dir_name);
+extern int switch_g_save(void);
 
 /* restore any global switch state from a file within the specified directory
  * the actual file name used in plugin specific
- * IN dir_name - directory from hich switch state is restored
  * IN recover  - "true" to restore switch state, "false" to start with
  *               a clean slate.
  * RET         - slurm error code
  */
-extern int  switch_g_restore(char *dir_name, bool recover);
-
-/* clear all current switch window allocation information
- * RET         - slurm error code
- */
-extern int  switch_g_clear(void);
+extern int switch_g_restore(bool recover);
 
 /******************************************************\
  * JOB-SPECIFIC SWITCH CREDENTIAL MANAGEMENT FUNCIONS *
 \******************************************************/
 
-/* allocate storage for a switch job credential
- * OUT jobinfo - storage for a switch job credential
- * IN job_id   - job id of the job this is for.
- * IN step_id  - step id of the job this is for.
- * RET         - slurm error code
- * NOTE: storage must be freed using g_switch_g_free_jobinfo
- */
-extern int  switch_g_alloc_jobinfo (dynamic_plugin_data_t **jobinfo,
-				    uint32_t job_id, uint32_t step_id);
+extern void switch_g_pack_jobinfo(void *switch_jobinfo, buf_t *buffer,
+				  uint16_t protocol_version);
 
-/* fill a job's switch credential
+extern int switch_g_unpack_jobinfo(void **switch_jobinfo, buf_t *buffer,
+				   uint16_t protocol_version);
+
+/******************************************************\
+ * STEP-SPECIFIC SWITCH CREDENTIAL MANAGEMENT FUNCIONS *
+\******************************************************/
+
+/*
+ * create a step's switch credential
  * OUT jobinfo  - storage for a switch job credential
  * IN  step_layout - the layout of the step with at least the nodes,
  *                   tasks_per_node and tids set
  * IN  step_ptr    - step_record_t for this step
  * NOTE: step_ptr will be NULL for "srun --no-allocate" calls
- * NOTE: storage must be freed using g_switch_g_free_jobinfo
+ * NOTE: storage must be freed using switch_g_free_stepinfo
  */
-extern int switch_g_build_jobinfo(dynamic_plugin_data_t *jobinfo,
-				  slurm_step_layout_t *step_layout,
-				  step_record_t *step_ptr);
+extern int switch_g_build_stepinfo(dynamic_plugin_data_t **jobinfo,
+				   slurm_step_layout_t *step_layout,
+				   step_record_t *step_ptr);
 
-/* duplicate a job's switch credential
+/*
+ * duplicate a step's switch credential
  * IN  source  - storage for a switch job credential
  * OUT dest    - pointer to NULL at beginning, will point to storage for
  *               duplicated switch job credential
- * NOTE: storage must be freed using g_switch_g_free_jobinfo
+ * NOTE: storage must be freed using switch_g_free_stepinfo
  */
-extern int  switch_g_duplicate_jobinfo(dynamic_plugin_data_t *source,
-				       dynamic_plugin_data_t **dest);
+extern void switch_g_duplicate_stepinfo(dynamic_plugin_data_t *source,
+					dynamic_plugin_data_t **dest);
 
-/* free storage previously allocated for a switch job credential
+/*
+ * free storage previously allocated for a switch step credential
  * IN jobinfo  - the switch job credential to be freed
  */
-extern void switch_g_free_jobinfo  (dynamic_plugin_data_t *jobinfo);
+extern void switch_g_free_stepinfo(dynamic_plugin_data_t *jobinfo);
 
-/* pack a switch job credential into a buffer in machine independent form
+/*
  * IN jobinfo  - the switch job credential to be saved
  * OUT buffer  - buffer with switch credential appended
  * IN protocol_version - version of Slurm we are talking to.
- * RET         - slurm error code
  */
-extern int switch_g_pack_jobinfo(dynamic_plugin_data_t *jobinfo, buf_t *buffer,
-				 uint16_t protocol_version);
+extern void switch_g_pack_stepinfo(dynamic_plugin_data_t *jobinfo,
+				   buf_t *buffer, uint16_t protocol_version);
 
-/* unpack a switch job credential from a buffer
+/*
  * OUT jobinfo - the switch job credential read
  * IN  buffer  - buffer with switch credential read from current pointer loc
  * IN  protocol_version - version of Slurm we are talking to.
  * RET         - slurm error code
- * NOTE: returned value must be freed using g_switch_g_free_jobinfo
+ * NOTE: returned value must be freed using switch_g_free_stepinfo
  */
-extern int switch_g_unpack_jobinfo(dynamic_plugin_data_t **jobinfo,
-				   buf_t *buffer,
-				   uint16_t protocol_version);
+extern int switch_g_unpack_stepinfo(dynamic_plugin_data_t **jobinfo,
+				    buf_t *buffer, uint16_t protocol_version);
 
 /*
  * Note that the job step associated with the specified nodelist
@@ -155,41 +142,18 @@ extern int switch_g_job_step_complete(dynamic_plugin_data_t *jobinfo,
 	char *nodelist);
 
 /*
- * End of job - free any slurmctld job-specific switch data
+ * Runs before the job prolog.
  */
-extern void switch_g_job_complete(uint32_t job_id);
+extern void switch_g_job_start(job_record_t *job_ptr);
 
 /*
- * Restore the switch allocation information "jobinfo" for an already
- * allocated job step, most likely to restore the switch information
- * after a call to switch_g_clear().
+ * End of job - free any slurmctld job-specific switch data
  */
-extern int switch_g_job_step_allocated(dynamic_plugin_data_t *jobinfo,
-	char *nodelist);
+extern void switch_g_job_complete(job_record_t *job_ptr);
 
 /********************************************************************\
  * JOB LAUNCH AND MANAGEMENT FUNCTIONS RELATED TO SWITCH CREDENTIAL *
 \********************************************************************/
-
-/*
- * Notes on job related switch_g functions:
- *
- * switch_g functions are run within slurmstepd in the following way:
- * (Diagram courtesy of Jim Garlick [see qsw.c] )
- *
- *  Process 1 (root)        Process 2 (root, user)  |  Process 3 (user task)
- *                                                  |
- *  switch_g_job_preinit                            |
- *  fork ------------------ switch_g_job_init       |
- *  waitpid                 setuid, chdir, etc.     |
- *                          fork N procs -----------+--- switch_g_job_attach
- *                          wait all                |    exec mpi process
- *                          switch_g_job_fini*      |
- *  switch_g_job_postfini                           |
- *                                                  |
- *
- * [ *Note: switch_g_job_fini() is run as the uid of the job owner, not root ]
- */
 
 /*
  * Prepare node for job.
@@ -236,5 +200,9 @@ extern int switch_g_job_postfini(stepd_step_rec_t *step);
 extern int switch_g_job_attach(dynamic_plugin_data_t *jobinfo, char ***env,
 			       uint32_t nodeid, uint32_t procid,
 			       uint32_t nnodes, uint32_t nprocs, uint32_t rank);
+
+extern int switch_g_fs_init(stepd_step_rec_t *step);
+
+extern void switch_g_extern_stepinfo(void **stepinfo, job_record_t *job_ptr);
 
 #endif

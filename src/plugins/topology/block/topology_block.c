@@ -170,6 +170,17 @@ extern int topology_p_eval_nodes(topology_eval_t *topo_eval)
 	return common_topo_choose_nodes(topo_eval);
 }
 
+extern int topology_p_whole_topo(bitstr_t *node_mask)
+{
+	for (int i = 0; i < block_record_cnt; i++) {
+		if (bit_overlap_any(block_record_table[i].node_bitmap,
+				    node_mask)) {
+			bit_or(node_mask, block_record_table[i].node_bitmap);
+		}
+	}
+	return SLURM_SUCCESS;
+}
+
 /*
  * When TopologyParam=SwitchAsNodeRank is set, this plugin assigns a unique
  * node_rank for all nodes belonging to the same bblock.
@@ -190,7 +201,24 @@ extern bool topology_p_generate_node_ranking(void)
 extern int topology_p_get_node_addr(char *node_name, char **paddr,
 				    char **ppattern)
 {
-	return SLURM_SUCCESS;
+	node_record_t *node_ptr = find_node_record(node_name);
+
+	/* node not found in configuration */
+	if (!node_ptr)
+		return SLURM_ERROR;
+
+	for (int i = 0; i < block_record_cnt; i++) {
+		if (bit_test(block_record_table[i].node_bitmap,
+			     node_ptr->index)) {
+			*paddr = xstrdup_printf("%s.%s",
+						block_record_table[i].name,
+						node_name);
+			*ppattern = xstrdup("block.node");
+			return SLURM_SUCCESS;
+		}
+	}
+
+	return common_topo_get_node_addr(node_name, paddr, ppattern);
 }
 
 extern int topology_p_split_hostlist(hostlist_t *hl, hostlist_t ***sp_hl,
@@ -250,6 +278,12 @@ extern int topology_p_get(topology_data_t type, void *data)
 	{
 		int *rec_cnt = data;
 		*rec_cnt = block_record_cnt;
+		break;
+	}
+	case TOPO_DATA_EXCLUSIVE_TOPO:
+	{
+		int *exclusive_topo = data;
+		*exclusive_topo = 1;
 		break;
 	}
 	default:

@@ -60,7 +60,7 @@ typedef struct load_part_req_struct {
 	slurmdb_cluster_rec_t *cluster;
 	int cluster_inx;
 	slurm_msg_t *req_msg;
-	List resp_msg_list;
+	list_t *resp_msg_list;
 	uint16_t show_flags;
 } load_part_req_struct_t;
 
@@ -225,6 +225,11 @@ char *slurm_sprint_partition_info ( partition_info_t * part_ptr,
 		xstrcat(out, " ExclusiveUser=YES");
 	else
 		xstrcat(out, " ExclusiveUser=NO");
+
+	if (part_ptr->flags & PART_FLAG_EXCLUSIVE_TOPO)
+		xstrcat(out, " ExclusiveTopo=YES");
+	else
+		xstrcat(out, " ExclusiveTopo=NO");
 
 	xstrfmtcat(out, " GraceTime=%u", part_ptr->grace_time);
 
@@ -524,7 +529,7 @@ static int _load_fed_parts(slurm_msg_t *req_msg,
 	int pthread_count = 0;
 	pthread_t *load_thread = 0;
 	load_part_req_struct_t *load_args;
-	List resp_msg_list;
+	list_t *resp_msg_list;
 
 	*part_info_msg_pptr = NULL;
 

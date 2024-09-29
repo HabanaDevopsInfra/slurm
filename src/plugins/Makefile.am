@@ -9,7 +9,6 @@ SUBDIRS = \
 	cli_filter		\
 	cred			\
 	data_parser		\
-	ext_sensors		\
 	gpu			\
 	gres			\
 	hash			\
@@ -30,6 +29,7 @@ SUBDIRS = \
 	site_factor		\
 	switch			\
 	task			\
+	tls			\
 	topology
 
 if WITH_CGROUP

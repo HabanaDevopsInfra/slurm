@@ -38,6 +38,7 @@
 
 #include "as_mysql_assoc.h"
 #include "as_mysql_usage.h"
+#include "as_mysql_user.h"
 
 /* Remove this 2 versions after 23.11 */
 static char *tmp_cluster_name = "slurmredolftrgttemp";
@@ -49,8 +50,10 @@ typedef struct {
 	slurmdb_assoc_rec_t *alloc_assoc;
 	slurmdb_add_assoc_cond_t *add_assoc;
 	bool added_defaults;
+	bool assoc_mgr_locked;
 	char *base_lineage;
 	char *cols;
+	list_t *coord_users;
 	char *extra;
 	uint32_t flags;
 	int incr; /* 2 versions after 23.11 */
@@ -77,6 +80,11 @@ typedef struct {
 	char *ret_str;
 	char *ret_str_pos;
 } mod_def_qos_t;
+
+typedef struct {
+	slurmdb_assoc_flags_t flags;
+	slurmdb_user_rec_t *user_rec;
+} coord_parent_flag_t;
 
 /* if this changes you will need to edit the corresponding enum */
 char *assoc_req_inx[] = {
@@ -113,6 +121,7 @@ char *assoc_req_inx[] = {
 	"deleted",
 	"id_parent",
 	"lineage",
+	"flags",
 };
 enum {
 	ASSOC_REQ_ID,
@@ -148,6 +157,7 @@ enum {
 	ASSOC_REQ_DELETED,
 	ASSOC_REQ_ID_PAR,
 	ASSOC_REQ_LINEAGE,
+	ASSOC_REQ_FLAGS,
 	ASSOC_REQ_COUNT
 };
 
@@ -201,6 +211,7 @@ static char *massoc_req_inx[] = {
 	"max_tres_pj",
 	"max_tres_pn",
 	"lineage",
+	"flags",
 };
 
 enum {
@@ -220,6 +231,7 @@ enum {
 	MASSOC_MTPJ,
 	MASSOC_MTPN,
 	MASSOC_LINEAGE,
+	MASSOC_FLAGS,
 	MASSOC_COUNT
 };
 
@@ -227,6 +239,7 @@ enum {
  * enum below also t1 is step_table */
 static char *rassoc_req_inx[] = {
 	"id_assoc",
+	"id_parent",
 	"lft",
 	"acct",
 	"parent_acct",
@@ -236,6 +249,7 @@ static char *rassoc_req_inx[] = {
 
 enum {
 	RASSOC_ID,
+	RASSOC_ID_PAR,
 	RASSOC_LFT,
 	RASSOC_ACCT,
 	RASSOC_PACCT,
@@ -244,7 +258,8 @@ enum {
 	RASSOC_COUNT
 };
 
-static void _move_assoc_list_to_update_list(List update_list, List assoc_list)
+static void _move_assoc_list_to_update_list(list_t *update_list,
+					    list_t *assoc_list)
 {
 	slurmdb_assoc_rec_t *assoc;
 
@@ -362,66 +377,6 @@ static int _reset_default_assoc(mysql_conn_t *mysql_conn,
 		}
 	}
 end_it:
-	return rc;
-}
-
-/* assoc_mgr_lock_t should be clear before coming in here. */
-static int _check_coord_qos(mysql_conn_t *mysql_conn, char *cluster_name,
-			    char *account, char *coord_name, List qos_list)
-{
-	char *query;
-	bitstr_t *request_qos, *valid_qos;
-	MYSQL_RES *result;
-	MYSQL_ROW row;
-	int rc = SLURM_SUCCESS;
-	assoc_mgr_lock_t locks = { NO_LOCK, NO_LOCK, READ_LOCK, NO_LOCK,
-				   NO_LOCK, NO_LOCK, NO_LOCK };
-
-	if (!qos_list || !list_count(qos_list))
-		return SLURM_SUCCESS;
-
-	/* If there is a variable cleared here we need to make
-	   sure we get the parent's information, if any. */
-	query = xstrdup_printf(
-		"call get_coord_qos('%s', '%s', '%s', '%s');",
-		assoc_table, account,
-		cluster_name, coord_name);
-	debug4("%d(%s:%d) query\n%s",
-	       mysql_conn->conn, THIS_FILE, __LINE__, query);
-	if (!(result = mysql_db_query_ret(mysql_conn, query, 1))) {
-		xfree(query);
-		return SLURM_ERROR;
-	}
-	xfree(query);
-
-	if (!(row = mysql_fetch_row(result)) || !row[0]) {
-		mysql_free_result(result);
-		return SLURM_ERROR;
-	}
-
-	/* First set the values of the valid ones this coordinator has
-	   access to.
-	*/
-
-	assoc_mgr_lock(&locks);
-	valid_qos = bit_alloc(g_qos_count);
-	request_qos = bit_alloc(g_qos_count);
-	assoc_mgr_unlock(&locks);
-
-	set_qos_bitstr_from_string(valid_qos, row[0]);
-
-	mysql_free_result(result);
-
-	/* Now set the ones they are requesting */
-	set_qos_bitstr_from_list(request_qos, qos_list);
-
-	/* If they are authorized their list should be in the super set */
-	if (!bit_super_set(request_qos, valid_qos))
-		rc = SLURM_ERROR;
-
-	FREE_NULL_BITMAP(valid_qos);
-	FREE_NULL_BITMAP(request_qos);
-
 	return rc;
 }
 
@@ -971,7 +926,7 @@ static int _modify_child_assocs(mysql_conn_t *mysql_conn,
 				slurmdb_assoc_rec_t *assoc,
 				char *acct,
 				char *lineage,
-				List ret_list, int moved_parent,
+				list_t *ret_list, int moved_parent,
 				char *old_parent, char *new_parent,
 				bool handle_child_parent)
 {
@@ -1067,7 +1022,10 @@ static int _modify_child_assocs(mysql_conn_t *mysql_conn,
 		slurmdb_init_assoc_rec(mod_assoc, 0);
 		mod_assoc->id = slurm_atoul(row[ASSOC_ID]);
 		mod_assoc->cluster = xstrdup(assoc->cluster);
-
+		/*
+		 * DON'T DO FLAGS HERE UNLESS A CHILD NEEDS THE PARENT'S FLAGS
+		 * IN THE FUTURE.
+		 */
 		if (!row[ASSOC_DEF_QOS] && assoc->def_qos_id != NO_VAL) {
 			mod_assoc->def_qos_id = assoc->def_qos_id;
 			modified = 1;
@@ -1143,7 +1101,7 @@ static int _modify_child_assocs(mysql_conn_t *mysql_conn,
 			modified = 1;
 		}
 		if (!row[ASSOC_QOS][0] && assoc->qos_list) {
-			List delta_qos_list = NULL;
+			list_t *delta_qos_list = NULL;
 			char *qos_char = NULL, *delta_char = NULL;
 			list_itr_t *delta_itr = NULL;
 			list_itr_t *qos_itr =
@@ -1252,77 +1210,11 @@ static int _modify_child_assocs(mysql_conn_t *mysql_conn,
 	return rc;
 }
 
-/* sets fields for the assoc query when there is a qos condition*/
-static void _setup_assoc_cond_qos(slurmdb_assoc_cond_t *assoc_cond,
-				  char *cluster_name, char **more_fields,
-				  char **selection_target, char **qos_filter)
-{
-	int set = 0;
-	list_itr_t *itr = NULL;
-	char *object = NULL;
-
-	xstrfmtcat(*more_fields,
-		   ", group_concat(inherited_qos_list) AS i_qos, "
-		   "group_concat(inherited_delta_qos_list) AS i_delta_qos");
-
-	xstrfmtcat(*selection_target,
-		   "(select t1.*, "
-		   "t2.qos as inherited_qos_list, "
-		   "t2.delta_qos as inherited_delta_qos_list "
-		   "from \"%s_%s\" as t1 "
-		   "join \"%s_%s\" as t2 "
-		   "on t1.lineage like CONCAT(t2.lineage, '%%') "
-		   "join \"%s_%s\" as t3 "
-		   "on t1.lineage like CONCAT(t3.lineage, '%%') "
-		   "and t2.lineage not like CONCAT(t3.lineage, '_%%') "
-		   "group by t1.id_assoc, t2.id_assoc "
-		   "having t2.qos=group_concat(t3.qos separator ''))",
-		   cluster_name, assoc_table, cluster_name, assoc_table,
-		   cluster_name, assoc_table);
-
-	xstrfmtcat(*qos_filter, " group by id_assoc having ");
-
-	itr = list_iterator_create(assoc_cond->qos_list);
-	while ((object = list_next(itr))) {
-		if (set)
-			xstrcat(*qos_filter, "or ");
-		xstrfmtcat(*qos_filter,
-			   "((i_qos regexp ',%s,' or "
-			   "i_delta_qos regexp ',\\\\+%s,') and "
-			   "i_delta_qos not regexp ',-%s,(?!.*,\\\\+%s,)') ",
-			   object, object, object, object);
-		set = 1;
-	}
-	list_iterator_destroy(itr);
-}
-
-static char *_setup_assoc_table_query(slurmdb_assoc_cond_t *assoc_cond,
-				      char *cluster_name, char *fields,
+static char *_setup_assoc_table_query(char *cluster_name, char *fields,
 				      char *filters, char *end)
 {
-	char *query;
-	char *more_fields = NULL, *selection_target = NULL, *qos_filter = NULL;
-
-	if (assoc_cond && assoc_cond->qos_list &&
-	    list_count(assoc_cond->qos_list))
-		_setup_assoc_cond_qos(assoc_cond, cluster_name, &more_fields,
-				      &selection_target, &qos_filter);
-	else {
-		xstrcat(more_fields, "");
-		xstrfmtcat(selection_target, "\"%s_%s\"", cluster_name,
-			   assoc_table);
-		xstrcat(qos_filter, "");
-	}
-
-	query = xstrdup_printf("select distinct %s%s from %s as t1 where%s%s%s",
-			       fields, more_fields, selection_target,
-			       filters, qos_filter, end);
-
-	xfree(more_fields);
-	xfree(selection_target);
-	xfree(qos_filter);
-
-	return query;
+	return xstrdup_printf("select distinct %s from \"%s_%s\" as t1 where%s%s",
+			       fields, cluster_name, assoc_table, filters, end);
 }
 
 /* When doing a select on this all the select should have a prefix of t1. */
@@ -1342,12 +1234,12 @@ static int _setup_assoc_cond_limits(slurmdb_assoc_cond_t *assoc_cond,
 	 * Don't use prefix here, always use t1 or we could get extra "deleted"
 	 * entries we don't want.
 	 */
-	if (assoc_cond->with_deleted)
+	if (assoc_cond->flags & ASSOC_COND_FLAG_WITH_DELETED)
 		xstrfmtcat(*extra, " (t1.deleted=0 || t1.deleted=1)");
 	else
 		xstrfmtcat(*extra, " t1.deleted=0");
 
-	if (assoc_cond->only_defs) {
+	if (assoc_cond->flags & ASSOC_COND_FLAG_ONLY_DEFS) {
 		set = 1;
 		xstrfmtcat(*extra, " && (%s.is_def=1)", prefix);
 	}
@@ -1359,7 +1251,7 @@ static int _setup_assoc_cond_limits(slurmdb_assoc_cond_t *assoc_cond,
 		while ((object = list_next(itr))) {
 			if (set)
 				xstrcat(*extra, " || ");
-			if (assoc_cond->with_sub_accts) {
+			if (assoc_cond->flags & ASSOC_COND_FLAG_SUB_ACCTS) {
 				xstrfmtcat(*extra,
 					   "%s.lineage like '%%/%s/%%'",
 					   prefix, object);
@@ -1455,14 +1347,52 @@ static int _setup_assoc_cond_limits(slurmdb_assoc_cond_t *assoc_cond,
 	return set;
 }
 
+/*
+ * Use this on returned assocs from the db to validate if you have access to the
+ * QOS or not.
+ *
+ * Use the assoc_mgr to verify this assoc is viable based off of the QOS. It's
+ * faster to do it after the fact instead of a complicated join in SQL because
+ * of the hierarchy.
+ */
+static bool _assoc_id_has_qos(mysql_conn_t *mysql_conn, char *cluster,
+			      uint32_t assoc_id, bitstr_t *wanted_qos)
+{
+	if (wanted_qos) {
+		slurmdb_assoc_rec_t *assoc_ptr = NULL;
+		slurmdb_assoc_rec_t assoc_req = {
+			.cluster = cluster,
+			.id = assoc_id,
+		};
+
+		xassert(verify_assoc_lock(ASSOC_LOCK, READ_LOCK));
+
+		/*
+		 * Assoc mgr maintains the inherited qos for an assoc. Using its
+		 * version avoids an expensive sql query to get it.
+		 */
+		assoc_mgr_fill_in_assoc(mysql_conn, &assoc_req,
+					ACCOUNTING_ENFORCE_ASSOCS, &assoc_ptr,
+					true);
+		if (!assoc_ptr ||
+		    !assoc_ptr->usage ||
+		    !assoc_ptr->usage->valid_qos ||
+		    !bit_overlap(assoc_ptr->usage->valid_qos, wanted_qos))
+			return false;
+	}
+
+	return true;
+}
+
 static int _process_modify_assoc_results(mysql_conn_t *mysql_conn,
 					 MYSQL_RES *result,
 					 slurmdb_assoc_rec_t *assoc,
 					 slurmdb_user_rec_t *user,
 					 char *cluster_name, char *sent_vals,
 					 bool is_admin, bool same_user,
-					 List ret_list,
-					 slurmdb_assoc_cond_t *qos_assoc_cond)
+					 list_t *ret_list,
+					 slurmdb_assoc_cond_t *qos_assoc_cond,
+					 bitstr_t *wanted_qos)
 {
 	list_itr_t *itr = NULL;
 	MYSQL_ROW row;
@@ -1472,8 +1402,11 @@ static int _process_modify_assoc_results(mysql_conn_t *mysql_conn,
 	int moved_parent = 0;
 	char *query = NULL, *vals = NULL, *object = NULL, *name_char = NULL;
 	char *reset_query = NULL;
+	char *str = NULL;
 	time_t now = time(NULL);
 	uint32_t rpc_version = 0;
+	bool is_coord = false;
+	bool disable_coord_dbd = false;
 
 	xassert(result);
 
@@ -1482,6 +1415,8 @@ static int _process_modify_assoc_results(mysql_conn_t *mysql_conn,
 
 	vals = xstrdup(sent_vals);
 
+	disable_coord_dbd = slurmdbd_conf->flags &
+		DBD_CONF_FLAG_DISABLE_COORD_DBD;
 	rpc_version = get_cluster_version(mysql_conn, cluster_name);
 	while ((row = mysql_fetch_row(result))) {
 		MYSQL_RES *result2 = NULL;
@@ -1491,10 +1426,17 @@ static int _process_modify_assoc_results(mysql_conn_t *mysql_conn,
 		   so we need to keep track of the latest
 		   ones.
 		*/
-		uint32_t lft = slurm_atoul(row[MASSOC_LFT]);
-		uint32_t rgt = slurm_atoul(row[MASSOC_RGT]);
+		uint32_t lft;
+		uint32_t rgt;
+		uint32_t id = slurm_atoul(row[MASSOC_ID]);
 		char *orig_acct, *account;
 
+		if (!_assoc_id_has_qos(mysql_conn, cluster_name, id,
+				       wanted_qos))
+				continue;
+
+		lft = slurm_atoul(row[MASSOC_LFT]);
+		rgt = slurm_atoul(row[MASSOC_RGT]);
 		orig_acct = account = row[MASSOC_ACCT];
 
 		slurmdb_init_assoc_rec(&alt_assoc, 0);
@@ -1520,6 +1462,11 @@ static int _process_modify_assoc_results(mysql_conn_t *mysql_conn,
 		if (!is_admin && !same_user) {
 			slurmdb_coord_rec_t *coord = NULL;
 
+			if (disable_coord_dbd) {
+				error("Coordinator privilege revoked with DisableCoordDBD, only admins can modify accounts.");
+				rc = ESLURM_ACCESS_DENIED;
+				goto end_it;
+			}
 			if (!user->coord_accts) { // This should never
 				// happen
 				error("We are here with no coord accts.");
@@ -1551,13 +1498,17 @@ static int _process_modify_assoc_results(mysql_conn_t *mysql_conn,
 
 				rc = ESLURM_ACCESS_DENIED;
 				goto end_it;
-			} else if (_check_coord_qos(mysql_conn, cluster_name,
-						    account, user->name,
-						    assoc->qos_list)
-				   == SLURM_ERROR) {
+			} else if (!assoc_mgr_check_coord_qos(cluster_name,
+							     account,
+							     user->name,
+							     assoc->qos_list)) {
+				/*
+				 * The assoc READ_LOCK is locked in the caller.
+				 * This is only locking the qos READ_LOCK.
+				 */
 				assoc_mgr_lock_t locks = {
-					NO_LOCK, NO_LOCK, READ_LOCK, NO_LOCK,
-					NO_LOCK, NO_LOCK, NO_LOCK };
+					.qos = READ_LOCK,
+				};
 				char *requested_qos;
 
 				assoc_mgr_lock(&locks);
@@ -1574,6 +1525,7 @@ static int _process_modify_assoc_results(mysql_conn_t *mysql_conn,
 				rc = ESLURM_ACCESS_DENIED;
 				goto end_it;
 			}
+			is_coord = true;
 		}
 
 		if (row[MASSOC_PART][0]) {
@@ -1709,7 +1661,8 @@ static int _process_modify_assoc_results(mysql_conn_t *mysql_conn,
 		}
 		mod_assoc = xmalloc(sizeof(slurmdb_assoc_rec_t));
 		slurmdb_init_assoc_rec(mod_assoc, 0);
-		mod_assoc->id = slurm_atoul(row[MASSOC_ID]);
+		mod_assoc->id = id;
+		mod_assoc->flags = slurm_atoul(row[MASSOC_FLAGS]);
 		mod_assoc->cluster = xstrdup(cluster_name);
 		if (moved_parent) {
 			/*
@@ -1740,6 +1693,8 @@ static int _process_modify_assoc_results(mysql_conn_t *mysql_conn,
 			mod_assoc->def_qos_id = assoc->def_qos_id;
 
 		mod_assoc->comment = xstrdup(assoc->comment);
+
+		mod_assoc->flags |= assoc->flags;
 
 		mod_assoc->is_def = assoc->is_def;
 
@@ -1805,6 +1760,17 @@ static int _process_modify_assoc_results(mysql_conn_t *mysql_conn,
 			mod_assoc->priority = alt_assoc.priority;
 		else
 			mod_assoc->priority = assoc->priority;
+
+		if (is_coord &&
+		    assoc_mgr_check_assoc_lim_incr(mod_assoc, &str)) {
+			error("Coordinators can not increase %s above the parent limit",
+			      str);
+			xfree(str);
+			slurmdb_destroy_assoc_rec(mod_assoc);
+			xfree(reset_query);
+			rc = ESLURM_COORD_NO_INCREASE_JOB_LIMIT;
+			goto end_it;
+		}
 
 		if (assoc->qos_list && list_count(assoc->qos_list)) {
 			list_itr_t *new_qos_itr =
@@ -1970,7 +1936,7 @@ static int _process_modify_assoc_results(mysql_conn_t *mysql_conn,
 	}
 
 	if ((rpc_version < SLURM_23_11_PROTOCOL_VERSION) && moved_parent) {
-		List local_assoc_list = NULL;
+		list_t *local_assoc_list = NULL;
 		slurmdb_assoc_cond_t local_assoc_cond;
 		/* now we need to send the update of the new parents and
 		 * limits, so just to be safe, send the whole
@@ -2013,14 +1979,103 @@ end_it:
 	return rc;
 }
 
+static int _foreach_coord_parent_flag(void *x, void *arg)
+{
+	slurmdb_assoc_rec_t *assoc_ptr = x;
+	coord_parent_flag_t *coord_parent_flag = arg;
+
+	xassert(coord_parent_flag->user_rec);
+
+	as_mysql_user_handle_user_coord_flag(
+		coord_parent_flag->user_rec, coord_parent_flag->flags,
+		assoc_ptr->acct);
+
+	if (assoc_ptr->usage->children_list)
+		return list_for_each(assoc_ptr->usage->children_list,
+				     _foreach_coord_parent_flag,
+				     coord_parent_flag);
+	return 0;
+}
+
+/*
+ * This will set up user_rec->coord_accts to be correct for update to the
+ * assoc_mgr.
+ */
+static int _handle_coord_parent_flag(add_assoc_cond_t *add_assoc_cond,
+				     slurmdb_assoc_rec_t *assoc,
+				     slurmdb_assoc_flags_t flags)
+{
+	slurmdb_assoc_rec_t par_assoc = {
+		.id = assoc->parent_id,
+		.cluster = assoc->cluster,
+		.uid = NO_VAL,
+	};
+	slurmdb_assoc_rec_t *par_assoc_ptr = NULL;
+	coord_parent_flag_t coord_parent_flag = {
+		.flags = flags,
+	};
+	assoc_mgr_lock_t locks = {
+		.assoc = READ_LOCK,
+		.user = READ_LOCK,
+	};
+	int rc = SLURM_SUCCESS;
+
+	if (!add_assoc_cond->assoc_mgr_locked)
+		assoc_mgr_lock(&locks);
+
+	xassert(assoc->user);
+	xassert(verify_assoc_lock(ASSOC_LOCK, READ_LOCK));
+	xassert(verify_assoc_lock(USER_LOCK, READ_LOCK));
+	xassert((flags & ASSOC_FLAG_USER_COORD_NO) ||
+		(flags & ASSOC_FLAG_USER_COORD));
+
+	/* Find the parent assoc */
+	if (assoc_mgr_fill_in_assoc(add_assoc_cond->mysql_conn,
+				    &par_assoc,
+				    ACCOUNTING_ENFORCE_ASSOCS,
+				    &par_assoc_ptr, true) != SLURM_SUCCESS) {
+		error("We can't find assoc %u on cluster %s",
+		      assoc->parent_id, assoc->cluster);
+		rc = SLURM_ERROR;
+		goto end_it;
+	}
+
+	/* If the flag isn't set just return */
+	if (!assoc_mgr_tree_has_user_coord(par_assoc_ptr, true)) {
+		rc = SLURM_SUCCESS;
+		goto end_it;
+	}
+
+	/* Otherwise set this user up to be a coord of this account */
+	coord_parent_flag.user_rec = as_mysql_user_add_coord_update(
+		add_assoc_cond->mysql_conn,
+		&add_assoc_cond->coord_users,
+		assoc->user,
+		true);
+
+	if (!coord_parent_flag.user_rec) {
+		rc = SLURM_ERROR;
+		goto end_it;
+	}
+
+	(void) _foreach_coord_parent_flag(par_assoc_ptr, &coord_parent_flag);
+
+end_it:
+	if (!add_assoc_cond->assoc_mgr_locked)
+		assoc_mgr_unlock(&locks);
+
+	return rc;
+}
+
 static int _process_remove_assoc_results(mysql_conn_t *mysql_conn,
 					 MYSQL_RES *result,
 					 slurmdb_user_rec_t *user,
 					 char *cluster_name,
 					 char *name_char,
-					 bool is_admin, List ret_list,
+					 bool is_admin, list_t *ret_list,
 					 bool *jobs_running,
-					 bool *default_account)
+					 bool *default_account,
+					 add_assoc_cond_t *add_assoc_cond)
 {
 	list_itr_t *itr = NULL;
 	MYSQL_ROW row;
@@ -2030,6 +2085,7 @@ static int _process_remove_assoc_results(mysql_conn_t *mysql_conn,
 	char *user_name = NULL;
 	uint32_t smallest_lft = 0xFFFFFFFF;
 	bool process_skipped = false;
+	bool disable_coord_dbd = false;
 
 	xassert(result);
 	if (*jobs_running || *default_account) {
@@ -2037,12 +2093,20 @@ static int _process_remove_assoc_results(mysql_conn_t *mysql_conn,
 		goto skip_process;
 	}
 
+	disable_coord_dbd = slurmdbd_conf->flags &
+		DBD_CONF_FLAG_DISABLE_COORD_DBD;
 	while ((row = mysql_fetch_row(result))) {
 		slurmdb_assoc_rec_t *rem_assoc = NULL;
 		uint32_t lft;
 
 		if (!is_admin) {
 			slurmdb_coord_rec_t *coord = NULL;
+
+			if (disable_coord_dbd) {
+				error("Coordinator privilege revoked with DisableCoordDBD, only admins/operators can modify accounts.");
+				rc = ESLURM_ACCESS_DENIED;
+				goto end_it;
+			}
 			if (!user->coord_accts) { // This should never
 				// happen
 				error("We are here with no coord accts");
@@ -2114,6 +2178,17 @@ static int _process_remove_assoc_results(mysql_conn_t *mysql_conn,
 			error("couldn't add to the update list");
 		}
 
+		/* Remove potential flag coord */
+		if (row[RASSOC_USER][0]) {
+			rem_assoc->user = row[RASSOC_USER];
+			rem_assoc->parent_id = slurm_atoul(row[RASSOC_ID_PAR]);
+			_handle_coord_parent_flag(
+				add_assoc_cond,
+				rem_assoc,
+				ASSOC_FLAG_USER_COORD_NO);
+			rem_assoc->user = NULL;
+		}
+
 	}
 
 skip_process:
@@ -2142,10 +2217,10 @@ static int _cluster_get_assocs(mysql_conn_t *mysql_conn,
 			       slurmdb_assoc_cond_t *assoc_cond,
 			       char *cluster_name,
 			       char *fields, char *sent_extra,
-			       bool is_admin, List sent_list)
+			       bool is_admin, list_t *sent_list)
 {
-	List assoc_list;
-	List delta_qos_list = NULL;
+	list_t *assoc_list;
+	list_t *delta_qos_list = NULL;
 	list_itr_t *itr = NULL;
 	MYSQL_RES *result = NULL;
 	MYSQL_ROW row;
@@ -2173,12 +2248,17 @@ static int _cluster_get_assocs(mysql_conn_t *mysql_conn,
 	uint16_t without_parent_limits = 0;
 	uint16_t with_usage = 0;
 	uint16_t with_raw_qos = 0;
+	bitstr_t *wanted_qos = NULL;
+	assoc_mgr_lock_t assoc_locks = {
+		.assoc = READ_LOCK,
+	};
 
 	if (assoc_cond) {
-		with_raw_qos = assoc_cond->with_raw_qos;
-		with_usage = assoc_cond->with_usage;
-		without_parent_limits = assoc_cond->without_parent_limits;
-		without_parent_info = assoc_cond->without_parent_info;
+		with_raw_qos = assoc_cond->flags & ASSOC_COND_FLAG_RAW_QOS;
+		with_usage = assoc_cond->flags & ASSOC_COND_FLAG_WITH_USAGE;
+		without_parent_limits =
+			assoc_cond->flags & ASSOC_COND_FLAG_WOPL;
+		without_parent_info = assoc_cond->flags & ASSOC_COND_FLAG_WOPI;
 	}
 
 	/* this is here to make sure we are looking at only this user
@@ -2238,8 +2318,8 @@ static int _cluster_get_assocs(mysql_conn_t *mysql_conn,
 		}
 	}
 	//START_TIMER;
-	query = _setup_assoc_table_query(assoc_cond, cluster_name, fields,
-					 extra, " order by lineage;");
+	query = _setup_assoc_table_query(cluster_name, fields, extra,
+					 " order by lineage;");
 	xfree(extra);
 	DB_DEBUG(DB_ASSOC, mysql_conn->conn, "query\n%s", query);
 	if (!(result = mysql_db_query_ret(
@@ -2257,21 +2337,38 @@ static int _cluster_get_assocs(mysql_conn_t *mysql_conn,
 		return SLURM_SUCCESS;
 	}
 
+	/* If asking for QOS usage do not filter here. */
+	if (assoc_cond &&
+	    !(assoc_cond->flags & ASSOC_COND_FLAG_QOS_USAGE) &&
+	    assoc_cond->qos_list &&
+	    list_count(assoc_cond->qos_list)) {
+		wanted_qos = bit_alloc(g_qos_count);
+		set_qos_bitstr_from_list(wanted_qos, assoc_cond->qos_list);
+
+		assoc_mgr_lock(&assoc_locks);
+	}
+
 	assoc_list = list_create(slurmdb_destroy_assoc_rec);
 	delta_qos_list = list_create(xfree_ptr);
 	while ((row = mysql_fetch_row(result))) {
-		slurmdb_assoc_rec_t *assoc =
-			xmalloc(sizeof(slurmdb_assoc_rec_t));
+		slurmdb_assoc_rec_t *assoc = NULL;
 		MYSQL_RES *result2 = NULL;
 		MYSQL_ROW row2;
-		uint16_t deleted = slurm_atoul(row[ASSOC_REQ_DELETED]);
+		uint32_t id = slurm_atoul(row[ASSOC_REQ_ID]);
+
+		if (!_assoc_id_has_qos(mysql_conn, cluster_name, id,
+				       wanted_qos))
+			continue;
+
+		assoc = xmalloc(sizeof(slurmdb_assoc_rec_t));
 		list_append(assoc_list, assoc);
-		assoc->id = slurm_atoul(row[ASSOC_REQ_ID]);
+		assoc->id = id;
 		assoc->is_def = slurm_atoul(row[ASSOC_REQ_DEFAULT]);
 
 		assoc->comment = xstrdup(row[ASSOC_REQ_COMMENT]);
+		assoc->flags = slurm_atoul(row[ASSOC_REQ_FLAGS]);
 
-		if (deleted)
+		if (slurm_atoul(row[ASSOC_REQ_DELETED]))
 			assoc->flags |= ASSOC_FLAG_DELETED;
 
 		assoc->lft = slurm_atoul(row[ASSOC_REQ_LFT]);
@@ -2587,6 +2684,11 @@ static int _cluster_get_assocs(mysql_conn_t *mysql_conn,
 		//info("parent id is %d", assoc->parent_id);
 		//log_assoc_rec(assoc);
 	}
+
+	if (wanted_qos)
+		assoc_mgr_unlock(&assoc_locks);
+
+	FREE_NULL_BITMAP(wanted_qos);
 	xfree(parent_mtpj);
 	xfree(parent_mtpn);
 	xfree(parent_mtmpj);
@@ -2598,11 +2700,23 @@ static int _cluster_get_assocs(mysql_conn_t *mysql_conn,
 	xfree(parent_delta_qos);
 	xfree(parent_qos);
 
-	if (with_usage && assoc_list && list_count(assoc_list))
-		get_usage_for_list(mysql_conn, DBD_GET_ASSOC_USAGE,
-				   assoc_list, cluster_name,
-				   assoc_cond->usage_start,
-				   assoc_cond->usage_end);
+	if (with_usage && assoc_list && list_count(assoc_list)) {
+		if (assoc_cond->flags & ASSOC_COND_FLAG_QOS_USAGE) {
+			usage_qos_query_t qos_usage = {
+				.assoc_list = assoc_list,
+				.qos_list = assoc_cond->qos_list,
+			};
+			get_usage_for_list(mysql_conn, DBD_GET_QOS_USAGE,
+					   &qos_usage, cluster_name,
+					   assoc_cond->usage_start,
+					   assoc_cond->usage_end);
+		} else {
+			get_usage_for_list(mysql_conn, DBD_GET_ASSOC_USAGE,
+					   assoc_list, cluster_name,
+					   assoc_cond->usage_start,
+					   assoc_cond->usage_end);
+		}
+	}
 
 	list_transfer(sent_list, assoc_list);
 	FREE_NULL_LIST(assoc_list);
@@ -2921,7 +3035,7 @@ static int _add_assoc_internal(add_assoc_cond_t *add_assoc_cond)
 		assoc->acct = xstrdup(assoc_in->acct);
 		assoc->cluster = xstrdup(assoc_in->cluster);
 		assoc->comment = xstrdup(assoc_in->comment);
-
+		assoc->flags = assoc_in->flags & ~ASSOC_FLAG_BASE;
 		assoc->grp_tres = xstrdup(assoc_in->grp_tres);
 		assoc->grp_tres_mins = xstrdup(assoc_in->grp_tres_mins);
 		assoc->grp_tres_run_mins = xstrdup(assoc_in->grp_tres_run_mins);
@@ -3176,13 +3290,62 @@ static int _add_assoc_internal(add_assoc_cond_t *add_assoc_cond)
 	return rc;
 }
 
-static int _add_assoc_cond_partition(void *x, void *arg)
+static void _add_assoc_cond_user_internal(add_assoc_cond_t *add_assoc_cond)
 {
-	add_assoc_cond_t *add_assoc_cond = arg;
 	slurmdb_assoc_rec_t user_assoc;
 	int rc;
 
-	add_assoc_cond->add_assoc->assoc.partition = x;
+	memset(&user_assoc, 0, sizeof(slurmdb_assoc_rec_t));
+	user_assoc.cluster = add_assoc_cond->add_assoc->assoc.cluster;
+	user_assoc.acct = add_assoc_cond->add_assoc->assoc.acct;
+	user_assoc.user = add_assoc_cond->add_assoc->assoc.user;
+	user_assoc.uid = add_assoc_cond->add_assoc->assoc.uid;
+
+	rc = assoc_mgr_fill_in_assoc(
+		add_assoc_cond->mysql_conn,
+		&user_assoc,
+		ACCOUNTING_ENFORCE_ASSOCS, NULL, true);
+
+	if (rc == SLURM_SUCCESS)
+		debug2("Association %s/%s/%s is already here, not adding again.",
+		       user_assoc.cluster, user_assoc.acct,
+		       user_assoc.user);
+	else {
+		add_assoc_cond->add_assoc->assoc.lineage =
+			xstrdup_printf(
+				"%s0-%s/", add_assoc_cond->base_lineage,
+				add_assoc_cond->add_assoc->assoc.user);
+
+		add_assoc_cond->rc =
+			_add_assoc_internal(add_assoc_cond);
+		/*
+		 * This check is for handling lft/rgt logic
+		 * 2 versions after 23.11 we no longer will have the do
+		 * this check for 1.
+		 */
+		if (add_assoc_cond->rc == 1)
+			add_assoc_cond->rc = SLURM_SUCCESS;
+		xfree(add_assoc_cond->add_assoc->assoc.lineage);
+	}
+}
+
+static int _add_assoc_cond_partition(void *x, void *arg)
+{
+	add_assoc_cond_t *add_assoc_cond = arg;
+	char *partition = x;
+	slurmdb_assoc_rec_t user_assoc;
+	int rc;
+
+	/*
+	 * For some reason we have a empty partition name, handle as if it were
+	 * a non-partition association.
+	 */
+	if (!partition || !partition[0]) {
+		_add_assoc_cond_user_internal(add_assoc_cond);
+		goto endit;
+	}
+
+	add_assoc_cond->add_assoc->assoc.partition = partition;
 
 	memset(&user_assoc, 0, sizeof(slurmdb_assoc_rec_t));
 	user_assoc.cluster = add_assoc_cond->add_assoc->assoc.cluster;
@@ -3205,7 +3368,7 @@ static int _add_assoc_cond_partition(void *x, void *arg)
 		       user_assoc.user, user_assoc.partition);
 	else {
 		add_assoc_cond->add_assoc->assoc.lineage = xstrdup_printf(
-			"%s/0-%s/%s/", add_assoc_cond->base_lineage,
+			"%s0-%s/%s/", add_assoc_cond->base_lineage,
 			add_assoc_cond->add_assoc->assoc.user,
 			add_assoc_cond->add_assoc->assoc.partition);
 		add_assoc_cond->rc = _add_assoc_internal(add_assoc_cond);
@@ -3222,7 +3385,7 @@ static int _add_assoc_cond_partition(void *x, void *arg)
 	}
 
 	add_assoc_cond->add_assoc->assoc.partition = NULL;
-
+endit:
 	if (add_assoc_cond->rc != SLURM_SUCCESS)
 		return -1;
 	else
@@ -3254,7 +3417,13 @@ static int _add_assoc_cond_user(void *x, void *arg)
 		 */
 		memset(&check_object, 0, sizeof(check_object));
 		check_object.name = add_assoc_cond->add_assoc->assoc.user;
-		check_object.uid = add_assoc_cond->add_assoc->assoc.uid;
+		/*
+		 * We have to use uid = NO_VAL here to avoid potential issues
+		 * where a user is added to the system after it was originally
+		 * added to the Slurm database and the assoc_mgr hasn't updated
+		 * the uid yet.
+		 */
+		check_object.uid = NO_VAL;
 		rc = assoc_mgr_fill_in_user(add_assoc_cond->mysql_conn,
 					    &check_object,
 					    ACCOUNTING_ENFORCE_ASSOCS,
@@ -3269,47 +3438,17 @@ static int _add_assoc_cond_user(void *x, void *arg)
 		}
 	}
 
+	_handle_coord_parent_flag(add_assoc_cond,
+				  &add_assoc_cond->add_assoc->assoc,
+				  add_assoc_cond->flags);
+
 	if (add_assoc_cond->add_assoc->partition_list)
 		(void) list_for_each_ro(
 			add_assoc_cond->add_assoc->partition_list,
 			_add_assoc_cond_partition,
 			add_assoc_cond);
-	else {
-		slurmdb_assoc_rec_t user_assoc;
-
-		memset(&user_assoc, 0, sizeof(slurmdb_assoc_rec_t));
-		user_assoc.cluster = add_assoc_cond->add_assoc->assoc.cluster;
-		user_assoc.acct = add_assoc_cond->add_assoc->assoc.acct;
-		user_assoc.user = add_assoc_cond->add_assoc->assoc.user;
-		user_assoc.uid = add_assoc_cond->add_assoc->assoc.uid;
-
-		rc = assoc_mgr_fill_in_assoc(
-			add_assoc_cond->mysql_conn,
-			&user_assoc,
-			ACCOUNTING_ENFORCE_ASSOCS, NULL, true);
-
-		if (rc == SLURM_SUCCESS)
-			debug2("Association %s/%s/%s is already here, not adding again.",
-			       user_assoc.cluster, user_assoc.acct,
-			       user_assoc.user);
-		else {
-			add_assoc_cond->add_assoc->assoc.lineage =
-				xstrdup_printf(
-					"%s0-%s/", add_assoc_cond->base_lineage,
-					add_assoc_cond->add_assoc->assoc.user);
-
-			add_assoc_cond->rc =
-				_add_assoc_internal(add_assoc_cond);
-			/*
-			 * This check is for handling lft/rgt logic
-			 * 2 versions after 23.11 we no longer will have the do
-			 * this check for 1.
-			 */
-			if (add_assoc_cond->rc == 1)
-				add_assoc_cond->rc = SLURM_SUCCESS;
-			xfree(add_assoc_cond->add_assoc->assoc.lineage);
-		}
-	}
+	else
+		_add_assoc_cond_user_internal(add_assoc_cond);
 
 	if (set_def)
 		add_assoc_cond->add_assoc->assoc.is_def = 0;
@@ -3337,12 +3476,11 @@ static int _add_assoc_cond_acct(void *x, void *arg)
 	acct_assoc.uid = NO_VAL;
 
 	if (add_assoc_cond->is_coord &&
-	    _check_coord_qos(add_assoc_cond->mysql_conn,
-			     acct_assoc.cluster,
-			     acct_assoc.acct,
-			     add_assoc_cond->user_name,
-			     add_assoc_cond->add_assoc->assoc.qos_list) !=
-	    SLURM_SUCCESS) {
+	    !assoc_mgr_check_coord_qos(
+		    acct_assoc.cluster,
+		    acct_assoc.acct,
+		    add_assoc_cond->user_name,
+		    add_assoc_cond->add_assoc->assoc.qos_list)) {
 		assoc_mgr_lock_t locks = {
 			.qos = READ_LOCK,
 		};
@@ -3362,7 +3500,8 @@ static int _add_assoc_cond_acct(void *x, void *arg)
 
 	rc = assoc_mgr_fill_in_assoc(add_assoc_cond->mysql_conn,
 				     &acct_assoc,
-				     ACCOUNTING_ENFORCE_ASSOCS, NULL, true);
+				     ACCOUNTING_ENFORCE_ASSOCS,
+				     NULL, true);
 
 	if (add_assoc_cond->add_assoc->user_list) {
 		if (rc != SLURM_SUCCESS) {
@@ -3616,7 +3755,7 @@ extern int as_mysql_get_modified_lfts(mysql_conn_t *mysql_conn,
 }
 
 extern int as_mysql_add_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
-			       List assoc_list)
+			       list_t *assoc_list)
 {
 	list_itr_t *itr = NULL;
 	int rc = SLURM_SUCCESS;
@@ -3647,6 +3786,11 @@ extern int as_mysql_add_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
 		slurmdb_user_rec_t user;
 		slurmdb_coord_rec_t *coord = NULL;
 		slurmdb_assoc_rec_t *object = NULL;
+
+		if (slurmdbd_conf->flags & DBD_CONF_FLAG_DISABLE_COORD_DBD) {
+			error("Coordinator privilege revoked with DisableCoordDBD, only admins/operators can add associations.");
+			return ESLURM_ACCESS_DENIED;
+		}
 
 		memset(&user, 0, sizeof(slurmdb_user_rec_t));
 		user.uid = uid;
@@ -3700,10 +3844,9 @@ extern int as_mysql_add_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
 		}
 
 		if (add_assoc_cond.is_coord &&
-		    _check_coord_qos(mysql_conn, object->cluster,
-				     object->acct, add_assoc_cond.user_name,
-				     object->qos_list)
-		    == SLURM_ERROR) {
+		    !assoc_mgr_check_coord_qos(object->cluster, object->acct,
+					      add_assoc_cond.user_name,
+					      object->qos_list)) {
 			assoc_mgr_lock_t locks = {
 				NO_LOCK, NO_LOCK, READ_LOCK, NO_LOCK,
 				NO_LOCK, NO_LOCK, NO_LOCK };
@@ -3805,6 +3948,9 @@ extern int as_mysql_add_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
 			if (object->partition)
 				xstrfmtcat(object->lineage, "%s/",
 					   object->partition);
+
+			_handle_coord_parent_flag(&add_assoc_cond, object,
+						  ASSOC_FLAG_USER_COORD);
 		} else {
 			object->lineage = xstrdup_printf(
 				"%s%s/", my_par_lineage, object->acct);
@@ -3881,6 +4027,7 @@ end_it:
 	xfree(add_assoc.assoc.cluster);
 	FREE_NULL_LIST(add_assoc.user_list);
 	xfree(add_assoc_cond.cols);
+	FREE_NULL_LIST(add_assoc_cond.coord_users);
 	xfree(add_assoc_cond.extra);
 	xfree(add_assoc_cond.old_parent);
 	xfree(add_assoc_cond.old_cluster);
@@ -3921,9 +4068,19 @@ extern char *as_mysql_add_assocs_cond(mysql_conn_t *mysql_conn, uint32_t uid,
 		add_assoc->assoc.parent_acct = xstrdup("root");
 
 	assoc_mgr_lock(&locks);
+	add_assoc_cond.assoc_mgr_locked = true;
+	add_assoc_cond.flags = ASSOC_FLAG_USER_COORD;
+
 	if (!is_user_min_admin_level_locked(mysql_conn, uid,
 					    SLURMDB_ADMIN_OPERATOR)) {
 		slurmdb_user_rec_t user;
+
+		if (slurmdbd_conf->flags & DBD_CONF_FLAG_DISABLE_COORD_DBD) {
+			error("Coordinator privilege revoked with DisableCoordDBD, only admins/operators can add associations.");
+			assoc_mgr_unlock(&locks);
+			errno = ESLURM_ACCESS_DENIED;
+			return NULL;
+		}
 
 		memset(&user, 0, sizeof(slurmdb_user_rec_t));
 		user.uid = uid;
@@ -3990,6 +4147,7 @@ extern char *as_mysql_add_assocs_cond(mysql_conn_t *mysql_conn, uint32_t uid,
 
 	xfree(add_assoc_cond.cols);
 	xfree(add_assoc_cond.extra);
+	FREE_NULL_LIST(add_assoc_cond.coord_users);
 
 	if (add_assoc_cond.rc != SLURM_SUCCESS) {
 		reset_mysql_conn(mysql_conn);
@@ -4022,12 +4180,12 @@ extern char *as_mysql_add_assocs_cond(mysql_conn_t *mysql_conn, uint32_t uid,
 	return add_assoc_cond.ret_str;
 }
 
-extern List as_mysql_modify_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
-				   slurmdb_assoc_cond_t *assoc_cond,
-				   slurmdb_assoc_rec_t *assoc)
+extern list_t *as_mysql_modify_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
+				      slurmdb_assoc_cond_t *assoc_cond,
+				      slurmdb_assoc_rec_t *assoc)
 {
 	list_itr_t *itr = NULL;
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	int rc = SLURM_SUCCESS;
 	char *object = NULL;
 	char *vals = NULL, *extra = NULL, *query = NULL;
@@ -4038,9 +4196,13 @@ extern List as_mysql_modify_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
 	char *tmp_char1=NULL, *tmp_char2=NULL;
 	char *cluster_name = NULL;
 	char *prefix = "t1";
-	List use_cluster_list = NULL;
+	list_t *use_cluster_list = NULL;
 	bool locked = false;
 	slurmdb_assoc_cond_t qos_assoc_cond;
+	bitstr_t *wanted_qos = NULL;
+	assoc_mgr_lock_t assoc_locks = {
+		.assoc = READ_LOCK,
+	};
 
 	if (!assoc_cond || !assoc) {
 		error("we need something to change");
@@ -4056,6 +4218,12 @@ extern List as_mysql_modify_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
 	if (!(is_admin = is_user_min_admin_level(
 		      mysql_conn, uid, SLURMDB_ADMIN_OPERATOR))) {
 		if (is_user_any_coord(mysql_conn, &user)) {
+			if (slurmdbd_conf->flags &
+			    DBD_CONF_FLAG_DISABLE_COORD_DBD) {
+				error("Coordinator privilege revoked with DisableCoordDBD, only admins/operators can modify associations.");
+				errno = ESLURM_ACCESS_DENIED;
+				return NULL;
+			}
 			if (assoc->parent_acct) {
 				rc = _foreach_is_coord(assoc->parent_acct,
 						       &user);
@@ -4147,11 +4315,16 @@ is_same_user:
 		locked = true;
 	}
 
+	if (assoc_cond->qos_list && list_count(assoc_cond->qos_list)) {
+		wanted_qos = bit_alloc(g_qos_count);
+		set_qos_bitstr_from_list(wanted_qos, assoc_cond->qos_list);
+		assoc_mgr_lock(&assoc_locks);
+	}
+
 	memset(&qos_assoc_cond, 0, sizeof(qos_assoc_cond));
 	itr = list_iterator_create(use_cluster_list);
 	while ((cluster_name = list_next(itr))) {
-		query = _setup_assoc_table_query(assoc_cond, cluster_name,
-						 object, extra,
+		query = _setup_assoc_table_query(cluster_name, object, extra,
 						 " ORDER BY lineage FOR UPDATE;");
 		DB_DEBUG(DB_ASSOC, mysql_conn->conn, "query\n%s", query);
 		if (!(result = mysql_db_query_ret(
@@ -4169,7 +4342,8 @@ is_same_user:
 						   &user, cluster_name, vals,
 						   is_admin, same_user,
 						   ret_list,
-						   &qos_assoc_cond);
+						   &qos_assoc_cond,
+						   wanted_qos);
 		mysql_free_result(result);
 
 		if ((rc == ESLURM_INVALID_PARENT_ACCOUNT)
@@ -4191,8 +4365,13 @@ is_same_user:
 	}
 	list_iterator_destroy(itr);
 
+	if (wanted_qos)
+		assoc_mgr_unlock(&assoc_locks);
+
+	FREE_NULL_BITMAP(wanted_qos);
+
 	if (ret_list && qos_assoc_cond.cluster_list) {
-		List local_assoc_list = as_mysql_get_assocs(
+		list_t *local_assoc_list = as_mysql_get_assocs(
 			mysql_conn, uid, &qos_assoc_cond);
 
 		if (local_assoc_list) {
@@ -4238,11 +4417,11 @@ is_same_user:
 	return ret_list;
 }
 
-extern List as_mysql_remove_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
-				   slurmdb_assoc_cond_t *assoc_cond)
+extern list_t *as_mysql_remove_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
+				      slurmdb_assoc_cond_t *assoc_cond)
 {
 	list_itr_t *itr = NULL;
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	int rc = SLURM_SUCCESS;
 	char *object = NULL, *cluster_name = NULL;
 	char *extra = NULL, *query = NULL, *name_char = NULL;
@@ -4251,8 +4430,15 @@ extern List as_mysql_remove_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
 	MYSQL_ROW row;
 	slurmdb_user_rec_t user;
 	char *prefix = "t1";
-	List use_cluster_list = NULL;
+	list_t *use_cluster_list = NULL;
 	bool jobs_running = 0, default_account = false, locked = false;;
+	add_assoc_cond_t add_assoc_cond = {
+		.mysql_conn = mysql_conn,
+	};
+	bitstr_t *wanted_qos = NULL;
+	assoc_mgr_lock_t assoc_locks = {
+		.assoc = READ_LOCK,
+	};
 
 	if (!assoc_cond) {
 		error("we need something to change");
@@ -4267,6 +4453,11 @@ extern List as_mysql_remove_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
 
 	if (!(is_admin = is_user_min_admin_level(
 		      mysql_conn, uid, SLURMDB_ADMIN_OPERATOR))) {
+		if (slurmdbd_conf->flags & DBD_CONF_FLAG_DISABLE_COORD_DBD) {
+			error("Coordinator privilege revoked with DisableCoordDBD, only admins/operators can remove associations.");
+			errno = ESLURM_ACCESS_DENIED;
+			return NULL;
+		}
 		if (!is_user_any_coord(mysql_conn, &user)) {
 			error("Only admins/coordinators can "
 			      "remove associations");
@@ -4291,11 +4482,17 @@ extern List as_mysql_remove_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
 		locked = true;
 	}
 
+	if (assoc_cond->qos_list && list_count(assoc_cond->qos_list)) {
+		wanted_qos = bit_alloc(g_qos_count);
+		set_qos_bitstr_from_list(wanted_qos, assoc_cond->qos_list);
+		assoc_mgr_lock(&assoc_locks);
+	}
+
 	itr = list_iterator_create(use_cluster_list);
 	while ((cluster_name = list_next(itr))) {
-		query = _setup_assoc_table_query(assoc_cond, cluster_name,
-						 "t1.lineage", extra,
-						 " ORDER BY lineage;");
+		query = _setup_assoc_table_query(cluster_name,
+						 "t1.id_assoc, t1.lineage",
+						 extra, " ORDER BY lineage;");
 		DB_DEBUG(DB_ASSOC, mysql_conn->conn, "query\n%s", query);
 		if (!(result = mysql_db_query_ret(
 			      mysql_conn, query, 0))) {
@@ -4315,9 +4512,20 @@ extern List as_mysql_remove_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
 		}
 
 		while ((row = mysql_fetch_row(result))) {
+			/*
+			 * Filter assoc recs by qos here rather than performing
+			 * an expensive sql query.
+			 */
+			if (wanted_qos) {
+				uint32_t id = slurm_atoul(row[0]);
+				if (!_assoc_id_has_qos(mysql_conn,
+						       cluster_name, id,
+						       wanted_qos))
+					continue;
+			}
 			xstrfmtcat(name_char,
 				   "%slineage like '%s%%'",
-				   name_char ? " || " : "", row[0]);
+				   name_char ? " || " : "", row[1]);
 		}
 		mysql_free_result(result);
 
@@ -4341,7 +4549,8 @@ extern List as_mysql_remove_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
 						   &user, cluster_name,
 						   name_char, is_admin,
 						   ret_list, &jobs_running,
-						   &default_account);
+						   &default_account,
+						   &add_assoc_cond);
 		xfree(name_char);
 		mysql_free_result(result);
 
@@ -4351,6 +4560,12 @@ extern List as_mysql_remove_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
 			break;
 		}
 	}
+	if (wanted_qos)
+		assoc_mgr_unlock(&assoc_locks);
+
+	FREE_NULL_LIST(add_assoc_cond.coord_users);
+	FREE_NULL_BITMAP(wanted_qos);
+
 	list_iterator_destroy(itr);
 	if (locked) {
 		FREE_NULL_LIST(use_cluster_list);
@@ -4379,18 +4594,18 @@ extern List as_mysql_remove_assocs(mysql_conn_t *mysql_conn, uint32_t uid,
 	return ret_list;
 }
 
-extern List as_mysql_get_assocs(mysql_conn_t *mysql_conn, uid_t uid,
-				slurmdb_assoc_cond_t *assoc_cond)
+extern list_t *as_mysql_get_assocs(mysql_conn_t *mysql_conn, uid_t uid,
+				   slurmdb_assoc_cond_t *assoc_cond)
 {
 	//DEF_TIMERS;
 	char *extra = NULL;
 	char *tmp = NULL;
-	List assoc_list = NULL;
+	list_t *assoc_list = NULL;
 	list_itr_t *itr = NULL;
 	int i=0, is_admin=1;
 	slurmdb_user_rec_t user;
 	char *prefix = "t1";
-	List use_cluster_list = NULL;
+	list_t *use_cluster_list = NULL;
 	char *cluster_name = NULL;
 	bool locked = false;
 
@@ -4465,9 +4680,9 @@ empty:
 }
 
 extern int as_mysql_reset_lft_rgt(mysql_conn_t *mysql_conn, uid_t uid,
-				  List cluster_list)
+				  list_t *cluster_list)
 {
-	List assoc_list = NULL;
+	list_t *assoc_list = NULL;
 	list_itr_t *itr = NULL, *assoc_itr;
 	int i=0, is_admin=1;
 	slurmdb_user_rec_t user;
@@ -4477,7 +4692,7 @@ extern int as_mysql_reset_lft_rgt(mysql_conn_t *mysql_conn, uid_t uid,
 	int rc = SLURM_SUCCESS;
 	slurmdb_update_object_t *update_object;
 	slurmdb_update_type_t type;
-	List use_cluster_list = as_mysql_cluster_list;
+	list_t *use_cluster_list = as_mysql_cluster_list;
 
 	info("Resetting lft and rgt's called");
 	/* This is not safe if ran during the middle of a slurmdbd
@@ -4517,7 +4732,7 @@ extern int as_mysql_reset_lft_rgt(mysql_conn_t *mysql_conn, uid_t uid,
 		info("Resetting cluster %s", cluster_name);
 		assoc_list = list_create(slurmdb_destroy_assoc_rec);
 		/* set this up to get the associations without parent_limits */
-		assoc_cond.without_parent_limits = 1;
+		assoc_cond.flags |= ASSOC_COND_FLAG_WOPL;
 
 		/* Get the associations for the cluster that needs to
 		 * somehow got lft and rgt's messed up. */
@@ -4654,7 +4869,7 @@ extern int as_mysql_reset_lft_rgt(mysql_conn_t *mysql_conn, uid_t uid,
 		}
 
 		/* set this up to get the associations with parent_limits */
-		assoc_cond.without_parent_limits = 0;
+		assoc_cond.flags &= ~ASSOC_COND_FLAG_WOPL;
 		if ((rc = _cluster_get_assocs(mysql_conn, &user, &assoc_cond,
 					      cluster_name, tmp,
 					      " deleted=0",
@@ -4687,10 +4902,10 @@ extern int as_mysql_reset_lft_rgt(mysql_conn_t *mysql_conn, uid_t uid,
 }
 
 extern int as_mysql_assoc_remove_default(mysql_conn_t *mysql_conn,
-					 List user_list, List cluster_list)
+					 list_t *user_list, list_t *cluster_list)
 {
 	char *query = NULL;
-	List use_cluster_list = NULL;
+	list_t *use_cluster_list = NULL;
 	list_itr_t *itr, *itr2;
 	slurmdb_assoc_rec_t assoc;
 	bool locked = false;

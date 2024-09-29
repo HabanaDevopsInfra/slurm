@@ -40,6 +40,7 @@
 #include <sys/stat.h>
 
 #include "src/common/slurm_xlator.h"
+#include "src/common/fd.h"
 #include "src/common/strlcpy.h"
 
 #include "src/slurmctld/slurmctld.h"
@@ -47,6 +48,8 @@
 #include "src/slurmd/slurmstepd/slurmstepd_job.h"
 
 #include "switch_hpe_slingshot.h"
+
+typedef struct switch_stepinfo switch_stepinfo_t;
 
 /*
  * These are defined here so when we link with something other than
@@ -88,10 +91,10 @@ const char plugin_type[] = "switch/hpe_slingshot";
 const uint32_t plugin_version = SLURM_VERSION_NUMBER;
 const uint32_t plugin_id = SWITCH_PLUGIN_SLINGSHOT;
 
+bool active_outside_ctld = false;
+
 slingshot_state_t slingshot_state;    /* VNI min/max/last/bitmap */
 slingshot_config_t slingshot_config;  /* Configuration defaults */
-
-extern int switch_p_libstate_clear(void);	/* for fini() below */
 
 /*
  * Set up slingshot_state defaults
@@ -113,15 +116,20 @@ static void _state_defaults(void)
 extern int init(void)
 {
 	debug("loaded");
-	if (running_in_slurmctld())
+	if (running_in_slurmctld()) {
 		_state_defaults();
+		if (!slingshot_setup_config(slurm_conf.switch_param))
+			return SLURM_ERROR;
+	}
+
 	return SLURM_SUCCESS;
 }
 
 extern int fini(void)
 {
-	if (running_in_slurmctld()) {
-		switch_p_libstate_clear();
+	if (running_in_slurmctld() || active_outside_ctld) {
+		FREE_NULL_BITMAP(slingshot_state.vni_table);
+		xfree(slingshot_state.job_vnis);
 		slingshot_fini_instant_on();
 		slingshot_fini_collectives();
 		slingshot_free_config();
@@ -133,7 +141,7 @@ extern int fini(void)
 /*
  * switch functions for global state save/restore
  */
-extern int switch_p_libstate_save(char *dir_name)
+extern int switch_p_save(void)
 {
 	int state_fd;
 	uint32_t actual_job_vnis, actual_job_hwcoll;
@@ -186,9 +194,9 @@ extern int switch_p_libstate_save(char *dir_name)
 	}
 
 	/* Get file names for the current and new state files */
-	new_state_file = xstrdup(dir_name);
+	new_state_file = xstrdup(slurm_conf.state_save_location);
 	xstrcat(new_state_file, "/" SLINGSHOT_STATE_FILE_NEW);
-	state_file = xstrdup(dir_name);
+	state_file = xstrdup(slurm_conf.state_save_location);
 	xstrcat(state_file, "/" SLINGSHOT_STATE_FILE);
 	debug("%s: packing %u/%u job VNIs",
 	       state_file, actual_job_vnis, slingshot_state.num_job_vnis);
@@ -212,6 +220,10 @@ extern int switch_p_libstate_save(char *dir_name)
 		goto error;
 	}
 
+	if (fsync_and_close(state_fd, "switch"))
+		goto error;
+	state_fd = -1;
+
 	/* Overwrite the current state file with rename */
 	if (rename(new_state_file, state_file) == -1) {
 		error("Couldn't rename %s to %s: %m", new_state_file,
@@ -220,14 +232,14 @@ extern int switch_p_libstate_save(char *dir_name)
 	}
 
 	debug("State file %s saved", state_file);
-	close(state_fd);
 	FREE_NULL_BUFFER(state_buf);
 	xfree(new_state_file);
 	xfree(state_file);
 	return SLURM_SUCCESS;
 
 error:
-	close(state_fd);
+	if (state_fd)
+		close(state_fd);
 	FREE_NULL_BUFFER(state_buf);
 	unlink(new_state_file);
 	xfree(new_state_file);
@@ -239,7 +251,7 @@ error:
  * Restore slingshot_state from state file
  * NOTE: assumes this runs before loading the slurm.conf config
  */
-extern int switch_p_libstate_restore(char *dir_name, bool recover)
+extern int switch_p_restore(bool recover)
 {
 	char *state_file;
 	struct stat stat_buf;
@@ -247,14 +259,12 @@ extern int switch_p_libstate_restore(char *dir_name, bool recover)
 	buf_t *state_buf;
 	int i;
 
-	/* If we're not recovering state, just set up defaults */
 	if (!recover) {
-		_state_defaults();
 		return SLURM_SUCCESS;
 	}
 
 	/* Get state file name */
-	state_file = xstrdup(dir_name);
+	state_file = xstrdup(slurm_conf.state_save_location);
 	xstrcat(state_file, "/" SLINGSHOT_STATE_FILE);
 
 	/* Return success if file doesn't exist */
@@ -285,7 +295,12 @@ extern int switch_p_libstate_restore(char *dir_name, bool recover)
 	safe_unpack16(&slingshot_state.vni_min, state_buf);
 	safe_unpack16(&slingshot_state.vni_max, state_buf);
 	safe_unpack16(&slingshot_state.vni_last, state_buf);
+
+	FREE_NULL_BITMAP(slingshot_state.vni_table);
 	unpack_bit_str_hex(&slingshot_state.vni_table, state_buf);
+	free_vnis = bit_size(slingshot_state.vni_table) -
+		bit_set_count(slingshot_state.vni_table);
+
 	safe_unpack32(&slingshot_state.num_job_vnis, state_buf);
 	slingshot_state.job_vnis = NULL;
 	if (slingshot_state.num_job_vnis > 0) {
@@ -333,38 +348,69 @@ error:
 	return SLURM_ERROR;
 }
 
-extern int switch_p_libstate_clear(void)
+extern void switch_p_pack_jobinfo(void *switch_jobinfo, buf_t *buffer,
+				  uint16_t protocol_version)
 {
-	log_flag(SWITCH, "vni_table=%p job_vnis=%p num_job_vnis=%u",
-		slingshot_state.vni_table, slingshot_state.job_vnis,
-		slingshot_state.num_job_vnis);
+	slingshot_jobinfo_t *jobinfo = switch_jobinfo;
 
-	FREE_NULL_BITMAP(slingshot_state.vni_table);
-	xfree(slingshot_state.job_vnis);
+	xassert(buffer);
 
-	return SLURM_SUCCESS;
+	if (protocol_version >= SLURM_24_05_PROTOCOL_VERSION) {
+		if (!jobinfo) {
+			packbool(0, buffer);
+			return;
+		}
+
+		packbool(1, buffer);
+		pack16_array(jobinfo->vnis, jobinfo->num_vnis, buffer);
+		packstr(jobinfo->extra, buffer);
+	}
 }
 
-/*
- * switch functions for job step specific credential
- */
-extern int switch_p_alloc_jobinfo(switch_jobinfo_t **switch_job,
-				  uint32_t job_id, uint32_t step_id)
+extern int switch_p_unpack_jobinfo(void **switch_jobinfo, buf_t *buffer,
+				   uint16_t protocol_version)
 {
-	slingshot_jobinfo_t *new = xcalloc(1, sizeof(*new));
+	bool tmp_bool;
+	slingshot_jobinfo_t *jobinfo;
 
-	xassert(switch_job);
+	xassert(switch_jobinfo);
+	xassert(buffer);
 
-	new->version = SLURM_PROTOCOL_VERSION;
-	*switch_job = (switch_jobinfo_t *)new;
+	*switch_jobinfo = jobinfo = xmalloc(sizeof(*jobinfo));
+
+	if (protocol_version >= SLURM_24_05_PROTOCOL_VERSION) {
+		safe_unpackbool(&tmp_bool, buffer);
+		if (!tmp_bool) {
+			slingshot_free_jobinfo(*switch_jobinfo);
+			*switch_jobinfo = NULL;
+			return SLURM_SUCCESS;
+		}
+
+		safe_unpack16_array(&jobinfo->vnis, &jobinfo->num_vnis, buffer);
+		safe_unpackstr(&jobinfo->extra, buffer);
+	}
+
+	if (running_in_slurmstepd()) {
+		/* Update vni table with allocated vnis for stepmgr job */
+		active_outside_ctld = true;
+		_state_defaults();
+		slingshot_setup_config(slurm_conf.switch_param);
+		slingshot_update_config(jobinfo);
+	}
 
 	return SLURM_SUCCESS;
+
+unpack_error:
+	error("error unpacking jobinfo struct");
+	slingshot_free_jobinfo(jobinfo);
+	*switch_jobinfo = NULL;
+	return SLURM_ERROR;
 }
 
-static void _copy_jobinfo(slingshot_jobinfo_t *old, slingshot_jobinfo_t *new)
+static void _copy_stepinfo(slingshot_stepinfo_t *old, slingshot_stepinfo_t *new)
 {
 	/* Copy static (non-malloced) fields */
-	memcpy(new, old, sizeof(slingshot_jobinfo_t));
+	memcpy(new, old, sizeof(slingshot_stepinfo_t));
 
 	/* Copy malloced fields */
 	if (old->num_vnis) {
@@ -396,27 +442,27 @@ static void _copy_jobinfo(slingshot_jobinfo_t *old, slingshot_jobinfo_t *new)
 }
 
 /*
- * Get the slingshot jobinfo structure from a given step record.
+ * Get the slingshot stepinfo structure from a given step record.
  */
-static slingshot_jobinfo_t *_get_slingshot_jobinfo(step_record_t *step_ptr)
+static slingshot_stepinfo_t *_get_slingshot_stepinfo(step_record_t *step_ptr)
 {
-	if (!step_ptr || !step_ptr->switch_job || !step_ptr->switch_job->data)
+	if (!step_ptr || !step_ptr->switch_step || !step_ptr->switch_step->data)
 		return NULL;
-	return (slingshot_jobinfo_t *) step_ptr->switch_job->data;
+	return (slingshot_stepinfo_t *) step_ptr->switch_step->data;
 }
 
 /*
- * Copy slingshot jobinfo from the first het step in a non-het job
+ * Copy slingshot stepinfo from the first het step in a non-het job
  */
-static bool _copy_het_step_jobinfo(slingshot_jobinfo_t *jobinfo,
+static bool _copy_het_step_stepinfo(slingshot_stepinfo_t *stepinfo,
 				   step_record_t *step_ptr)
 {
-	slingshot_jobinfo_t *het_jobinfo;
+	slingshot_stepinfo_t *het_stepinfo;
 	step_record_t *het_step_ptr;
 	job_record_t *job_ptr;
 	slurm_step_id_t tmp_step_id;
 
-	/* For the first component, we build the jobinfo, not copy it */
+	/* For the first component, we build the stepinfo, not copy it */
 	if (step_ptr->step_id.step_het_comp == 0)
 		return false;
 
@@ -427,25 +473,25 @@ static bool _copy_het_step_jobinfo(slingshot_jobinfo_t *jobinfo,
 	tmp_step_id.step_het_comp = 0,
 
 	het_step_ptr = find_step_record(job_ptr, &tmp_step_id);
-	het_jobinfo = _get_slingshot_jobinfo(het_step_ptr);
+	het_stepinfo = _get_slingshot_stepinfo(het_step_ptr);
 
 	/* Copy it to the current step */
-	if (het_jobinfo) {
-		log_flag(SWITCH, "Copying slingshot jobinfo from %pS to %pS",
+	if (het_stepinfo) {
+		log_flag(SWITCH, "Copying slingshot stepinfo from %pS to %pS",
 			 het_step_ptr, step_ptr);
-		_copy_jobinfo(het_jobinfo, jobinfo);
+		_copy_stepinfo(het_stepinfo, stepinfo);
 		return true;
 	}
 	return false;
 }
 
 /*
- * Copy slingshot jobinfo from the first het step in a het job
+ * Copy slingshot stepinfo from the first het step in a het job
  */
-static bool _copy_het_job_jobinfo(slingshot_jobinfo_t *jobinfo,
+static bool _copy_het_job_stepinfo(slingshot_stepinfo_t *stepinfo,
 				  step_record_t *step_ptr)
 {
-	slingshot_jobinfo_t *het_jobinfo = NULL;
+	slingshot_stepinfo_t *het_stepinfo = NULL;
 	job_record_t *het_job_leader, *het_job_ptr, *job_ptr;
 	step_record_t *het_step_ptr;
 	list_itr_t *job_iter;
@@ -464,7 +510,7 @@ static bool _copy_het_job_jobinfo(slingshot_jobinfo_t *jobinfo,
 		};
 
 		/*
-		 * If we get here without finding an existing jobinfo, we must
+		 * If we get here without finding an existing stepinfo, we must
 		 * be the first component, so there's nothing to copy from.
 		 */
 		if (job_ptr->job_id == het_job_ptr->job_id) {
@@ -474,14 +520,14 @@ static bool _copy_het_job_jobinfo(slingshot_jobinfo_t *jobinfo,
 
 		/* Look for a step in this job matching our step id */
 		het_step_ptr = find_step_record(het_job_ptr, &tmp_step_id);
-		het_jobinfo = _get_slingshot_jobinfo(het_step_ptr);
+		het_stepinfo = _get_slingshot_stepinfo(het_step_ptr);
 
 		/* Copy it to the current step */
-		if (het_jobinfo) {
+		if (het_stepinfo) {
 			log_flag(SWITCH,
-				 "Copying slingshot jobinfo from %pS to %pS",
+				 "Copying slingshot stepinfo from %pS to %pS",
 				 het_step_ptr, step_ptr);
-			_copy_jobinfo(het_jobinfo, jobinfo);
+			_copy_stepinfo(het_stepinfo, stepinfo);
 			list_iterator_destroy(job_iter);
 			return true;
 		}
@@ -518,18 +564,18 @@ static uint32_t _get_het_job_node_cnt(step_record_t *step_ptr)
 	return node_cnt;
 }
 
-extern int switch_p_build_jobinfo(switch_jobinfo_t *switch_job,
-				  slurm_step_layout_t *step_layout,
-				  step_record_t *step_ptr)
+extern int switch_p_build_stepinfo(switch_stepinfo_t **switch_job,
+				   slurm_step_layout_t *step_layout,
+				   step_record_t *step_ptr)
 {
-	slingshot_jobinfo_t *job = (slingshot_jobinfo_t *) switch_job;
+	slingshot_stepinfo_t *job = NULL;
 	job_record_t *job_ptr;
 	uint32_t job_id;
 	uint32_t node_cnt;
 	char *node_list;
 
 	if (!step_ptr) {
-		fatal("switch_p_build_jobinfo: step_ptr NULL not supported");
+		fatal("%s: step_ptr NULL not supported", __func__);
 	}
 	job_ptr = step_ptr->job_ptr;
 	xassert(job_ptr);
@@ -537,11 +583,9 @@ extern int switch_p_build_jobinfo(switch_jobinfo_t *switch_job,
 		step_ptr->step_id.job_id, step_ptr->step_id.step_id,
 		job_ptr->user_id, step_ptr->network);
 
-	if (!job) {
-		debug("switch_job was NULL");
-		return SLURM_SUCCESS;
-	}
-	xassert(job->version == SLURM_PROTOCOL_VERSION);
+	job = xmalloc(sizeof(*job));
+	job->version = SLURM_PROTOCOL_VERSION;
+	*switch_job = (switch_stepinfo_t *) job;
 
 	/*
 	 * If this is a homogeneous step, or the first component in a
@@ -552,11 +596,11 @@ extern int switch_p_build_jobinfo(switch_jobinfo_t *switch_job,
 	 * Without an accurate nodelist Instant On won't work, so we skip it.
 	 *
 	 * If this is not the first component in a heterogeneous step, copy the
-	 * jobinfo struct from the first component.
+	 * stepinfo struct from the first component.
 	 */
 	if (job_ptr->het_job_id) {
 		/* This is a het step in a het job */
-		if (_copy_het_job_jobinfo(job, step_ptr))
+		if (_copy_het_job_stepinfo(job, step_ptr))
 			return SLURM_SUCCESS;
 
 		node_list = NULL;
@@ -564,7 +608,7 @@ extern int switch_p_build_jobinfo(switch_jobinfo_t *switch_job,
 		job_id = job_ptr->het_job_id;
 	} else if (step_ptr->step_id.step_het_comp != NO_VAL) {
 		/* This is a het step in a non-het job */
-		if (_copy_het_step_jobinfo(job, step_ptr))
+		if (_copy_het_step_stepinfo(job, step_ptr))
 			return SLURM_SUCCESS;
 
 		node_list = NULL;
@@ -598,31 +642,30 @@ extern int switch_p_build_jobinfo(switch_jobinfo_t *switch_job,
 	return SLURM_SUCCESS;
 }
 
-extern int switch_p_duplicate_jobinfo(switch_jobinfo_t *tmp,
-				      switch_jobinfo_t **dest)
+extern void switch_p_duplicate_stepinfo(switch_stepinfo_t *tmp,
+					switch_stepinfo_t **dest)
 {
-	slingshot_jobinfo_t *old = (slingshot_jobinfo_t *) tmp;
-	slingshot_jobinfo_t *new = xmalloc(sizeof(*new));
+	slingshot_stepinfo_t *old = (slingshot_stepinfo_t *) tmp;
+	slingshot_stepinfo_t *new = xmalloc(sizeof(*new));
 
-	_copy_jobinfo(old, new);
+	_copy_stepinfo(old, new);
 
-	*dest = (switch_jobinfo_t *)new;
-	return SLURM_SUCCESS;
+	*dest = (switch_stepinfo_t *) new;
 }
 
-extern void switch_p_free_jobinfo(switch_jobinfo_t *switch_job)
+extern void switch_p_free_stepinfo(switch_stepinfo_t *switch_job)
 {
-	slingshot_jobinfo_t *jobinfo = (slingshot_jobinfo_t *) switch_job;
-	xassert(jobinfo);
-	xfree(jobinfo->vnis);
-	xfree(jobinfo->profiles);
-	xfree(jobinfo->nics);
-	if (jobinfo->hwcoll) {
-		xfree(jobinfo->hwcoll->mcast_token);
-		xfree(jobinfo->hwcoll->fm_url);
-		xfree(jobinfo->hwcoll);
+	slingshot_stepinfo_t *stepinfo = (slingshot_stepinfo_t *) switch_job;
+	xassert(stepinfo);
+	xfree(stepinfo->vnis);
+	xfree(stepinfo->profiles);
+	xfree(stepinfo->nics);
+	if (stepinfo->hwcoll) {
+		xfree(stepinfo->hwcoll->mcast_token);
+		xfree(stepinfo->hwcoll->fm_url);
+		xfree(stepinfo->hwcoll);
 	}
-	xfree(jobinfo);
+	xfree(stepinfo);
 }
 
 static void _pack_slingshot_limits(slingshot_limits_t *limits, buf_t *buffer)
@@ -683,7 +726,6 @@ static bool _unpack_comm_profile(slingshot_comm_profile_t *profile,
 				 buf_t *buffer)
 {
 	char *device_name;
-	uint32_t name_len;
 
 	safe_unpack32(&profile->svc_id, buffer);
 	safe_unpack16(&profile->vnis[0], buffer);
@@ -692,7 +734,7 @@ static bool _unpack_comm_profile(slingshot_comm_profile_t *profile,
 	safe_unpack16(&profile->vnis[3], buffer);
 	safe_unpack32(&profile->tcs, buffer);
 
-	safe_unpackstr_xmalloc(&device_name, &name_len, buffer);
+	safe_unpackstr(&device_name, buffer);
 	if (!device_name)
 		goto unpack_error;
 	strlcpy(profile->device_name, device_name,
@@ -708,12 +750,11 @@ unpack_error:
 static bool _unpack_hsn_nic(slingshot_hsn_nic_t *nic, buf_t *buffer)
 {
 	char *address, *device_name;
-	uint32_t name_len;
 
 	safe_unpack32(&nic->nodeidx, buffer);
 	safe_unpack32(&nic->address_type, buffer);
 
-	safe_unpackstr_xmalloc(&address, &name_len, buffer);
+	safe_unpackstr(&address, buffer);
 	if (!address)
 		goto unpack_error;
 	strlcpy(nic->address, address, sizeof(nic->address));
@@ -721,7 +762,7 @@ static bool _unpack_hsn_nic(slingshot_hsn_nic_t *nic, buf_t *buffer)
 
 	safe_unpack16(&nic->numa_node, buffer);
 
-	safe_unpackstr_xmalloc(&device_name, &name_len, buffer);
+	safe_unpackstr(&device_name, buffer);
 	if (!device_name)
 		goto unpack_error;
 	strlcpy(nic->device_name, device_name, sizeof(nic->device_name));
@@ -737,7 +778,6 @@ static bool _unpack_hwcoll(slingshot_hwcoll_t **hwcollp, buf_t *buffer)
 {
 	slingshot_hwcoll_t *hwcoll = NULL;
 	bool got_hwcoll = false;
-	uint32_t name_len;
 
 	*hwcollp = NULL;
 	/* Unpack a boolean to see if hwcoll is packed in the buffer */
@@ -748,11 +788,11 @@ static bool _unpack_hwcoll(slingshot_hwcoll_t **hwcollp, buf_t *buffer)
 		safe_unpack32(&hwcoll->job_id, buffer);
 		safe_unpack32(&hwcoll->step_id, buffer);
 
-		safe_unpackstr_xmalloc(&hwcoll->mcast_token, &name_len, buffer);
+		safe_unpackstr(&hwcoll->mcast_token, buffer);
 		if (!hwcoll->mcast_token)
 			goto unpack_error;
 
-		safe_unpackstr_xmalloc(&hwcoll->fm_url, &name_len, buffer);
+		safe_unpackstr(&hwcoll->fm_url, buffer);
 		if (!hwcoll->fm_url)
 			goto unpack_error;
 
@@ -768,89 +808,87 @@ unpack_error:
 	return false;
 }
 
-extern int switch_p_pack_jobinfo(switch_jobinfo_t *switch_job, buf_t *buffer,
-				 uint16_t protocol_version)
+extern void switch_p_pack_stepinfo(switch_stepinfo_t *switch_job, buf_t *buffer,
+				   uint16_t protocol_version)
 {
 	uint32_t pidx;
-	slingshot_jobinfo_t *jobinfo = (slingshot_jobinfo_t *)switch_job;
+	slingshot_stepinfo_t *stepinfo = (slingshot_stepinfo_t *)switch_job;
 
 	xassert(buffer);
 
 	if (protocol_version >= SLURM_23_11_PROTOCOL_VERSION) {
 		/* nothing to pack, pack special "null" version number */
-		if (!jobinfo ||
-		    (jobinfo->version == SLINGSHOT_JOBINFO_NULL_VERSION)) {
+		if (!stepinfo ||
+		    (stepinfo->version == SLINGSHOT_JOBINFO_NULL_VERSION)) {
 			debug("Nothing to pack");
 			pack32(SLINGSHOT_JOBINFO_NULL_VERSION, buffer);
-			return SLURM_SUCCESS;
+			return;
 		}
 
 		pack32(protocol_version, buffer);
-		pack16_array(jobinfo->vnis, jobinfo->num_vnis, buffer);
-		pack32(jobinfo->tcs, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.txqs, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.tgqs, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.eqs, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.cts, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.tles, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.ptes, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.les, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.acs, buffer);
-		pack32(jobinfo->depth, buffer);
-		pack32(jobinfo->num_profiles, buffer);
-		for (pidx = 0; pidx < jobinfo->num_profiles; pidx++) {
-			_pack_comm_profile(&jobinfo->profiles[pidx], buffer);
+		pack16_array(stepinfo->vnis, stepinfo->num_vnis, buffer);
+		pack32(stepinfo->tcs, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.txqs, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.tgqs, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.eqs, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.cts, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.tles, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.ptes, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.les, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.acs, buffer);
+		pack32(stepinfo->depth, buffer);
+		pack32(stepinfo->num_profiles, buffer);
+		for (pidx = 0; pidx < stepinfo->num_profiles; pidx++) {
+			_pack_comm_profile(&stepinfo->profiles[pidx], buffer);
 		}
-		pack32(jobinfo->flags, buffer);
-		pack32(jobinfo->num_nics, buffer);
-		for (pidx = 0; pidx < jobinfo->num_nics; pidx++) {
-			_pack_hsn_nic(&jobinfo->nics[pidx], buffer);
+		pack32(stepinfo->flags, buffer);
+		pack32(stepinfo->num_nics, buffer);
+		for (pidx = 0; pidx < stepinfo->num_nics; pidx++) {
+			_pack_hsn_nic(&stepinfo->nics[pidx], buffer);
 		}
-		_pack_hwcoll(jobinfo->hwcoll, buffer);
+		_pack_hwcoll(stepinfo->hwcoll, buffer);
 	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		/* nothing to pack, pack special "null" version number */
-		if (!jobinfo ||
-		    (jobinfo->version == SLINGSHOT_JOBINFO_NULL_VERSION)) {
+		if (!stepinfo ||
+		    (stepinfo->version == SLINGSHOT_JOBINFO_NULL_VERSION)) {
 			debug("Nothing to pack");
 			pack32(SLINGSHOT_JOBINFO_NULL_VERSION, buffer);
-			return SLURM_SUCCESS;
+			return;
 		}
 
 		pack32(protocol_version, buffer);
-		pack16_array(jobinfo->vnis, jobinfo->num_vnis, buffer);
-		pack32(jobinfo->tcs, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.txqs, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.tgqs, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.eqs, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.cts, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.tles, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.ptes, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.les, buffer);
-		_pack_slingshot_limits(&jobinfo->limits.acs, buffer);
-		pack32(jobinfo->depth, buffer);
-		pack32(jobinfo->num_profiles, buffer);
-		for (pidx = 0; pidx < jobinfo->num_profiles; pidx++) {
-			_pack_comm_profile(&jobinfo->profiles[pidx], buffer);
+		pack16_array(stepinfo->vnis, stepinfo->num_vnis, buffer);
+		pack32(stepinfo->tcs, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.txqs, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.tgqs, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.eqs, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.cts, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.tles, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.ptes, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.les, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.acs, buffer);
+		pack32(stepinfo->depth, buffer);
+		pack32(stepinfo->num_profiles, buffer);
+		for (pidx = 0; pidx < stepinfo->num_profiles; pidx++) {
+			_pack_comm_profile(&stepinfo->profiles[pidx], buffer);
 		}
 		pack_bit_str_hex(NULL, buffer); /* formerly vni_pids, Unused */
-		pack32(jobinfo->flags, buffer);
-		pack32(jobinfo->num_nics, buffer);
-		for (pidx = 0; pidx < jobinfo->num_nics; pidx++) {
-			_pack_hsn_nic(&jobinfo->nics[pidx], buffer);
+		pack32(stepinfo->flags, buffer);
+		pack32(stepinfo->num_nics, buffer);
+		for (pidx = 0; pidx < stepinfo->num_nics; pidx++) {
+			_pack_hsn_nic(&stepinfo->nics[pidx], buffer);
 		}
 	} else {
 		/* invalid protocol specified */
 		xassert(false);
 	}
-
-	return SLURM_SUCCESS;
 }
 
-extern int switch_p_unpack_jobinfo(switch_jobinfo_t **switch_job, buf_t *buffer,
-				   uint16_t protocol_version)
+extern int switch_p_unpack_stepinfo(switch_stepinfo_t **switch_job,
+				    buf_t *buffer, uint16_t protocol_version)
 {
 	uint32_t pidx = 0;
-	slingshot_jobinfo_t *jobinfo;
+	slingshot_stepinfo_t *stepinfo;
 
 	if (!switch_job) {
 		debug("switch_job was NULL");
@@ -859,99 +897,99 @@ extern int switch_p_unpack_jobinfo(switch_jobinfo_t **switch_job, buf_t *buffer,
 
 	xassert(buffer);
 
-	jobinfo = xmalloc(sizeof(*jobinfo));
-	*switch_job = (switch_jobinfo_t *)jobinfo;
+	stepinfo = xmalloc(sizeof(*stepinfo));
+	*switch_job = (switch_stepinfo_t *) stepinfo;
 
 	if (protocol_version >= SLURM_23_11_PROTOCOL_VERSION) {
-		safe_unpack32(&jobinfo->version, buffer);
-		if (jobinfo->version == SLINGSHOT_JOBINFO_NULL_VERSION) {
+		safe_unpack32(&stepinfo->version, buffer);
+		if (stepinfo->version == SLINGSHOT_JOBINFO_NULL_VERSION) {
 			debug("Nothing to unpack");
 			return SLURM_SUCCESS;
 		}
-		if (jobinfo->version != protocol_version) {
-			error("SLINGSHOT jobinfo version %"PRIu32" != %d",
-			      jobinfo->version, protocol_version);
+		if (stepinfo->version != protocol_version) {
+			error("SLINGSHOT stepinfo version %"PRIu32" != %d",
+			      stepinfo->version, protocol_version);
 			goto error;
 		}
 
-		safe_unpack16_array(&jobinfo->vnis, &jobinfo->num_vnis, buffer);
-		safe_unpack32(&jobinfo->tcs, buffer);
-		if (!_unpack_slingshot_limits(&jobinfo->limits.txqs, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.tgqs, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.eqs, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.cts, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.tles, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.ptes, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.les, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.acs, buffer))
+		safe_unpack16_array(&stepinfo->vnis, &stepinfo->num_vnis, buffer);
+		safe_unpack32(&stepinfo->tcs, buffer);
+		if (!_unpack_slingshot_limits(&stepinfo->limits.txqs, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.tgqs, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.eqs, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.cts, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.tles, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.ptes, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.les, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.acs, buffer))
 			goto unpack_error;
 
-		safe_unpack32(&jobinfo->depth, buffer);
-		safe_unpack32(&jobinfo->num_profiles, buffer);
-		jobinfo->profiles = xcalloc(jobinfo->num_profiles,
+		safe_unpack32(&stepinfo->depth, buffer);
+		safe_unpack32(&stepinfo->num_profiles, buffer);
+		stepinfo->profiles = xcalloc(stepinfo->num_profiles,
 					    sizeof(slingshot_comm_profile_t));
-		for (pidx = 0; pidx < jobinfo->num_profiles; pidx++) {
-			if (!_unpack_comm_profile(&jobinfo->profiles[pidx],
+		for (pidx = 0; pidx < stepinfo->num_profiles; pidx++) {
+			if (!_unpack_comm_profile(&stepinfo->profiles[pidx],
 						  buffer))
 				goto unpack_error;
 		}
-		safe_unpack32(&jobinfo->flags, buffer);
+		safe_unpack32(&stepinfo->flags, buffer);
 
-		safe_unpack32(&jobinfo->num_nics, buffer);
-		jobinfo->nics = xcalloc(jobinfo->num_nics,
+		safe_unpack32(&stepinfo->num_nics, buffer);
+		stepinfo->nics = xcalloc(stepinfo->num_nics,
 					sizeof(slingshot_hsn_nic_t));
-		for (pidx = 0; pidx < jobinfo->num_nics; pidx++) {
-			if (!_unpack_hsn_nic(&jobinfo->nics[pidx], buffer))
+		for (pidx = 0; pidx < stepinfo->num_nics; pidx++) {
+			if (!_unpack_hsn_nic(&stepinfo->nics[pidx], buffer))
 				goto unpack_error;
 		}
-		_unpack_hwcoll(&jobinfo->hwcoll, buffer);
+		_unpack_hwcoll(&stepinfo->hwcoll, buffer);
 	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		bitstr_t *vni_pids = NULL;
-		safe_unpack32(&jobinfo->version, buffer);
-		if (jobinfo->version == SLINGSHOT_JOBINFO_NULL_VERSION) {
+		safe_unpack32(&stepinfo->version, buffer);
+		if (stepinfo->version == SLINGSHOT_JOBINFO_NULL_VERSION) {
 			debug("Nothing to unpack");
 			return SLURM_SUCCESS;
 		}
-		if (jobinfo->version != protocol_version) {
-			error("SLINGSHOT jobinfo version %"PRIu32" != %d",
-			      jobinfo->version, protocol_version);
+		if (stepinfo->version != protocol_version) {
+			error("SLINGSHOT stepinfo version %"PRIu32" != %d",
+			      stepinfo->version, protocol_version);
 			goto error;
 		}
 
-		safe_unpack16_array(&jobinfo->vnis, &jobinfo->num_vnis, buffer);
-		safe_unpack32(&jobinfo->tcs, buffer);
-		if (!_unpack_slingshot_limits(&jobinfo->limits.txqs, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.tgqs, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.eqs, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.cts, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.tles, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.ptes, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.les, buffer) ||
-		    !_unpack_slingshot_limits(&jobinfo->limits.acs, buffer))
+		safe_unpack16_array(&stepinfo->vnis, &stepinfo->num_vnis, buffer);
+		safe_unpack32(&stepinfo->tcs, buffer);
+		if (!_unpack_slingshot_limits(&stepinfo->limits.txqs, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.tgqs, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.eqs, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.cts, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.tles, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.ptes, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.les, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.acs, buffer))
 			goto unpack_error;
 
-		safe_unpack32(&jobinfo->depth, buffer);
-		safe_unpack32(&jobinfo->num_profiles, buffer);
-		jobinfo->profiles = xcalloc(jobinfo->num_profiles,
+		safe_unpack32(&stepinfo->depth, buffer);
+		safe_unpack32(&stepinfo->num_profiles, buffer);
+		stepinfo->profiles = xcalloc(stepinfo->num_profiles,
 					    sizeof(slingshot_comm_profile_t));
-		for (pidx = 0; pidx < jobinfo->num_profiles; pidx++) {
-			if (!_unpack_comm_profile(&jobinfo->profiles[pidx],
+		for (pidx = 0; pidx < stepinfo->num_profiles; pidx++) {
+			if (!_unpack_comm_profile(&stepinfo->profiles[pidx],
 						  buffer))
 				goto unpack_error;
 		}
 		unpack_bit_str_hex(&vni_pids, buffer); /* Unused */
-		bit_free(vni_pids);
-		safe_unpack32(&jobinfo->flags, buffer);
+		FREE_NULL_BITMAP(vni_pids);
+		safe_unpack32(&stepinfo->flags, buffer);
 
-		safe_unpack32(&jobinfo->num_nics, buffer);
-		jobinfo->nics = xcalloc(jobinfo->num_nics,
+		safe_unpack32(&stepinfo->num_nics, buffer);
+		stepinfo->nics = xcalloc(stepinfo->num_nics,
 					sizeof(slingshot_hsn_nic_t));
-		for (pidx = 0; pidx < jobinfo->num_nics; pidx++) {
-			if (!_unpack_hsn_nic(&jobinfo->nics[pidx], buffer))
+		for (pidx = 0; pidx < stepinfo->num_nics; pidx++) {
+			if (!_unpack_hsn_nic(&stepinfo->nics[pidx], buffer))
 				goto unpack_error;
 		}
 		/* Not present in this version, set to none */
-		jobinfo->hwcoll = NULL;
+		stepinfo->hwcoll = NULL;
 	} else {
 		error("invalid protocol version");
 		goto error;
@@ -960,9 +998,9 @@ extern int switch_p_unpack_jobinfo(switch_jobinfo_t **switch_job, buf_t *buffer,
 	return SLURM_SUCCESS;
 
 unpack_error:
-	error("error unpacking jobinfo struct");
+	error("error unpacking stepinfo struct");
 error:
-	switch_p_free_jobinfo(*switch_job);
+	switch_p_free_stepinfo(*switch_job);
 	*switch_job = NULL;
 	return SLURM_ERROR;
 }
@@ -973,10 +1011,10 @@ error:
 extern int switch_p_job_preinit(stepd_step_rec_t *step)
 {
 	xassert(step);
-	slingshot_jobinfo_t *jobinfo = step->switch_job->data;
-	xassert(jobinfo);
+	slingshot_stepinfo_t *stepinfo = step->switch_step->data;
+	xassert(stepinfo);
 	int step_cpus = step->node_tasks * step->cpus_per_task;
-	if (!slingshot_create_services(jobinfo, step->uid, step_cpus,
+	if (!slingshot_create_services(stepinfo, step->uid, step_cpus,
 				       step->step_id.job_id))
 		return SLURM_ERROR;
 	if (!create_slingshot_apinfo(step))
@@ -985,17 +1023,9 @@ extern int switch_p_job_preinit(stepd_step_rec_t *step)
 }
 
 /*
- * Privileged, but no jobinfo
+ * Privileged.
  */
 extern int switch_p_job_init(stepd_step_rec_t *step)
-{
-	return SLURM_SUCCESS;
-}
-
-/*
- * Non-privileged
- */
-extern int switch_p_job_fini(switch_jobinfo_t *jobinfo)
 {
 	return SLURM_SUCCESS;
 }
@@ -1020,10 +1050,10 @@ extern int switch_p_job_postfini(stepd_step_rec_t *step)
 
 	remove_slingshot_apinfo(step);
 
-	slingshot_jobinfo_t *jobinfo;
-	jobinfo = (slingshot_jobinfo_t *)step->switch_job->data;
-	xassert(jobinfo);
-	if (!slingshot_destroy_services(jobinfo, step->step_id.job_id))
+	slingshot_stepinfo_t *stepinfo;
+	stepinfo = (slingshot_stepinfo_t *) step->switch_step->data;
+	xassert(stepinfo);
+	if (!slingshot_destroy_services(stepinfo, step->step_id.job_id))
 		return SLURM_ERROR;
 	return SLURM_SUCCESS;
 }
@@ -1034,11 +1064,11 @@ extern int switch_p_job_postfini(stepd_step_rec_t *step)
  * In addition, the SLINGSHOT_VNIS variable has one or more VNIs
  * separated by colons.
  */
-extern int switch_p_job_attach(switch_jobinfo_t *jobinfo, char ***env,
+extern int switch_p_job_attach(switch_stepinfo_t *stepinfo, char ***env,
 			       uint32_t nodeid, uint32_t procid,
 			       uint32_t nnodes, uint32_t nprocs, uint32_t rank)
 {
-	slingshot_jobinfo_t *job = (slingshot_jobinfo_t *)jobinfo;
+	slingshot_stepinfo_t *job = (slingshot_stepinfo_t *)stepinfo;
 	int pidx, vidx;
 	char *svc_ids = NULL, *vnis = NULL, *devices = NULL, *tcss = NULL;
 
@@ -1079,9 +1109,9 @@ extern int switch_p_job_attach(switch_jobinfo_t *jobinfo, char ***env,
 	return SLURM_SUCCESS;
 }
 
-extern int switch_p_job_step_complete(switch_jobinfo_t *jobinfo, char *nodelist)
+extern int switch_p_job_step_complete(switch_stepinfo_t *stepinfo, char *nodelist)
 {
-	slingshot_jobinfo_t *job = (slingshot_jobinfo_t *) jobinfo;
+	slingshot_stepinfo_t *job = (slingshot_stepinfo_t *) stepinfo;
 
 	/*
 	 * job will not be set for any jobs running before the
@@ -1098,23 +1128,43 @@ extern int switch_p_job_step_complete(switch_jobinfo_t *jobinfo, char *nodelist)
 	return SLURM_SUCCESS;
 }
 
-extern int switch_p_job_step_allocated(switch_jobinfo_t *jobinfo,
-				       char *nodelist)
+extern void switch_p_job_start(job_record_t *job_ptr)
 {
-	return SLURM_SUCCESS;
+	if (!(job_ptr->bit_flags & STEPMGR_ENABLED))
+		return;
+
+	if (!slingshot_setup_job_vni_pool(job_ptr))
+		error("couldn't allocate vni pool for job %pJ", job_ptr);
 }
 
 /*
  * Free any job VNIs, as well as any Slingshot hardware collectives
  * multicast addresses associated with the job
  */
-extern void switch_p_job_complete(uint32_t job_id)
+extern void switch_p_job_complete(job_record_t *job_ptr)
 {
+	uint32_t job_id = job_ptr->job_id;
+
 	/* Free any job VNIs */
-	xassert(running_in_slurmctld());
+	xassert(running_in_slurmctld() || active_outside_ctld);
 	log_flag(SWITCH, "switch_p_job_complete(%u)", job_id);
 	slingshot_free_job_vni(job_id);
 
+	slingshot_free_job_vni_pool(job_ptr->switch_jobinfo);
+	slingshot_free_jobinfo(job_ptr->switch_jobinfo);
+	job_ptr->switch_jobinfo = NULL;
+
 	/* Release any hardware collectives multicast addresses */
 	slingshot_release_collectives_job(job_id);
+}
+
+extern int switch_p_fs_init(stepd_step_rec_t *step)
+{
+	return SLURM_SUCCESS;
+}
+
+extern void switch_p_extern_stepinfo(switch_stepinfo_t **stepinfo,
+				     job_record_t *job_ptr)
+{
+	/* not supported */
 }

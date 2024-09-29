@@ -47,10 +47,10 @@ extern "C" {
 #include <errno.h>
 
 /* set errno to the specified value - then return -1 */
-#define slurm_seterrno_ret(errnum) do { \
-	slurm_seterrno(errnum);         \
-	return (errnum ? -1 : 0);       \
-	} while (0)
+#define slurm_seterrno_ret(errnum) do {	\
+	errno = errnum;			\
+	return (errnum ? -1 : 0);	\
+} while (0)
 
 /* general return codes */
 #define SLURM_SUCCESS   0
@@ -73,6 +73,9 @@ typedef enum {
 	SLURM_PLUGIN_NAME_INVALID,
 	SLURM_UNKNOWN_FORWARD_ADDR,
 	SLURM_COMMUNICATIONS_MISSING_SOCKET_ERROR,
+	SLURM_COMMUNICATIONS_INVALID_INCOMING_FD,
+	SLURM_COMMUNICATIONS_INVALID_OUTGOING_FD,
+	SLURM_COMMUNICATIONS_INVALID_FD,
 
 	/* communication failures to/from slurmctld */
 	SLURMCTLD_COMMUNICATIONS_CONNECTION_ERROR =     1800,
@@ -80,6 +83,7 @@ typedef enum {
 	SLURMCTLD_COMMUNICATIONS_RECEIVE_ERROR,
 	SLURMCTLD_COMMUNICATIONS_SHUTDOWN_ERROR,
 	SLURMCTLD_COMMUNICATIONS_BACKOFF,
+	SLURMCTLD_COMMUNICATIONS_HARD_DROP,
 
 	/* _info.c/communication layer RESPONSE_SLURM_RC message codes */
 	SLURM_NO_CHANGE_IN_DATA =			1900,
@@ -257,6 +261,12 @@ typedef enum {
 	ESLURM_NODE_TABLE_FULL,
 	ESLURM_INVALID_RELATIVE_QOS,
 	ESLURM_INVALID_EXTRA,
+	ESLURM_JOB_SIGNAL_FAILED,
+	ESLURM_SIGNAL_JOBS_INVALID,
+	ESLURM_RES_CORES_PER_GPU_UNIQUE,
+	ESLURM_RES_CORES_PER_GPU_TOPO,
+	ESLURM_RES_CORES_PER_GPU_NO,
+	ESLURM_MAX_POWERED_NODES,
 
 	/* SPANK errors */
 	ESPANK_ERROR = 					3000,
@@ -297,6 +307,7 @@ typedef enum {
 	ESLURMD_CONTAINER_RUNTIME_INVALID,
 	ESLURMD_CPU_BIND_ERROR,
 	ESLURMD_CPU_LAYOUT_ERROR,
+	ESLURMD_TOO_MANY_RPCS,
 
 	/* socket specific Slurm communications error */
 	ESLURM_PROTOCOL_INCOMPLETE_PACKET = 5003,
@@ -305,6 +316,7 @@ typedef enum {
 
 	/* slurm_auth errors */
 	ESLURM_AUTH_CRED_INVALID	= 6000,
+	ESLURM_AUTH_EXPIRED,
 	ESLURM_AUTH_BADARG		= 6004,
 	ESLURM_AUTH_UNPACK		= 6007,
 	ESLURM_AUTH_SKIP,
@@ -323,6 +335,7 @@ typedef enum {
 	ESLURM_NO_REMOVE_DEFAULT_ACCOUNT,
 	ESLURM_BAD_SQL,
 	ESLURM_NO_REMOVE_DEFAULT_QOS,
+	ESLURM_COORD_NO_INCREASE_JOB_LIMIT,
 
 	/* Federation Errors */
 	ESLURM_FED_CLUSTER_MAX_CNT              = 7100,
@@ -391,9 +404,6 @@ char * slurm_strerror(int errnum);
 
 /* set an errno value */
 void slurm_seterrno(int errnum);
-
-/* get an errno value */
-int slurm_get_errno(void);
 
 /* print message: error string for current errno value */
 void slurm_perror(const char *msg);

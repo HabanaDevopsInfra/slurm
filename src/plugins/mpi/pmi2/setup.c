@@ -58,6 +58,7 @@
 #include "src/common/proc_args.h"
 #include "src/common/reverse_tree.h"
 #include "src/interfaces/mpi.h"
+#include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
 #include "src/slurmd/slurmstepd/slurmstepd_job.h"
 
@@ -502,18 +503,8 @@ _get_proc_mapping(const mpi_step_info_t *mpi_step)
 		}
 		xfree(rounds);
 		xstrcat(mapping, ")");
-	} else if (task_dist == SLURM_DIST_ARBITRARY) {
-		/*
-		 * MPICH2 will think that each task runs on a separate node.
-		 * The program will run, but no SHM will be used for
-		 * communication.
-		 */
-		mapping = xstrdup("(vector");
-		xstrfmtcat(mapping, ",(0,%u,1)",
-			   mpi_step->step_layout->task_cnt);
-		xstrcat(mapping, ")");
-
-	} else if (task_dist == SLURM_DIST_PLANE) {
+	} else if ((task_dist == SLURM_DIST_PLANE) ||
+		   (task_dist == SLURM_DIST_ARBITRARY)) {
 		mapping = xstrdup("(vector");
 
 		rounds = xmalloc (node_cnt * sizeof(uint16_t));

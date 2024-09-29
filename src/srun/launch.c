@@ -71,7 +71,7 @@
 
 #define MAX_STEP_RETRIES 4
 
-static List local_job_list = NULL;
+static list_t *local_job_list = NULL;
 static uint32_t *local_global_rc = NULL;
 static pthread_mutex_t launch_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t het_job_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -79,7 +79,7 @@ static pthread_cond_t  start_cond  = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t start_mutex = PTHREAD_MUTEX_INITIALIZER;
 static slurm_opt_t *opt_save = NULL;
 
-static List task_state_list = NULL;
+static list_t *task_state_list = NULL;
 static time_t launch_start_time;
 static bool retry_step_begin = false;
 static int  retry_step_cnt = 0;
@@ -246,7 +246,7 @@ static int _is_openmpi_port_error(int errcode)
 {
 	if (errcode != OPEN_MPI_PORT_ERROR)
 		return 0;
-	if (opt_save && (opt_save->srun_opt->resv_port_cnt == NO_VAL))
+	if (opt_save && (opt_save->resv_port_cnt == NO_VAL))
 		return 0;
 	if (difftime(time(NULL), launch_start_time) > slurm_conf.msg_timeout)
 		return 0;
@@ -630,16 +630,6 @@ static void _wait_all_het_job_comps_started(slurm_opt_t *opt_local)
 	slurm_mutex_unlock(&start_mutex);
 }
 
-/*
- * Initialize context for plugin
- */
-extern int launch_init(void)
-{
-	int retval = SLURM_SUCCESS;
-
-	return retval;
-}
-
 extern int location_fini(void)
 {
 	FREE_NULL_LIST(task_state_list);
@@ -683,7 +673,7 @@ static job_step_create_request_msg_t *_create_job_step_create_request(
 	char *add_tres = NULL, *pos;
 	srun_opt_t *srun_opt = opt_local->srun_opt;
 	job_step_create_request_msg_t *step_req = xmalloc(sizeof(*step_req));
-	List tmp_gres_list = NULL;
+	list_t *tmp_gres_list = NULL;
 	int rc;
 
 	xassert(srun_opt);
@@ -759,8 +749,11 @@ static job_step_create_request_msg_t *_create_job_step_create_request(
 		else
 			step_req->cpu_count = step_req->min_nodes;
 	} else if (opt_local->cpus_set) {
-		step_req->cpu_count =
-			opt_local->ntasks * opt_local->cpus_per_task;
+		if (opt_local->ntasks == NO_VAL)
+			step_req->cpu_count = NO_VAL;
+		else
+			step_req->cpu_count = opt_local->ntasks *
+				opt_local->cpus_per_task;
 		if (srun_opt->whole)
 			info("Ignoring --whole since -c/--cpus-per-task used");
 		else if (!srun_opt->exact)
@@ -865,8 +858,8 @@ static job_step_create_request_msg_t *_create_job_step_create_request(
 
 	step_req->relative = srun_opt->relative;
 
-	if (srun_opt->resv_port_cnt != NO_VAL) {
-		step_req->resv_port_cnt = srun_opt->resv_port_cnt;
+	if (opt_local->resv_port_cnt != NO_VAL) {
+		step_req->resv_port_cnt = opt_local->resv_port_cnt;
 	} else {
 		step_req->resv_port_cnt = NO_VAL16;
 	}
@@ -988,7 +981,7 @@ static job_step_create_request_msg_t *_create_job_step_create_request(
 	{
 		uint16_t base_dist;
 		/* Leave distribution set to unknown if taskcount <= nodes and
-		 * memory is set to 0. step_mgr will handle the mem=0 case. */
+		 * memory is set to 0. stepmgr will handle the mem=0 case. */
 		if (!opt_local->mem_per_cpu || !opt_local->pn_min_memory ||
 		    srun_opt->interactive)
 			base_dist = SLURM_DIST_UNKNOWN;
@@ -1219,6 +1212,10 @@ extern int launch_g_create_job_step(srun_job_t *job, bool use_all_cpus,
 	for (i = 0; (!(*destroy_job)); i++) {
 		bool timed_out = false;
 		if (srun_opt->no_alloc) {
+			if (step_req->num_tasks == NO_VAL) {
+				step_req->num_tasks = job->ntasks;
+				step_req->cpu_count = job->cpu_count;
+			}
 			job->step_ctx = step_ctx_create_no_alloc(
 				step_req, job->step_id.step_id);
 		} else {
@@ -1245,7 +1242,7 @@ extern int launch_g_create_job_step(srun_job_t *job, bool use_all_cpus,
 			}
 			break;
 		}
-		rc = slurm_get_errno();
+		rc = errno;
 
 		if (((opt_local->immediate != 0) &&
 		     ((opt_local->immediate == 1) ||
@@ -1318,6 +1315,9 @@ extern int launch_g_create_job_step(srun_job_t *job, bool use_all_cpus,
 		return SLURM_ERROR;
 	}
 	fwd_set_alias_addrs(step_layout->alias_addrs);
+	if (opt_local->cpus_set && (job->cpu_count == NO_VAL))
+		job->cpu_count = step_layout->task_cnt *
+			opt_local->cpus_per_task;
 	if (job->ntasks != step_layout->task_cnt)
 		job->ntasks = step_layout->task_cnt;
 

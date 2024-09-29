@@ -54,8 +54,9 @@ extern void node_data_destroy(node_use_record_t *node_usage)
 	int i;
 
 	if (node_usage) {
-		for (i = 0; next_node(&i); i++) {
+		for (i = 0; i < node_record_count; i++) {
 			FREE_NULL_LIST(node_usage[i].gres_list);
+			FREE_NULL_LIST(node_usage[i].jobs);
 		}
 		xfree(node_usage);
 	}
@@ -64,7 +65,7 @@ extern void node_data_destroy(node_use_record_t *node_usage)
 extern void node_data_dump(void)
 {
 	node_record_t *node_ptr;
-	List gres_list;
+	list_t *gres_list;
 	int i;
 
 	if (!(slurm_conf.debug_flags & DEBUG_FLAG_SELECT_TYPE))
@@ -103,7 +104,7 @@ extern node_use_record_t *node_data_dup_use(
 {
 	node_use_record_t *new_use_ptr, *new_ptr;
 	node_record_t *node_ptr;
-	List gres_list;
+	list_t *gres_list;
 
 	if (orig_ptr == NULL)
 		return NULL;

@@ -14,8 +14,8 @@
 <li><a href="#slurm-accounting-configuration-after-build">Slurm Accounting Configuration After Build</a></li>
 <li><a href="#slurmdbd-configuration">SlurmDBD Configuration</a>
 <ul>
-<li><a href="#slurmdbd-archive-purge">  SlurmDBD Archive and Purge</a></li>
-</ul>
+<li><a href="#slurmdbd-archive-purge">SlurmDBD Archive and Purge</a></li>
+</ul></li>
 <li><a href="#mysql-configuration">MySQL Configuration</a></li>
 <li><a href="#archive">Archive Server</a></li>
 <li><a href="#tools">Tools</a></li>
@@ -26,6 +26,7 @@
 <li><a href="#limit-enforcement">Limit Enforcement</a></li>
 <li><a href="#modifying-entities">Modifying Entities</a></li>
 <li><a href="#removing-entities">Removing Entities</a></li>
+<li><a href="#accounting-interpretation">Accounting Interpretation</a></li>
 </ul>
 
 <h2 id="Overview">Overview<a class="slurm_link" href="#Overview"></a></h2>
@@ -451,10 +452,15 @@ slurmctld will ignore registering to the external slurmdbd.
 <li><b>AccountingStorageHost</b>: The name or address of the host where
 SlurmDBD executes</li>
 
-<li><b>AccountingStoragePass</b>: If using SlurmDBD with a second MUNGE
-daemon, store the pathname of the named socket used by MUNGE to provide
-enterprise-wide authentication (i.e. /var/run/munge/moab.socket.2). Otherwise
-the default MUNGE daemon will be used. </li>
+<li><b>AccountingStoragePass</b>: The password used to gain access to the
+database to store the accounting data. Only used for database type storage
+plugins, ignored otherwise. In the case of Slurm DBD (Database Daemon) with
+MUNGE authentication this can be configured to use a MUNGE daemon specifically
+configured to provide authentication between clusters while the default MUNGE
+daemon provides authentication within a cluster. In that case,
+<b>AccountingStoragePass</b> should specify the named port to be used for
+communications with the alternate MUNGE daemon
+(e.g. "/var/run/munge/global.socket.2"). The default value is NULL.</li>
 
 <li><b>AccountingStoragePort</b>:
 The network port that SlurmDBD accepts communication on.</li>
@@ -715,18 +721,35 @@ records that prevent the archive file from loading correctly.</p>
 
 <h2 id="tools">Tools<a class="slurm_link" href="#tools"></a></h2>
 
-<p>There are a few tools available to work with accounting data,
+<p>Slurm includes a few tools to let you work with accounting data;
 <b>sacct</b>, <b>sacctmgr</b>, and <b>sreport</b>.
-These tools all get or set data through the SlurmDBD daemon.
+These tools all get or set data through the SlurmDBD daemon.</p>
 <ul>
-<li><b>sacct</b> is used to generate accounting report for both
+<li><b>sacct</b> is used to retrieve details, stored in the database, about
 running and completed jobs.</li>
-<li><b>sacctmgr</b> is used to manage associations in the database:
-add or remove clusters, add or remove users, etc.</li>
+<li><b>sacctmgr</b> is used to manage entities in the database. These include
+clusters, accounts, user associations, QOSs, etc.</li>
 <li><b>sreport</b> is used to generate various reports on usage collected over a
 given time period.</li>
 </ul>
 <p>See the man pages for each command for more information.</p>
+
+<p>While sreport provides the ability to quickly generate reports with some
+of the most commonly requested information, sites frequently want additional
+control over how the information is displayed. There are some third-party tools
+that can assist in generating dashboards with graphs of relevant information
+about your cluster. These are not maintained or supported by SchedMD, but these
+utilities have been useful for some sites:</p>
+<ul>
+<li><a href="https://grafana.com/grafana/dashboards/4323-slurm-dashboard/">
+Grafana</a>: Allows creation of dashboards with various graphs using data
+collected by Prometheus or InfluxDB.</li>
+<li><a href="https://github.com/kcl-nmssys/slurm-influxdb">InfluxDB</a>:
+Includes an exporter tool that collects performance metrics from Slurm.</li>
+<li><a href="https://github.com/vpenso/prometheus-slurm-exporter">Prometheus
+</a>: Includes an exporter tool that collects performance metrics from
+Slurm.</li>
+</ul>
 
 <h2 id="database-configuration">Database Configuration
 <a class="slurm_link" href="#database-configuration"></a>
@@ -944,7 +967,64 @@ completely. This is meant to clean up after typographical errors.
 Removing user associations or accounts, however, will cause slurmctld to lose
 track of usage data for that user/account.</p>
 
-<p style="text-align:center;">Last modified 12 January 2024</p>
+<h2 id="accounting-interpretation">Accounting Interpretation
+<a class="slurm_link" href="#accounting-interpretation"></a>
+</h2>
+<p>Slurm accounting is mainly focused on parallel computing. For this reason it
+gathers statistics at a "task level". A task is a set of user processes which
+run in a step, which is part of a job. A user can submit a step with many
+parallel tasks, e.g. by calling <code>srun -n</code>.
+</p>
+<p>
+The <a href="slurm.conf.html#OPT_JobAcctGatherType">JobAcctGather</a> plugin
+gathers metrics for some <a href="tres.html">Trackable Resources (TRES)</a>,
+like cpu, memory, energy, etc., at a given interval in the <a
+href="slurm.conf.html#OPT_JobAcctGatherFrequency">JobAcctGatherFrequency</a>
+defined in slurm.conf, or by using the <code>--acct-freq</code> option in the
+command line. A poll of data is also triggered at the start or the end of a
+step.
+</p>
+<p>Depending on the nature of the metric, the values will be recorded as
+standalone values or aggregated/calculated into a data structure.
+<p>
+For example, the <b>TresUsageInTot</b> field can be queried with
+<a href="sstat.thml">sstat</a> during job runtime, and for every TRES, it
+stores the sum of the gathered metrics of all tasks. For example, if we have 5
+tasks, all of them consuming 1GB of memory, then the <b>TresUsageInTot</b>
+would read "memory=5G". With the same example, and for the
+<b>TresUsageInMax</b> instead, it will store the maximum memory peak seen by
+any task of this step, so it would read "memory=1G".
+If we then query <b>TresUsageInMaxNode</b> and <b>TresUsageInMaxTask</b>, we
+will be able to see which task id had the largest memory peak and in which node
+this event occurred. These values can be queried in the dedicated fields
+<b>MaxRSS</b>, <b>MaxRSSNode</b> and <b>MaxRSSTask</b>.
+</p>
+<p>
+Other considerations to be taken into account are that in some cases, like for
+energy, the consumption is calculated by node. We don't have a value specific to
+the task so if there are other jobs in the system, or many tasks, the
+consumption at the time of running will be affected by all the processes in the
+node.
+</p>
+<p>
+After the job is done, the data will be stored in the database, and can be
+queried with other tools, like <a href="sacct.html">sacct</a>. In that case the
+<b>TresUsage*</b> fields could have different meanings. For example in the case
+of memory, <b>TresUsageInTot</b> will now store the sum of all peaks of memory
+of all tasks of the step seen at any time. This value is not useful per-se, but
+it is used to calculate <b>TresUsageInAve</b> to get the average memory peaks,
+that can then be compared with <b>TresUsageInMax</b> (or <b>MaxRSS</b>) to see
+if there was at least one outlier task in the step which consumed too much
+memory, indication of some issue.
+</p>
+<p>
+Note that for single task processes, <b>TresUsageInTot</b> could be used as the
+maximum memory that the step consumed at any time, which will be equal to
+<b>MaxRSS</b> and effectively represent the step memory peak.
+Profiling works similarly, and we provide
+<a href="slurm.conf.html#OPT_AcctGatherProfileType">plugins</a> like HDF5
+and InfluxDB that can help to visualize accounting data in other ways.
+</p>
+<p style="text-align:center;">Last modified 06 September 2024</p>
 
 <!--#include virtual="footer.txt"-->
-

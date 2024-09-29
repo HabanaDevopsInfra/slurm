@@ -52,16 +52,31 @@ typedef struct {
 	slurmctld_lock_t locks;
 
 	/* Queue structual elements */
-	char *msg_name; /* automatically derived from msg_type */
+	const char *msg_name; /* automatically derived from msg_type */
 
+	bool skip_stale; /* skip processing if connection is stale */
 	bool queue_enabled;
+	bool hard_drop; /* discard traffic if max_queued exceeded */
 	bool shutdown;
+
+	int yield_sleep; /* usec sleep between cycles when busy */
+	int interval; /* usec sleep after cycle if no longer busy */
+
+	uint16_t max_queued;
+	uint16_t max_per_cycle;
+	uint32_t max_usec_per_cycle;
 
 	pthread_t thread;
 	pthread_cond_t cond;
 	pthread_mutex_t mutex;
 
-	List work;
+	list_t *work;
+
+	/* Queue processing statistics */
+	uint16_t queued;
+	uint64_t dropped;
+	uint16_t cycle_last;
+	uint16_t cycle_max;
 } slurmctld_rpc_t;
 
 extern slurmctld_rpc_t slurmctld_rpcs[];
@@ -77,6 +92,11 @@ void slurmctld_req(slurm_msg_t *msg);
  */
 extern void record_rpc_stats(slurm_msg_t *msg, long delta);
 
+/*
+ * Update slurmctld stats structure related to a particular rpc_queue
+ */
+extern void record_rpc_queue_stats(slurmctld_rpc_t *q);
+
 /* Copy an array of type char **, xmalloc() the array and xstrdup() the
  * strings in the array */
 extern char **xduparray(uint32_t size, char ** array);
@@ -90,5 +110,11 @@ extern char **xduparray(uint32_t size, char ** array);
  */
 extern resource_allocation_response_msg_t *build_alloc_msg(
 	job_record_t *job_ptr, int error_code, char *job_submit_user_msg);
+
+/*
+ * srun_allocate - notify srun of a resource allocation
+ * IN job_ptr - job allocated resources
+ */
+extern void srun_allocate(job_record_t *job_ptr);
 
 #endif /* !_HAVE_PROC_REQ_H */

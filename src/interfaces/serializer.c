@@ -43,6 +43,12 @@
 
 #include "src/interfaces/serializer.h"
 
+/* Define slurm-specific aliases for use by plugins, see slurm_xlator.h. */
+strong_alias(serializer_g_init, slurm_serializer_g_init);
+strong_alias(serialize_g_data_to_string, slurm_serialize_g_data_to_string);
+strong_alias(serialize_g_string_to_data, slurm_serialize_g_string_to_data);
+strong_alias(serializer_g_fini, slurm_serializer_g_fini);
+
 #define SERIALIZER_MAJOR_TYPE "serializer"
 #define SERIALIZER_MIME_TYPES_SYM "mime_types"
 #define PMT_MAGIC 0xaaba8031
@@ -56,7 +62,6 @@ typedef struct {
 
 typedef struct {
 	int magic; /* MIME_ARRAY_MAGIC */
-	char **mime_array;
 	int index;
 } mime_type_array_args_t;
 
@@ -76,9 +81,14 @@ typedef struct {
 } plugin_mime_type_t;
 
 /* list of all of the known mime types */
-static List mime_types_list = NULL;
+static list_t *mime_types_list = NULL;
+static const char **mime_array = NULL;
 
 static pthread_mutex_t init_mutex = PTHREAD_MUTEX_INITIALIZER;
+#ifndef NDEBUG
+/* Track when the plugins should no longer be changed */
+static bool should_not_change = false;
+#endif /* !NDEBUG */
 
 static int _find_serializer_full_type(void *x, void *key)
 {
@@ -189,7 +199,7 @@ extern const char *resolve_mime_type(const char *mime_type,
 	return pmt->mime_type;
 }
 
-static int _register_mime_types(List mime_types_list, size_t plugin_index,
+static int _register_mime_types(list_t *mime_types_list, size_t plugin_index,
 				const char **mime_type)
 {
 	while (*mime_type) {
@@ -210,47 +220,16 @@ static int _register_mime_types(List mime_types_list, size_t plugin_index,
 	return SLURM_SUCCESS;
 }
 
-static int _foreach_add_mime_type(void *x, void *arg)
-{
-	const plugin_mime_type_t *pmt = x;
-	mime_type_array_args_t *args = arg;
-
-	xassert(args->magic == MIME_ARRAY_MAGIC);
-	xassert(!args->mime_array[args->index]);
-
-	args->mime_array[args->index] = xstrdup(pmt->mime_type);
-	args->index++;
-
-	return SLURM_SUCCESS;
-}
-
 extern const char **get_mime_type_array(void)
 {
-	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-	static char **mime_array = NULL;
+#ifndef NDEBUG
+	slurm_mutex_lock(&init_mutex);
+	should_not_change = true;
+	xassert(mime_array);
+	slurm_mutex_unlock(&init_mutex);
+#endif /* !NDEBUG */
 
-	slurm_mutex_lock(&lock);
-
-	if (mime_array) {
-		slurm_mutex_unlock(&lock);
-		return (const char **) mime_array;
-	} else {
-		mime_type_array_args_t args = {
-			.magic = MIME_ARRAY_MAGIC,
-		};
-
-		xrecalloc(mime_array, (list_count(mime_types_list) + 1),
-			  sizeof(*mime_array));
-
-		args.mime_array = mime_array;
-
-		list_for_each_ro(mime_types_list, _foreach_add_mime_type,
-				 &args);
-		xassert(args.index == list_count(mime_types_list));
-
-		slurm_mutex_unlock(&lock);
-		return (const char **) mime_array;
-	}
+	return mime_array;
 }
 
 extern int serializer_g_init(const char *plugin_list, plugrack_foreach_t listf)
@@ -258,6 +237,8 @@ extern int serializer_g_init(const char *plugin_list, plugrack_foreach_t listf)
 	int rc = SLURM_SUCCESS;
 
 	slurm_mutex_lock(&init_mutex);
+
+	xassert(!should_not_change);
 
 	/*
 	 * There will be multiple calls to serializer_g_init() to load different
@@ -270,6 +251,8 @@ extern int serializer_g_init(const char *plugin_list, plugrack_foreach_t listf)
 	if (!mime_types_list)
 		mime_types_list = list_create(xfree_ptr);
 
+	xrecalloc(mime_array, (plugins->count + 1), sizeof(*mime_array));
+
 	for (size_t i = 0; plugins && (i < plugins->count); i++) {
 		const char **mime_types;
 
@@ -281,6 +264,9 @@ extern int serializer_g_init(const char *plugin_list, plugrack_foreach_t listf)
 			fatal_abort("%s: unable to load %s from plugin",
 				    __func__, SERIALIZER_MIME_TYPES_SYM);
 
+		/* First mime_type is always considered primary */
+		mime_array[i] = mime_types[0];
+
 		_register_mime_types(mime_types_list, i, mime_types);
 	}
 
@@ -291,9 +277,17 @@ extern int serializer_g_init(const char *plugin_list, plugrack_foreach_t listf)
 
 extern void serializer_g_fini(void)
 {
+#ifndef NDEBUG
+	/* There should not be a init() and then fini() and then init() again */
+	slurm_mutex_lock(&init_mutex);
+	should_not_change = true;
+	slurm_mutex_unlock(&init_mutex);
+#endif /* !NDEBUG */
+
 #ifdef MEMORY_LEAK_DEBUG
 	debug3("%s: cleaning up", __func__);
 	slurm_mutex_lock(&init_mutex);
+	xfree(mime_array);
 	FREE_NULL_LIST(mime_types_list);
 	FREE_NULL_PLUGINS(plugins);
 	slurm_mutex_unlock(&init_mutex);

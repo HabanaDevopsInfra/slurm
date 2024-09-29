@@ -319,7 +319,7 @@ static bool _oneapi_get_nearest_freq(zes_freq_handle_t freq_handle,
 
 	memcpy(freqs_sort, freqs, freqs_size * sizeof(unsigned int));
 	qsort(freqs_sort, freqs_size, sizeof(unsigned int),
-	      gpu_common_sort_freq_descending);
+	      slurm_sort_uint_list_desc);
 
 	/* Set the nearest valid frequency for the requested frequency */
 	gpu_common_get_nearest_freq(freq, freqs_size, freqs_sort);
@@ -388,7 +388,7 @@ static void _oneapi_print_freqs(ze_device_handle_t device, log_level_t l)
 						  &freqs_size))
 			continue;
 		qsort(freqs, freqs_size, sizeof(unsigned int),
-		      gpu_common_sort_freq_descending);
+		      slurm_sort_uint_list_desc);
 
 		/* Get frequency property */
 		oneapi_rc = zesFrequencyGetProperties(freq_handles[i],
@@ -972,8 +972,10 @@ extern int init(void)
 	setenv("ZE_FLAT_DEVICE_HIERARCHY", "COMPOSITE", 1);
 	setenv("ZE_ENABLE_PCI_ID_DEVICE_ORDER", "1", 1);
 
-	if (zeInit(0) != ZE_RESULT_SUCCESS)
-		fatal("zeInit failed");
+	if (zeInit(0) != ZE_RESULT_SUCCESS) {
+		error("zeInit failed");
+		return SLURM_ERROR;
+	}
 
 	return SLURM_SUCCESS;
 }
@@ -995,7 +997,7 @@ extern int fini(void)
  *
  * node_config (IN/OUT) pointer of node_config_load_t passed down
  */
-static List _get_system_gpu_list_oneapi(node_config_load_t *node_config)
+static list_t *_get_system_gpu_list_oneapi(node_config_load_t *node_config)
 {
 	char device_file[PATH_MAX];
 	char card_name[CARD_NAME_LEN];
@@ -1009,7 +1011,7 @@ static List _get_system_gpu_list_oneapi(node_config_load_t *node_config)
 	char *cpu_aff_mac_range = NULL;
 	int i;
 
-	List gres_list_system = list_create(destroy_gres_slurmd_conf);
+	list_t *gres_list_system = list_create(destroy_gres_slurmd_conf);
 
 	/* Get all of device handles */
 	_oneapi_get_device_handles(all_devices, &gpu_num, true);
@@ -1120,11 +1122,11 @@ static List _get_system_gpu_list_oneapi(node_config_load_t *node_config)
 	return gres_list_system;
 }
 
-extern List gpu_p_get_system_gpu_list(node_config_load_t *node_config)
+extern list_t *gpu_p_get_system_gpu_list(node_config_load_t *node_config)
 {
 	xassert(node_config);
 
-	List gres_list_system = _get_system_gpu_list_oneapi(node_config);
+	list_t *gres_list_system = _get_system_gpu_list_oneapi(node_config);
 	if (!gres_list_system)
 		error("System GPU detection failed");
 

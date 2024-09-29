@@ -67,6 +67,8 @@
 #define NI_MAXSERV 32
 #endif /* NI_MAXSERV */
 
+#define CON_NAME_PLACE_HOLDER_LEN 25
+
 #include "src/common/log.h"
 #include "src/common/macros.h"
 #include "src/common/net.h"
@@ -119,14 +121,14 @@ cleanup:
 }
 
 /* set keepalive time on socket */
-extern int net_set_keep_alive(int sock)
+extern void net_set_keep_alive(int sock)
 {
 	int opt_int;
 	socklen_t opt_len;
 	struct linger opt_linger;
 
 	if (slurm_conf.keepalive_time == NO_VAL)
-		return 0;
+		return;
 
 	opt_len = sizeof(struct linger);
 	opt_linger.l_onoff = 1;
@@ -138,7 +140,7 @@ extern int net_set_keep_alive(int sock)
 	opt_int = slurm_conf.keepalive_time;
 	if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &opt_int, opt_len) < 0) {
 		error("Unable to set keepalive socket option: %m");
-		return -1;
+		return;
 	}
 
 /*
@@ -154,7 +156,7 @@ extern int net_set_keep_alive(int sock)
 		if (setsockopt(sock, SOL_TCP, TCP_KEEPINTVL,
 			       &opt_int, opt_len) < 0) {
 			error("Unable to set keepalive interval: %m");
-			return -1;
+			return;
 		}
 	}
 	if (slurm_conf.keepalive_probes != NO_VAL) {
@@ -162,13 +164,13 @@ extern int net_set_keep_alive(int sock)
 		if (setsockopt(sock, SOL_TCP, TCP_KEEPCNT,
 			       &opt_int, opt_len) < 0) {
 			error("Unable to set keepalive probes: %m");
-			return -1;
+			return;
 		}
 	}
 	opt_int = slurm_conf.keepalive_time;
 	if (setsockopt(sock, SOL_TCP, TCP_KEEPIDLE, &opt_int, opt_len) < 0) {
 		error("Unable to set keepalive socket time: %m");
-		return -1;
+		return;
 	}
 #endif
 
@@ -189,8 +191,36 @@ extern int net_set_keep_alive(int sock)
 	getsockopt(sock, SOL_TCP, TCP_KEEPIDLE, &opt_int, &opt_len);
 	info("got keepalive_time is %d on fd %d", opt_int, sock);
 #endif
+}
 
-	return 0;
+extern int net_set_nodelay(int sock, bool set, const char *con_name)
+{
+	int opt_int;
+
+	if (sock < 0)
+		return EBADF;
+
+	if (set)
+		opt_int = 1;
+	else
+		opt_int = 0;
+
+	if (setsockopt(sock, SOL_TCP, TCP_NODELAY, &opt_int, sizeof(int))) {
+		int rc = errno;
+		char lcon_name[CON_NAME_PLACE_HOLDER_LEN] = {0};
+
+		if (!con_name) {
+			snprintf(lcon_name, sizeof(lcon_name), "fd:%d", sock);
+			con_name = lcon_name;
+		}
+
+		error("[%s] Unable to set TCP_NODELAY: %s",
+		      con_name, slurm_strerror(rc));
+
+		return rc;
+	}
+
+	return SLURM_SUCCESS;
 }
 
 /*
@@ -307,9 +337,15 @@ extern char *sockaddr_to_string(const slurm_addr_t *addr, socklen_t addrlen)
 	int port = 0;
 	char *host = NULL;
 
+	if (addr->ss_family == AF_UNSPEC)
+		return NULL;
+
 	if (addr->ss_family == AF_UNIX) {
 		const struct sockaddr_un *addr_un =
 			(const struct sockaddr_un *) addr;
+
+		xassert(addr_un->sun_path[sizeof(addr_un->sun_path) - 1] ==
+			'\0');
 
 		/* path may not be set */
 		if (addr_un->sun_path[0])
@@ -345,4 +381,22 @@ extern char *addrinfo_to_string(const struct addrinfo *addr)
 {
 	return sockaddr_to_string((const slurm_addr_t *) addr->ai_addr,
 				  addr->ai_addrlen);
+}
+
+extern slurm_addr_t sockaddr_from_unix_path(const char *path)
+{
+	slurm_addr_t addr = {
+		.ss_family = AF_UNSPEC,
+	};
+	struct sockaddr_un *un = (struct sockaddr_un *) &addr;
+
+	if (!path)
+		return addr;
+
+	if (strlcpy(un->sun_path, path, sizeof(un->sun_path)) != strlen(path))
+		return addr;
+
+	/* Did not overflow - set family to indicate success */
+	addr.ss_family = AF_UNIX;
+	return addr;
 }

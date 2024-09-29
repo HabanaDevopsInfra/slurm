@@ -48,6 +48,24 @@
 
 #define SPANK_OPTION_ENV_PREFIX "_SLURM_SPANK_OPTION_"
 
+/*
+ *  SPANK plugin hook types
+ */
+typedef enum {
+	SPANK_INIT = 0,
+	SPANK_JOB_PROLOG = 2,
+	SPANK_INIT_POST_OPT,
+	SPANK_LOCAL_USER_INIT,
+	SPANK_STEP_USER_INIT,
+	SPANK_STEP_TASK_INIT_PRIV,
+	SPANK_STEP_USER_TASK_INIT,
+	SPANK_STEP_TASK_POST_FORK,
+	SPANK_STEP_TASK_EXIT,
+	SPANK_JOB_EPILOG,
+	SPANK_SLURMD_EXIT,
+	SPANK_EXIT,
+} step_fn_t;
+
 struct spank_launcher_job_info {
 	uid_t       uid;
 	gid_t       gid;
@@ -95,6 +113,21 @@ extern bool spank_has_prolog(void);
  * Return true if a loaded spank plugin has an epilog function defined.
  */
 extern bool spank_has_epilog(void);
+
+/*
+ * Return true if a loaded spank plugin has a user_init function defined.
+ */
+extern bool spank_has_user_init(void);
+
+/*
+ * Return true if a loaded spank plugin has a task_post_fork function defined.
+ */
+extern bool spank_has_task_post_fork(void);
+
+/*
+ * Return true if a loaded spank plugin has a task_exit function defined.
+ */
+extern bool spank_has_task_exit(void);
 
 /*
  *  Option processing
@@ -150,7 +183,7 @@ void spank_print_options(FILE *fp, int left_pad, int width);
 /*  Set all registered remote options (i.e. those passed to
  *   spank_process_option) in the job options `options'.
  */
-void spank_set_remote_options(List options);
+void spank_set_remote_options(list_t *options);
 
 /*  Clear any spank remote options encoded in environment.
  */

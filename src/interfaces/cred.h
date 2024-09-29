@@ -49,6 +49,11 @@
 #include "src/common/pack.h"
 #include "src/common/uid.h"
 
+#ifndef __job_record_t_defined
+#  define __job_record_t_defined
+typedef struct job_record job_record_t;
+#endif
+
 /*
  * Default credential information expiration window.
  * Long enough for loading user environment, running prolog, paging slurmd
@@ -129,6 +134,8 @@ typedef struct {
 	uint32_t *step_mem_alloc_rep_count;
 	uint32_t step_mem_alloc_size;	/* Size of memory arrays above */
 	list_t *step_gres_list;		/* GRES allocated to STEP */
+
+	void *switch_step;
 } slurm_cred_arg_t;
 
 #define CRED_MAGIC 0x0b0b0b
@@ -322,5 +329,7 @@ extern void print_sbcast_cred(sbcast_cred_t *sbcast_cred);
 
 extern char *create_net_cred(void *addrs, uint16_t protocol_version);
 extern void *extract_net_cred(char *net_cred, uint16_t protocol_version);
+
+extern void setup_cred_arg(slurm_cred_arg_t *cred_arg, job_record_t *job_ptr);
 
 #endif

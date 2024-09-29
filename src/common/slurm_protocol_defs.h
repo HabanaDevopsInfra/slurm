@@ -55,16 +55,19 @@
 
 #include "slurm/slurm.h"
 #include "slurm/slurmdb.h"
+
 #include "src/common/bitstring.h"
 #include "src/common/list.h"
 #include "src/common/macros.h"
-#include "src/interfaces/cred.h"
+#include "src/common/msg_type.h"
+#include "src/common/persist_conn.h"
+#include "src/common/part_record.h"
 #include "src/common/slurm_protocol_common.h"
-#include "src/common/slurm_persist_conn.h"
 #include "src/common/slurm_step_layout.h"
 #include "src/common/slurmdb_defs.h"
 #include "src/common/working_cluster.h"
 #include "src/common/xassert.h"
+#include "src/interfaces/cred.h"
 
 /*
  * This is what the UID and GID accessors return on error.
@@ -139,6 +142,8 @@
 	((_X->node_state & NODE_STATE_BASE) == NODE_STATE_FUTURE)
 
 /* Derived node states */
+#define IS_NODE_BLOCKED(_X)		\
+	(_X->node_state & NODE_STATE_BLOCKED)
 #define IS_NODE_CLOUD(_X)		\
 	(_X->node_state & NODE_STATE_CLOUD)
 #define IS_NODE_DRAIN(_X)		\
@@ -178,17 +183,26 @@
 	(_X->node_state & NODE_STATE_REBOOT_REQUESTED)
 #define IS_NODE_REBOOT_ISSUED(_X)	\
 	(_X->node_state & NODE_STATE_REBOOT_ISSUED)
+#define IS_NODE_RECONFIG_REQUESTED(_X)		\
+	(_X->node_state & NODE_STATE_RECONFIG_REQUESTED)
 #define IS_NODE_RUNNING_JOB(_X)		\
 	(_X->comp_job_cnt || _X->run_job_cnt || _X->sus_job_cnt)
 #define IS_NODE_RES(_X)		\
 	(_X->node_state & NODE_STATE_RES)
+#define IS_NODE_RECONFIG_REQUESTED(_X)	\
+	(_X->node_state & NODE_STATE_RECONFIG_REQUESTED)
 
 #define THIS_FILE ((strrchr(__FILE__, '/') ?: __FILE__ - 1) + 1)
 #define INFO_LINE(fmt, ...) \
 	info("%s (%s:%d) "fmt, __func__, THIS_FILE, __LINE__, ##__VA_ARGS__);
 
-#define YEAR_MINUTES (365 * 24 * 60)
-#define YEAR_SECONDS (365 * 24 * 60 * 60)
+#define MINUTE_SECONDS 60
+#define HOUR_MINUTES 60
+#define HOUR_SECONDS (HOUR_MINUTES * MINUTE_SECONDS)
+#define DAY_HOURS 24
+#define YEAR_DAYS 365
+#define YEAR_MINUTES (YEAR_DAYS * DAY_HOURS * HOUR_MINUTES)
+#define YEAR_SECONDS (YEAR_DAYS * DAY_HOURS * HOUR_SECONDS)
 
 /* Read as 'how many X are in a Y' */
 #define MSEC_IN_SEC 1000
@@ -199,6 +213,8 @@
 
 #define SLURMD_REG_FLAG_CONFIGLESS 0x0001
 #define SLURMD_REG_FLAG_RESP     0x0002
+#define SLURMD_REG_FLAG_RECONFIG SLURM_BIT(2)
+#define SLURMD_REG_FLAG_RECONFIG_TIMEOUT SLURM_BIT(3)
 
 #define RESV_FREE_STR_USER      SLURM_BIT(0)
 #define RESV_FREE_STR_ACCT      SLURM_BIT(1)
@@ -211,293 +227,19 @@
 #define RESV_FREE_STR_NODES     SLURM_BIT(8)
 #define RESV_FREE_STR_TRES      SLURM_BIT(9)
 
-/* These defines have to be here to avoid circular dependancy with
- * switch.h
- */
-#ifndef __switch_jobinfo_t_defined
-#  define __switch_jobinfo_t_defined
-   typedef struct switch_jobinfo   switch_jobinfo_t;
+#ifndef NDEBUG
+extern __thread bool drop_priv;
+#endif
+
+#ifndef __job_record_t_defined
+#  define __job_record_t_defined
+typedef struct job_record job_record_t;
 #endif
 
 /*
- * Slurm Message types
- *
- * IMPORTANT: ADD NEW MESSAGE TYPES TO THE *END* OF ONE OF THESE NUMBERED
- * SECTIONS. ADDING ONE ELSEWHERE WOULD SHIFT THE VALUES OF EXISTING MESSAGE
- * TYPES IN CURRENT PROGRAMS AND PREVENT BACKWARD COMPATIBILITY.
+ * Prototype for conmgr connection w/o including conmgr.h
  */
-typedef enum {
-	REQUEST_NODE_REGISTRATION_STATUS = 1001,
-	MESSAGE_NODE_REGISTRATION_STATUS,
-	REQUEST_RECONFIGURE,
-	REQUEST_RECONFIGURE_WITH_CONFIG,
-	REQUEST_SHUTDOWN,
-	REQUEST_RECONFIGURE_SACKD,
-	DEFUNCT_RPC_1007,
-	REQUEST_PING,
-	REQUEST_CONTROL,
-	REQUEST_SET_DEBUG_LEVEL,	/* 1010 */
-	REQUEST_HEALTH_CHECK,
-	REQUEST_TAKEOVER,
-	REQUEST_SET_SCHEDLOG_LEVEL,
-	REQUEST_SET_DEBUG_FLAGS,
-	REQUEST_REBOOT_NODES,
-	RESPONSE_PING_SLURMD,
-	REQUEST_ACCT_GATHER_UPDATE,
-	RESPONSE_ACCT_GATHER_UPDATE,
-	REQUEST_ACCT_GATHER_ENERGY,
-	RESPONSE_ACCT_GATHER_ENERGY,	/* 1020 */
-	REQUEST_LICENSE_INFO,
-	RESPONSE_LICENSE_INFO,
-	REQUEST_SET_FS_DAMPENING_FACTOR,
-	RESPONSE_NODE_REGISTRATION,
-	REQUEST_SET_SUSPEND_EXC_NODES,
-	REQUEST_SET_SUSPEND_EXC_PARTS,
-	REQUEST_SET_SUSPEND_EXC_STATES,
-
-	DBD_MESSAGES_START	= 1400,
-	PERSIST_RC = 1433, /* To mirror the DBD_RC this is replacing */
-	/* Don't make any messages in this range as this is what the DBD uses
-	 * unless mirroring */
-	DBD_MESSAGES_END	= 2000,
-
-	REQUEST_BUILD_INFO	= 2001,
-	RESPONSE_BUILD_INFO,
-	REQUEST_JOB_INFO,
-	RESPONSE_JOB_INFO,
-	REQUEST_JOB_STEP_INFO,
-	RESPONSE_JOB_STEP_INFO,
-	REQUEST_NODE_INFO,
-	RESPONSE_NODE_INFO,
-	REQUEST_PARTITION_INFO,
-	RESPONSE_PARTITION_INFO,	/* 2010 */
-	DEFUNCT_RPC_2011,
-	DEFUNCT_RPC_2012,
-	REQUEST_JOB_ID,
-	RESPONSE_JOB_ID,
-	REQUEST_CONFIG,
-	RESPONSE_CONFIG,
-	REQUEST_TRIGGER_SET,
-	REQUEST_TRIGGER_GET,
-	REQUEST_TRIGGER_CLEAR,
-	RESPONSE_TRIGGER_GET,		/* 2020 */
-	REQUEST_JOB_INFO_SINGLE,
-	REQUEST_SHARE_INFO,
-	RESPONSE_SHARE_INFO,
-	REQUEST_RESERVATION_INFO,
-	RESPONSE_RESERVATION_INFO,
-	REQUEST_PRIORITY_FACTORS,
-	RESPONSE_PRIORITY_FACTORS,
-	REQUEST_TOPO_INFO,
-	RESPONSE_TOPO_INFO,
-	REQUEST_TRIGGER_PULL,		/* 2030 */
-	REQUEST_FRONT_END_INFO,
-	RESPONSE_FRONT_END_INFO,
-	DEFUNCT_RPC_2033,
-	DEFUNCT_RPC_2034,
-	REQUEST_STATS_INFO,
-	RESPONSE_STATS_INFO,
-	REQUEST_BURST_BUFFER_INFO,
-	RESPONSE_BURST_BUFFER_INFO,
-	REQUEST_JOB_USER_INFO,
-	REQUEST_NODE_INFO_SINGLE,	/* 2040 */
-	DEFUNCT_RPC_2041,
-	DEFUNCT_RPC_2042,
-	REQUEST_ASSOC_MGR_INFO,
-	RESPONSE_ASSOC_MGR_INFO,
-	DEFUNCT_RPC_2045,
-	DEFUNCT_RPC_2046, /* free for reuse */
-	DEFUNCT_RPC_2047,
-	DEFUNCT_RPC_2048,
-	REQUEST_FED_INFO,
-	RESPONSE_FED_INFO,		/* 2050 */
-	REQUEST_BATCH_SCRIPT,
-	RESPONSE_BATCH_SCRIPT,
-	REQUEST_CONTROL_STATUS,
-	RESPONSE_CONTROL_STATUS,
-	REQUEST_BURST_BUFFER_STATUS,
-	RESPONSE_BURST_BUFFER_STATUS,
-	REQUEST_JOB_STATE,
-	RESPONSE_JOB_STATE,
-
-	REQUEST_CRONTAB = 2200,
-	RESPONSE_CRONTAB,
-	REQUEST_UPDATE_CRONTAB,
-	RESPONSE_UPDATE_CRONTAB,
-
-	REQUEST_UPDATE_JOB = 3001,
-	REQUEST_UPDATE_NODE,
-	REQUEST_CREATE_PARTITION,
-	REQUEST_DELETE_PARTITION,
-	REQUEST_UPDATE_PARTITION,
-	REQUEST_CREATE_RESERVATION,
-	RESPONSE_CREATE_RESERVATION,
-	REQUEST_DELETE_RESERVATION,
-	REQUEST_UPDATE_RESERVATION,
-	DEFUNCT_RPC_3010,  /* free for reuse */
-	REQUEST_UPDATE_FRONT_END,		/* 3011 */
-	DEFUNCT_RPC_3012,
-	DEFUNCT_RPC_3013,
-	REQUEST_DELETE_NODE,
-	REQUEST_CREATE_NODE,
-	REQUEST_NODE_ALIAS_ADDRS,
-	RESPONSE_NODE_ALIAS_ADDRS,
-
-	REQUEST_RESOURCE_ALLOCATION = 4001,
-	RESPONSE_RESOURCE_ALLOCATION,
-	REQUEST_SUBMIT_BATCH_JOB,
-	RESPONSE_SUBMIT_BATCH_JOB,
-	REQUEST_BATCH_JOB_LAUNCH,
-	REQUEST_CANCEL_JOB,
-	DEFUNCT_RPC_4007,
-	DEFUNCT_RPC_4008,
-	DEFUNCT_RPC_4009,
-	DEFUNCT_RPC_4010,		/* 4010 */
-	DEFUNCT_RPC_4011,
-	REQUEST_JOB_WILL_RUN,
-	RESPONSE_JOB_WILL_RUN,
-	REQUEST_JOB_ALLOCATION_INFO,
-	RESPONSE_JOB_ALLOCATION_INFO,
-	DEFUNCT_RPC_4016, /* free for reuse */
-	DEFUNCT_RPC_4017, /* free for reuse */
-	DEFUNCT_RPC_4018,
-	REQUEST_JOB_READY,
-	RESPONSE_JOB_READY,		/* 4020 */
-	REQUEST_JOB_END_TIME,
-	REQUEST_JOB_NOTIFY,
-	REQUEST_JOB_SBCAST_CRED,
-	RESPONSE_JOB_SBCAST_CRED,
-	REQUEST_HET_JOB_ALLOCATION,
-	RESPONSE_HET_JOB_ALLOCATION,
-	REQUEST_HET_JOB_ALLOC_INFO,
-	REQUEST_SUBMIT_BATCH_HET_JOB,
-
-	REQUEST_CTLD_MULT_MSG = 4500,
-	RESPONSE_CTLD_MULT_MSG,
-	REQUEST_SIB_MSG,
-	REQUEST_SIB_JOB_LOCK,
-	REQUEST_SIB_JOB_UNLOCK,
-	REQUEST_SEND_DEP,
-	REQUEST_UPDATE_ORIGIN_DEP,
-
-	REQUEST_JOB_STEP_CREATE = 5001,
-	RESPONSE_JOB_STEP_CREATE,
-	DEFUNCT_RPC_5003,
-	DEFUNCT_RPC_5004,
-	REQUEST_CANCEL_JOB_STEP,
-	DEFUNCT_RPC_5006,
-	REQUEST_UPDATE_JOB_STEP,
-	REQUEST_STEP_BY_CONTAINER_ID,
-	RESPONSE_STEP_BY_CONTAINER_ID,
-	DEFUNCT_RPC_5010,		/* 5010 */
-	DEFUNCT_RPC_5011,
-	DEFUNCT_RPC_5012,
-	DEFUNCT_RPC_5013,
-	REQUEST_SUSPEND,
-	DEFUNCT_RPC_5015,
-	REQUEST_STEP_COMPLETE,
-	REQUEST_COMPLETE_JOB_ALLOCATION,
-	REQUEST_COMPLETE_BATCH_SCRIPT,
-	REQUEST_JOB_STEP_STAT,
-	RESPONSE_JOB_STEP_STAT,		/* 5020 */
-	REQUEST_STEP_LAYOUT,
-	RESPONSE_STEP_LAYOUT,
-	REQUEST_JOB_REQUEUE,
-	REQUEST_DAEMON_STATUS,
-	RESPONSE_SLURMD_STATUS,
-	DEFUNCT_RPC_5026,
-	REQUEST_JOB_STEP_PIDS,
-	RESPONSE_JOB_STEP_PIDS,
-	REQUEST_FORWARD_DATA,
-	DEFUNCT_RPC_5030,		/* 5030 */
-	REQUEST_SUSPEND_INT,
-	REQUEST_KILL_JOB,		/* 5032 */
-	DEFUNCT_RPC_5033,
-	RESPONSE_JOB_ARRAY_ERRORS,
-	REQUEST_NETWORK_CALLERID,
-	RESPONSE_NETWORK_CALLERID,
-	DEFUNCT_RPC_5037,
-	REQUEST_TOP_JOB,		/* 5038 */
-	REQUEST_AUTH_TOKEN,
-	RESPONSE_AUTH_TOKEN,
-
-	REQUEST_LAUNCH_TASKS = 6001,
-	RESPONSE_LAUNCH_TASKS,
-	MESSAGE_TASK_EXIT,
-	REQUEST_SIGNAL_TASKS,
-	DEFUNCT_RPC_6005,
-	REQUEST_TERMINATE_TASKS,
-	REQUEST_REATTACH_TASKS,
-	RESPONSE_REATTACH_TASKS,
-	REQUEST_KILL_TIMELIMIT,
-	DEFUNCT_RPC_6010, /* free for reuse */
-	REQUEST_TERMINATE_JOB,		/* 6011 */
-	MESSAGE_EPILOG_COMPLETE,
-	REQUEST_ABORT_JOB,	/* job shouldn't be running, kill it without
-				 * job/step/task complete responses */
-	REQUEST_FILE_BCAST,
-	DEFUNCT_RPC_6015,
-	REQUEST_KILL_PREEMPTED,
-
-	REQUEST_LAUNCH_PROLOG,
-	REQUEST_COMPLETE_PROLOG,
-	RESPONSE_PROLOG_EXECUTING,	/* 6019 */
-
-	REQUEST_PERSIST_INIT = 6500,
-
-	SRUN_PING = 7001,
-	SRUN_TIMEOUT,
-	SRUN_NODE_FAIL,
-	SRUN_JOB_COMPLETE,
-	SRUN_USER_MSG,
-	DEFUNCT_RPC_7006,
-	SRUN_STEP_MISSING,
-	SRUN_REQUEST_SUSPEND,
-	SRUN_STEP_SIGNAL,	/* for launch plugins aprun and poe,
-				 * srun forwards signal to the launch command */
-	SRUN_NET_FORWARD,
-
-	PMI_KVS_PUT_REQ = 7201,
-	DEFUNCT_RPC_7202,
-	PMI_KVS_GET_REQ,
-	PMI_KVS_GET_RESP,
-
-	RESPONSE_SLURM_RC = 8001,
-	RESPONSE_SLURM_RC_MSG,
-	RESPONSE_SLURM_REROUTE_MSG,
-
-	RESPONSE_FORWARD_FAILED = 9001,
-
-	ACCOUNTING_UPDATE_MSG = 10001,
-	ACCOUNTING_FIRST_REG,
-	ACCOUNTING_REGISTER_CTLD,
-	ACCOUNTING_TRES_CHANGE_DB,
-	ACCOUNTING_NODES_CHANGE_DB,
-
-	SLURMSCRIPTD_REQUEST_FLUSH = 11001,
-	SLURMSCRIPTD_REQUEST_FLUSH_JOB,
-	SLURMSCRIPTD_REQUEST_RUN_SCRIPT,
-	SLURMSCRIPTD_REQUEST_SCRIPT_COMPLETE,
-	SLURMSCRIPTD_REQUEST_UPDATE_DEBUG_FLAGS,
-	SLURMSCRIPTD_REQUEST_UPDATE_LOG,
-	SLURMSCRIPTD_SHUTDOWN,
-
-	/* scrun specific RPCs */
-	REQUEST_CONTAINER_START = 12001, /* empty */
-	RESPONSE_CONTAINER_START, /* container_started_msg_t */
-	REQUEST_CONTAINER_PTY, /* empty */
-	RESPONSE_CONTAINER_PTY, /* return_code_msg_t */
-	REQUEST_CONTAINER_EXEC, /* container_exec_msg_t */
-	RESPONSE_CONTAINER_EXEC, /* return_code_msg_t */
-	REQUEST_CONTAINER_KILL, /* container_signal_msg_t */
-	RESPONSE_CONTAINER_KILL, /* return_code_msg_t */
-	REQUEST_CONTAINER_DELETE, /* container_delete_msg_t */
-	RESPONSE_CONTAINER_DELETE, /* return_code_msg_t */
-	REQUEST_CONTAINER_STATE, /* empty */
-	RESPONSE_CONTAINER_STATE, /* return_code_msg_t */
-
-	/* reserve 64000 for SACK API codes */
-} slurm_msg_type_t;
+typedef struct conmgr_fd_s conmgr_fd_t;
 
 /*****************************************************************************\
  * core api configuration struct
@@ -510,7 +252,13 @@ typedef struct forward {
 				 * message to */
 	uint32_t   timeout;	/* original timeout increments */
 	uint16_t   tree_width;  /* what the treewidth should be */
+	uint16_t   tree_depth;	/* tree depth of this set of nodes */
 } forward_t;
+
+#define FORWARD_INITIALIZER \
+	{ \
+		.init = FORWARD_INIT, \
+	}
 
 /*core api protocol message structures */
 typedef struct slurm_protocol_header {
@@ -522,7 +270,7 @@ typedef struct slurm_protocol_header {
 	uint16_t ret_cnt;
 	forward_t forward;
 	slurm_addr_t orig_addr;
-	List ret_list;
+	list_t *ret_list;
 } header_t;
 
 typedef struct forward_struct {
@@ -532,7 +280,7 @@ typedef struct forward_struct {
 	uint16_t fwd_cnt;
 	pthread_mutex_t forward_mutex;
 	pthread_cond_t notify;
-	List ret_list;
+	list_t *ret_list;
 	uint32_t timeout;
 } forward_struct_t;
 
@@ -573,14 +321,14 @@ typedef struct slurm_msg {
 				 buffer starts. */
 	buf_t *buffer;		/* DON'T PACK! ptr to buffer that msg was
 				 * unpacked from. */
-	slurm_persist_conn_t *conn; /* DON'T PACK OR FREE! this is here to
-				     * distinguish a persistent connection from
-				     * a normal connection it should be filled
-				     * in with the connection before sending the
-				     * message so that it is handled correctly.
-				     */
+	persist_conn_t *conn;	/* DON'T PACK OR FREE! this is here to
+				 * distinguish a persistent connection from a
+				 * normal connection. It should be filled in
+				 * with the connection before sending the
+				 * message so that it is handled correctly. */
 	int conn_fd; /* Only used when the message isn't on a persistent
 		      * connection. */
+	conmgr_fd_t *conmgr_fd; /* msg originates from conmgr connection. */
 	void *data;
 	uint16_t flags;
 	uint8_t hash_index;	/* DON'T PACK: zero for normal communication.
@@ -598,8 +346,26 @@ typedef struct slurm_msg {
 	forward_t forward;
 	forward_struct_t *forward_struct;
 	slurm_addr_t orig_addr;
-	List ret_list;
+	list_t *ret_list;
 } slurm_msg_t;
+
+#ifndef NDEBUG
+/* drop_priv_flag set by slurm_conf_init() in read_config.c */
+#define SLURM_MSG_FLAGS_INITIALIZER drop_priv_flag
+#else /* NDEBUG */
+#define SLURM_MSG_FLAGS_INITIALIZER SLURM_PROTOCOL_NO_FLAGS
+#endif /* NDEBUG */
+
+#define SLURM_MSG_INITIALIZER \
+	{ \
+		.auth_uid = SLURM_AUTH_NOBODY, \
+		.auth_gid = SLURM_AUTH_NOBODY, \
+		.conn_fd = -1, \
+		.msg_type = NO_VAL16, \
+		.protocol_version = NO_VAL16, \
+		.flags = SLURM_MSG_FLAGS_INITIALIZER, \
+		.forward = FORWARD_INITIALIZER, \
+	}
 
 typedef struct ret_data_info {
 	uint16_t type; /* really a slurm_msg_type_t but needs to be
@@ -661,12 +427,12 @@ typedef struct assoc_shares_object {
 } assoc_shares_object_t;
 
 typedef struct shares_request_msg {
-	List acct_list;
-	List user_list;
+	list_t *acct_list;
+	list_t *user_list;
 } shares_request_msg_t;
 
 typedef struct shares_response_msg {
-	List assoc_shares_list; /* list of assoc_shares_object_t *'s */
+	list_t *assoc_shares_list; /* list of assoc_shares_object_t *'s */
 	uint64_t tot_shares;
 	uint32_t tres_cnt;
 	char **tres_names;
@@ -690,13 +456,13 @@ typedef struct job_user_id_msg {
 typedef struct job_info_request_msg {
 	time_t last_update;
 	uint16_t show_flags;
-	List   job_ids;		/* Optional list of job_ids, otherwise show all
+	list_t *job_ids;	/* Optional list of job_ids, otherwise show all
 				 * jobs. */
 } job_info_request_msg_t;
 
 typedef struct {
-	uint32_t job_id_count;
-	uint32_t *job_ids;
+	uint32_t count;
+	slurm_selected_step_t *job_ids;
 } job_state_request_msg_t;
 
 typedef struct {
@@ -764,6 +530,7 @@ typedef struct step_complete_msg {
 	slurm_step_id_t step_id;
  	uint32_t step_rc;	/* largest task return code */
 	jobacctinfo_t *jobacct;
+	bool send_to_stepmgr;
 } step_complete_msg_t;
 
 typedef struct signal_tasks_msg {
@@ -873,9 +640,10 @@ typedef struct job_step_create_response_msg {
 	char *resv_ports;		/* reserved ports */
 	slurm_step_layout_t *step_layout; /* information about how the
                                            * step is laid out */
+	char *stepmgr;
 	slurm_cred_t *cred;    	  /* slurm job credential */
 	dynamic_plugin_data_t *select_jobinfo;	/* select opaque data type */
-	dynamic_plugin_data_t *switch_job;	/* switch opaque data type */
+	dynamic_plugin_data_t *switch_step;	/* switch opaque data type */
 	uint16_t use_protocol_ver;   /* Lowest protocol version running on
 				      * the slurmd's in this step.
 				      */
@@ -975,8 +743,8 @@ typedef struct launch_tasks_request_msg {
 
 	uint16_t cred_version;	/* job credential protocol_version */
 	slurm_cred_t *cred;	/* job credential            */
-	dynamic_plugin_data_t *switch_job; /* switch credential for the job */
-	List options;  /* Arbitrary job options */
+	dynamic_plugin_data_t *switch_step; /* switch credential for the job */
+	list_t *options;  /* Arbitrary job options */
 	char *complete_nodelist;
 	char **spank_job_env;
 	uint32_t spank_job_env_size;
@@ -990,6 +758,13 @@ typedef struct launch_tasks_request_msg {
 	char *x11_magic_cookie;		/* X11 auth cookie to abuse */
 	char *x11_target;		/* X11 target host, or unix socket */
 	uint16_t x11_target_port;	/* X11 target port */
+
+	/* To send to stepmgr */
+	job_record_t *job_ptr;
+	list_t *job_node_array;
+	part_record_t *part_ptr;
+
+	char *stepmgr; /* Hostname of stepmgr */
 } launch_tasks_request_msg_t;
 
 typedef struct partition_info partition_desc_msg_t;
@@ -1003,6 +778,7 @@ typedef struct return_code2_msg {
 } return_code2_msg_t;
 
 typedef struct {
+	char *stepmgr;
 	slurmdb_cluster_rec_t *working_cluster_rec;
 } reroute_msg_t;
 
@@ -1052,7 +828,7 @@ typedef struct kill_job_msg {
 	uint32_t derived_ec;
 	uint32_t exit_code;
 	uint32_t het_job_id;
-	List job_gres_prep;	/* Used to set Epilog environment variables */
+	list_t *job_gres_prep;	/* Used to set Epilog environment variables */
 	uint32_t job_state;
 	uint32_t job_uid;
 	uint32_t job_gid;
@@ -1066,13 +842,11 @@ typedef struct kill_job_msg {
 } kill_job_msg_t;
 
 typedef struct reattach_tasks_request_msg {
+	char *io_key;
 	uint16_t     num_resp_port;
 	uint16_t    *resp_port; /* array of available response ports */
 	uint16_t     num_io_port;
 	uint16_t    *io_port;   /* array of available client IO ports */
-	slurm_cred_t *cred;      /* used only a weak authentication mechanism
-				   for the slurmstepd to use when connecting
-				   back to the client */
 	slurm_step_id_t step_id;
 } reattach_tasks_request_msg_t;
 
@@ -1090,7 +864,7 @@ typedef struct prolog_launch_msg {
 	slurm_cred_t *cred;
 	uint32_t gid;
 	uint32_t het_job_id;		/* HetJob id or NO_VAL */
-	List job_gres_prep;		/* Used to set Prolog env vars */
+	list_t *job_gres_prep;		/* Used to set Prolog env vars */
 	uint32_t job_id;		/* slurm job_id */
 	uint64_t job_mem_limit;		/* job's memory limit, passed via cred */
 	uint32_t nnodes;			/* count of nodes, passed via cred */
@@ -1106,6 +880,17 @@ typedef struct prolog_launch_msg {
 	char *x11_magic_cookie;		/* X11 auth cookie to abuse */
 	char *x11_target;		/* X11 target host, or unix socket */
 	uint16_t x11_target_port;	/* X11 target port */
+
+	/* To send to stepmgr */
+	job_record_t *job_ptr;
+	buf_t *job_ptr_buf;
+
+	list_t *job_node_array; /* node_record_t array of size
+				 * job_ptr->node_cnt for stepmgr. */
+	buf_t *job_node_array_buf;
+
+	part_record_t *part_ptr;
+	buf_t *part_ptr_buf;
 } prolog_launch_msg_t;
 
 typedef struct batch_job_launch_msg {
@@ -1204,7 +989,7 @@ typedef struct {
 } config_file_t;
 
 typedef struct {
-	List config_files;
+	list_t *config_files;
 	char *slurmd_spooldir;
 } config_response_msg_t;
 
@@ -1309,7 +1094,7 @@ typedef struct {
 
 typedef struct {
 	char *crontab;
-	List jobs;
+	list_t *jobs;
 	uint32_t uid;
 	uint32_t gid;
 } crontab_update_request_msg_t;
@@ -1362,7 +1147,7 @@ typedef struct slurm_node_registration_status_msg {
 
 typedef struct slurm_node_reg_resp_msg {
 	char *node_name;
-	List tres_list;
+	list_t *tres_list;
 } slurm_node_reg_resp_msg_t;
 
 typedef struct requeue_msg {
@@ -1410,12 +1195,12 @@ typedef struct {
 } dep_msg_t;
 
 typedef struct {
-	List depend_list;
+	list_t *depend_list;
 	uint32_t job_id;
 } dep_update_origin_msg_t;
 
 typedef struct {
-	List my_list;		/* this list could be of any type as long as it
+	list_t *my_list;	/* this list could be of any type as long as it
 				 * is handled correctly on both ends */
 } ctld_list_msg_t;
 
@@ -1424,7 +1209,7 @@ typedef struct {
 \*****************************************************************************/
 
 typedef struct {
-	List update_list; /* of type slurmdb_update_object_t *'s */
+	list_t *update_list; /* of type slurmdb_update_object_t *'s */
 	uint16_t rpc_version;
 } accounting_update_msg_t;
 
@@ -1551,18 +1336,18 @@ extern void slurm_msg_t_copy(slurm_msg_t *dest, slurm_msg_t *src);
 
 /* here to add \\ to all \" in a string this needs to be xfreed later */
 extern char *slurm_add_slash_to_quotes(char *str);
-extern List slurm_copy_char_list(List char_list);
-extern int slurm_parse_char_list(List char_list, char *names, void *args,
-				 int (*func_ptr)(List char_list, char *name,
-						void *args));
-extern int slurm_addto_char_list(List char_list, char *names);
-extern int slurm_addto_char_list_with_case(List char_list, char *names,
+extern list_t *slurm_copy_char_list(list_t *char_list);
+extern int slurm_parse_char_list(
+	list_t *char_list, char *names, void *args,
+	int (*func_ptr)(list_t *char_list, char *name, void *args));
+extern int slurm_addto_char_list(list_t *char_list, char *names);
+extern int slurm_addto_char_list_with_case(list_t *char_list, char *names,
 					   bool lower_case_normalization);
-extern int slurm_addto_id_char_list(List char_list, char *names, bool gid);
-extern int slurm_addto_mode_char_list(List char_list, char *names, int mode);
-extern int slurm_addto_step_list(List step_list, char *names);
-extern int slurm_char_list_copy(List dst, List src);
-extern char *slurm_char_list_to_xstr(List char_list);
+extern int slurm_addto_id_char_list(list_t *char_list, char *names, bool gid);
+extern int slurm_addto_mode_char_list(list_t *char_list, char *names, int mode);
+extern int slurm_addto_step_list(list_t *step_list, char *names);
+extern int slurm_char_list_copy(list_t *dst, list_t *src);
+extern char *slurm_char_list_to_xstr(list_t *char_list);
 extern void slurm_copy_node_alias_addrs_members(slurm_node_alias_addrs_t *dest,
 						slurm_node_alias_addrs_t *src);
 extern int slurm_find_char_exact_in_list(void *x, void *key);
@@ -1570,6 +1355,22 @@ extern int slurm_find_char_in_list(void *x, void *key);
 extern int slurm_find_ptr_in_list(void *x, void *key);
 extern void slurm_remove_char_list_from_char_list(list_t *haystack,
 						  list_t *needles);
+
+extern int slurm_sort_time_list_asc(const void *, const void *);
+extern int slurm_sort_time_list_desc(const void *, const void *);
+extern int slurm_sort_uint16_list_asc(const void *, const void *);
+extern int slurm_sort_uint16_list_desc(const void *, const void *);
+extern int slurm_sort_uint32_list_asc(const void *, const void *);
+extern int slurm_sort_uint32_list_desc(const void *, const void *);
+extern int slurm_sort_uint64_list_asc(const void *, const void *);
+extern int slurm_sort_uint64_list_desc(const void *, const void *);
+extern int slurm_sort_uint_list_asc(const void *, const void *);
+extern int slurm_sort_uint_list_desc(const void *, const void *);
+extern int slurm_sort_int_list_asc(const void *, const void *);
+extern int slurm_sort_int_list_desc(const void *, const void *);
+extern int slurm_sort_int64_list_asc(const void *, const void *);
+extern int slurm_sort_int64_list_desc(const void *, const void *);
+
 extern int slurm_sort_char_list_asc(void *, void *);
 extern int slurm_sort_char_list_desc(void *, void *);
 
@@ -1582,6 +1383,31 @@ extern char **slurm_char_array_copy(int n, char **src);
  * Caller must xfree() return value.
  */
 extern char *slurm_sort_node_list_str(char *node_list);
+
+/*
+ * For each token in a comma delimited job array expression set the matching
+ * bitmap entry.
+ *
+ * IN tok - An array expression. For example: "[1,3-5,8]"
+ * IN array_bitmap - Matching entries in tok are set in this bitmap.
+ * IN max - maximum size of the job array.
+ * RET true if tok is a valid array expression, v
+ */
+extern bool slurm_parse_array_tok(char *tok, bitstr_t *array_bitmap,
+				  uint32_t max);
+/*
+ * Take a string representation of an array range or comma separated values
+ * and translate that into a bitmap.
+ *
+ * IN str - An array expression. For example: "[1,3-5,8]"
+ * IN max_array_size - maximum size of the job array.
+ * OUT i_last_p - (optional) if not NULL, set the value pointed to by i_last_p
+ *                to the last bit set in the array bitmap. This is only changed
+ *                if the string was successfully parsed.
+ * RET array_bitmap if successfull, NULL otherwise.
+ */
+extern bitstr_t *slurm_array_str2bitmap(char *str, uint32_t max_array_size,
+					int32_t *i_last_p);
 
 /*
  * Take a string identifing any part of a job and parses it into an id
@@ -1603,9 +1429,12 @@ extern char *slurm_sort_node_list_str(char *node_list);
  * IN/OUT id - ptr to id to be populated.
  * 	All values are always set to NO_VAL and then populated as parsed.
  *      (Errors during parsing may result in partially populated ID.)
+ * IN max_array_size - Maximum size of a job array. May be 0 or NO_VAL if
+ *                     job array expressions are not expected.
  * RET SLURM_SUCCESS or error
  */
-extern int unfmt_job_id_string(const char *src, slurm_selected_step_t *id);
+extern int unfmt_job_id_string(const char *src, slurm_selected_step_t *id,
+			       uint32_t max_array_size);
 /*
  * Dump id into string identifing a part of a job.
  * Dumps same formats as unfmt_job_id_string() parsed.
@@ -1723,6 +1552,9 @@ extern void slurm_free_reattach_tasks_response_msg(
 		reattach_tasks_response_msg_t * msg);
 extern void slurm_free_kill_job_msg(kill_job_msg_t * msg);
 extern void slurm_free_job_step_kill_msg(job_step_kill_msg_t * msg);
+extern void slurm_free_kill_jobs_msg(kill_jobs_msg_t *msg);
+extern void slurm_free_kill_jobs_resp_job_t(kill_jobs_resp_job_t *job_resp);
+extern void slurm_free_kill_jobs_response_msg(kill_jobs_resp_msg_t *msg);
 extern void slurm_free_epilog_complete_msg(epilog_complete_msg_t * msg);
 extern void slurm_free_srun_job_complete_msg(srun_job_complete_msg_t * msg);
 extern void slurm_free_srun_ping_msg(srun_ping_msg_t * msg);
@@ -1853,9 +1685,6 @@ extern char *node_state_string_complete(uint32_t inx);
  */
 extern uint32_t parse_node_state_flag(char *flag_str);
 
-extern uint16_t power_flags_id(const char *power_flags);
-extern char    *power_flags_str(uint16_t power_flags);
-
 extern void  private_data_string(uint16_t private_data, char *str, int str_len);
 extern void  accounting_enforce_string(uint16_t enforce,
 				       char *str, int str_len);
@@ -1897,12 +1726,6 @@ extern int get_cluster_node_offset(char *cluster_name,
  */
 extern void print_multi_line_string(char *user_msg, int inx,
 				    log_level_t loglevel);
-
-/* Given a protocol opcode return its string
- * description mapping the slurm_msg_type_t
- * to its name.
- */
-extern char *rpc_num2string(uint16_t opcode);
 
 /*
  * Given a numeric suffix, return the equivalent multiplier for the numeric
@@ -1968,6 +1791,42 @@ extern int slurm_get_rep_count_inx(
 	uint32_t *rep_count, uint32_t rep_count_size, int inx);
 
 /*
+ * slurm_format_tres_string - given a TRES type and a tres-per-* string,
+ *			      will modifiy the string from the original
+ *			      colon-separated tres request format to the new
+ *			      '/' separating the TRES type from the tres
+ *			      request. This will work even if the request name
+ *			      or grestype with the TRES type.
+ * IN s - tres-per-* tres request string. This will be modified to fit the new
+ *	  format.
+ * IN tres_type - the type of tres to replace in the tres request string
+ *
+ * If *s is non-NULL, it must be an xmalloc'd string.
+ *
+ * Input:
+ * license:testing_license:3
+ * Output:
+ * license/testing_license:3
+ *
+ * This function will not modify correctly formatted tres request strings
+ * Input:
+ * license/testing_license:3
+ * Output:
+ * license/testing_license:3
+ *
+ * Input:
+ * gres:gres1:type1:3,gres:gres2:type2:6
+ * Output:
+ * gres:gres1/type1:3,gres/gres2:type2:6
+ *
+ * Input
+ * gres:gres1_gres:type1_gres:3,gres:gres2_gres:type2_gres:6
+ * Output:
+ * gres/gres1_gres:type1_gres:3,gres/gres2_gres:type2_gres:6
+ */
+extern void slurm_format_tres_string(char **s, char *tres_type);
+
+/*
  * Reentrant TRES specification parse logic
  * tres_type IN/OUT - type of tres we are looking for, If *tres_type is NULL we
  *                    will fill it in
@@ -2008,17 +1867,58 @@ extern char *schedule_exit2string(uint16_t opcode);
 extern char *bf_exit2string(uint16_t opcode);
 
 /*
- * IN watts - resv_watts to convert to string format
- */
-extern char *slurm_watts_to_str(uint32_t watts);
-
-/*
  * Parse reservation request option Watts
  * IN watts_str - value to parse
  * IN/OUT resv_msg_ptr - msg where resv_watts member is modified
  * OUT err_msg - set to an explanation of failure, if any. Don't set if NULL
  */
 extern uint32_t slurm_watts_str_to_int(char *watts_str, char **err_msg);
+
+typedef struct {
+	uint32_t	node_count;	/* number of nodes to communicate
+					 * with */
+	uint16_t	retry;		/* if set, keep trying */
+	uid_t r_uid;			/* receiver UID */
+	bool r_uid_set;			/* true if receiver UID set */
+	slurm_addr_t    *addr;          /* if set will send to this
+					   addr not hostlist */
+	hostlist_t *hostlist;		/* hostlist containing the
+					 * nodes we are sending to */
+	uint16_t        protocol_version; /* protocol version to use */
+	slurm_msg_type_t msg_type;	/* RPC to be issued */
+	void		*msg_args;	/* RPC data to be transmitted */
+	uint16_t msg_flags;		/* Flags to be added to msg */
+} agent_arg_t;
+
+/* Set r_uid of agent_arg */
+extern void set_agent_arg_r_uid(agent_arg_t *agent_arg_ptr, uid_t r_uid);
+extern void purge_agent_args(agent_arg_t *agent_arg_ptr);
+
+/*
+ * validate_slurm_user - validate that the uid is authorized to see
+ *      privileged data (either user root or SlurmUser)
+ * IN uid - user to validate
+ * RET true if permitted to run, false otherwise
+ */
+extern bool validate_slurm_user(uid_t uid);
+
+/*
+ * validate_slurmd_user - validate that the uid is authorized to see
+ *      privileged data (either user root or SlurmUser)
+ * IN uid - user to validate
+ * RET true if permitted to run, false otherwise
+ */
+extern bool validate_slurmd_user(uid_t uid);
+
+/*
+ * Return the job's sharing value from job or partition value.
+ */
+extern uint16_t get_job_share_value(job_record_t *job_ptr);
+
+/*
+ * Free stepmgr_job_info_t
+ */
+extern void slurm_free_stepmgr_job_info(stepmgr_job_info_t *object);
 
 #define safe_read(fd, buf, size) do {					\
 		int remaining = size;					\
@@ -2029,11 +1929,13 @@ extern uint32_t slurm_watts_str_to_int(char *watts_str, char **err_msg);
 			if ((rc == 0) && (remaining == size)) {		\
 				debug("%s:%d: %s: safe_read EOF",	\
 				      __FILE__, __LINE__, __func__); \
+				errno = EIO;				\
 				goto rwfail;				\
 			} else if (rc == 0) {				\
 				debug("%s:%d: %s: safe_read (%d of %d) EOF", \
 				      __FILE__, __LINE__, __func__, \
 				      remaining, (int)size);		\
+				errno = EIO;				\
 				goto rwfail;				\
 			} else if (rc < 0) {				\
 				if ((errno == EAGAIN) ||		\

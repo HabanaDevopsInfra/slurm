@@ -188,8 +188,6 @@ This package export constants for use with Slurm. This includes enumerations and
 
 =item * NODE_STATE_FLAGS      0xfff0
 
-=item * NODE_STATE_NET        0x0010
-
 =item * NODE_STATE_RES        0x0020
 
 =item * NODE_STATE_UNDRAIN    0x0040
@@ -211,14 +209,6 @@ This package export constants for use with Slurm. This includes enumerations and
 =item * NODE_STATE_POWER_UP   0x4000
 
 =item * NODE_STATE_MAINT      0x8000
-
-=back
-
-=head3 Size of the credential signature
-
-=over 2
-
-=item * SLURM_SSL_SIGNATURE_LENGTH 128
 
 =back
 

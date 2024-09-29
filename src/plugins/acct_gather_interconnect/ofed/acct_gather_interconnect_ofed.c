@@ -55,7 +55,6 @@
 #include "src/interfaces/acct_gather_profile.h"
 
 #include "src/slurmd/slurmd/slurmd.h"
-#include "acct_gather_interconnect_ofed.h"
 
 /*
  * ofed includes for the lib
@@ -67,7 +66,7 @@
 /***************************************************************/
 
 #define ALL_PORTS 0xFF
-
+#define INTERCONNECT_DEFAULT_PORT 1
 
 #define _DEBUG 1
 #define _DEBUG_INTERCONNECT 1
@@ -401,18 +400,10 @@ extern void acct_gather_interconnect_p_conf_options(
 	return;
 }
 
-extern void acct_gather_interconnect_p_conf_values(List *data)
+extern void acct_gather_interconnect_p_conf_values(list_t **data)
 {
-	config_key_pair_t *key_pair;
-
 	xassert(*data);
-
-	key_pair = xmalloc(sizeof(config_key_pair_t));
-	key_pair->name = xstrdup("InterconnectOFEDPort");
-	key_pair->value = xstrdup_printf("%u", ofed_conf.port);
-	list_append(*data, key_pair);
-
-	return;
+	add_key_pair(*data, "InterconnectOFEDPort", "%u", ofed_conf.port);
 }
 
 extern int acct_gather_interconnect_p_get_data(acct_gather_data_t *data)

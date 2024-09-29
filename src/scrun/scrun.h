@@ -36,7 +36,11 @@
 #ifndef _SCRUN_H
 #define _SCRUN_H
 
-#include "src/common/conmgr.h"
+#include <pty.h>
+#include <termios.h>
+
+#include "src/conmgr/conmgr.h"
+
 #include "src/common/data.h"
 #include "src/common/oci_config.h"
 
@@ -87,6 +91,7 @@ typedef struct {
 	char *anchor_socket; /* path to anchor msg socket */
 	char *spool_dir; /* container specific work space */
 	char **job_env; /* env to hand to srun */
+	char **spank_job_env; /* spank set env */
 	char *config_file; /* path to config.json */
 	uint32_t user_id; /* user job is running as */
 	uint32_t group_id; /* group job is running as */
@@ -195,14 +200,10 @@ extern int get_anchor_state(void);
  * Request allocation for job
  * IN arg - ptr to conmgr
  */
-extern void get_allocation(conmgr_fd_t *con, conmgr_work_type_t type,
-			   conmgr_work_status_t status, const char *tag,
-			   void *arg);
+extern void get_allocation(conmgr_callback_args_t conmgr_args, void *arg);
 
 /* callback after allocation success */
-extern void on_allocation(conmgr_fd_t *con, conmgr_work_type_t type,
-			  conmgr_work_status_t status, const char *tag,
-			  void *arg);
+extern void on_allocation(conmgr_callback_args_t conmgr_args, void *arg);
 
 /*
  * Stop and (eventually) cleanup anchor

@@ -49,6 +49,9 @@
 /* close all FDs >= a specified value */
 extern void closeall(int fd);
 
+/* Close a specific file descriptor and replace it with -1 */
+extern void fd_close(int *fd);
+
 void fd_set_close_on_exec(int fd);
 /*
  *  Sets the file descriptor (fd) to be closed on exec().
@@ -94,6 +97,9 @@ pid_t fd_is_read_lock_blocked(int fd);
  *    (ie, if a write-lock is already being held on the file),
  *    returns the pid of the process holding the lock; o/w, returns 0.
  */
+
+/* return true if fd is writable right now */
+extern bool fd_is_writable(int fd);
 
 extern int wait_fd_readable(int fd, int time_limit);
 /* Wait for a file descriptor to be readable (up to time_limit seconds).
@@ -151,10 +157,10 @@ extern void fd_set_oob(int fd, int value);
 extern char *poll_revents_to_str(const short revents);
 
 /*
- * Pass an open fd back over a pipe.
+ * Pass an open fd back over a socket.
  */
-extern void send_fd_over_pipe(int socket, int fd);
-extern int receive_fd_over_pipe(int socket);
+extern void send_fd_over_socket(int socket, int fd);
+extern int receive_fd_over_socket(int socket);
 
 /*
  * Make full directory path.
@@ -180,5 +186,36 @@ extern int mkdirpath(const char *pathname, mode_t mode, bool is_dir);
  * or 0 on success.
  */
 extern int rmdir_recursive(const char *path, bool remove_top);
+
+/*
+ * Use ioctl(FIONREAD) to get number of bytes in buffer waiting for read().
+ * IN fd - file descriptor to query
+ * IN/OUT readable_ptr - Pointer to populate if ioctl() is able to query
+ *	successfully. Only changed if RET=SLURM_SUCCESS.
+ * IN con_name - descriptive name for fd connection (for logging)
+ * RET SLURM_SUCCESS or error
+ */
+extern int fd_get_readable_bytes(int fd, int *readable_ptr,
+				 const char *con_name);
+
+/*
+ * Use ioctl(TIOCOUTQ) to get number of bytes in buffer waiting for kernel to
+ * send to destination
+ * IN fd - file descriptor to query
+ * IN/OUT bytes_ptr - Pointer to populate if ioctl() is able to query
+ *	successfully. Only changed if RET=SLURM_SUCCESS.
+ * IN con_name - descriptive name for fd connection (for logging)
+ * RET SLURM_SUCCESS or error
+ */
+extern int fd_get_buffered_output_bytes(int fd, int *bytes_ptr,
+					const char *con_name);
+
+/*
+ * Get TCP MSS (Max Segment Size) of a given socket
+ * IN fd - file descriptor for socket
+ * IN con_name - Connection name (for logging) or NULL
+ * RET NO_VAL on failure or >0 for MSS of socket
+ */
+extern int fd_get_maxmss(int fd, const char *con_name);
 
 #endif /* !_FD_H */

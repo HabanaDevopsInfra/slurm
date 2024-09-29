@@ -38,6 +38,7 @@
 
 #include "src/slurmd/common/slurmstepd_init.h"
 #include "src/common/read_config.h"
+#include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
 
 /* Assume that the slurmd and slurmstepd are the same version level when slurmd
@@ -62,11 +63,13 @@ extern void pack_slurmd_conf_lite(slurmd_conf_t *conf, buf_t *buffer)
 	pack16(conf->block_map_size, buffer);
 	pack16_array(conf->block_map, conf->block_map_size, buffer);
 	pack16_array(conf->block_map_inv, conf->block_map_size, buffer);
+	packstr(conf->conffile, buffer);
 	packstr(conf->spooldir, buffer);
 	packstr(conf->node_name, buffer);
 	packstr(conf->logfile, buffer);
 	pack32(conf->debug_level, buffer);
 	pack32(conf->syslog_debug, buffer);
+	packstr(conf->stepd_loc, buffer);
 	packbool(conf->daemonize, buffer);
 	packstr(conf->node_topo_addr, buffer);
 	packstr(conf->node_topo_pattern, buffer);
@@ -85,29 +88,30 @@ extern int unpack_slurmd_conf_lite_no_alloc(slurmd_conf_t *conf, buf_t *buffer)
 	 * must always be on the same release.
 	 */
 	if (protocol_version >= SLURM_PROTOCOL_VERSION) {
-		safe_unpackstr_xmalloc(&conf->hostname, &uint32_tmp, buffer);
+		safe_unpackstr(&conf->hostname, buffer);
 		safe_unpack16(&conf->cpus, buffer);
 		safe_unpack16(&conf->boards, buffer);
 		safe_unpack16(&conf->sockets, buffer);
 		safe_unpack16(&conf->cores, buffer);
 		safe_unpack16(&conf->threads, buffer);
 		safe_unpack16(&conf->actual_threads, buffer);
-		safe_unpackstr_xmalloc(&conf->cpu_spec_list, &uint32_tmp,
-				       buffer);
+		safe_unpackstr(&conf->cpu_spec_list, buffer);
 		safe_unpack16(&conf->core_spec_cnt, buffer);
 		safe_unpack64(&conf->mem_spec_limit, buffer);
 		safe_unpack64(&conf->conf_memory_size, buffer);
 		safe_unpack16(&conf->block_map_size, buffer);
 		safe_unpack16_array(&conf->block_map, &uint32_tmp, buffer);
 		safe_unpack16_array(&conf->block_map_inv,  &uint32_tmp, buffer);
-		safe_unpackstr_xmalloc(&conf->spooldir,    &uint32_tmp, buffer);
-		safe_unpackstr_xmalloc(&conf->node_name,   &uint32_tmp, buffer);
-		safe_unpackstr_xmalloc(&conf->logfile,     &uint32_tmp, buffer);
+		safe_unpackstr(&conf->conffile, buffer);
+		safe_unpackstr(&conf->spooldir, buffer);
+		safe_unpackstr(&conf->node_name, buffer);
+		safe_unpackstr(&conf->logfile, buffer);
 		safe_unpack32(&conf->debug_level, buffer);
 		safe_unpack32(&conf->syslog_debug, buffer);
+		safe_unpackstr(&conf->stepd_loc, buffer);
 		safe_unpackbool(&conf->daemonize, buffer);
-		safe_unpackstr_xmalloc(&conf->node_topo_addr, &uint32_tmp, buffer);
-		safe_unpackstr_xmalloc(&conf->node_topo_pattern, &uint32_tmp, buffer);
+		safe_unpackstr(&conf->node_topo_addr, buffer);
+		safe_unpackstr(&conf->node_topo_pattern, buffer);
 		safe_unpack16(&conf->port, buffer);
 	}
 
@@ -117,6 +121,7 @@ unpack_error:
 	error("unpack_error in unpack_slurmd_conf_lite_no_alloc: %m");
 	xfree(conf->hostname);
 	xfree(conf->cpu_spec_list);
+	xfree(conf->conffile);
 	xfree(conf->spooldir);
 	xfree(conf->node_name);
 	xfree(conf->logfile);
@@ -134,14 +139,14 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 {
 	/* last_update */
 	/* accounting_storage_tres */
-	/* accounting_storage_enforce */
+	pack16(slurm_conf.accounting_storage_enforce, buffer);
 	/* accounting_storage_backup_host */
 	/* accounting_storage_ext_host */
 	/* accounting_storage_host */
-	/* accounting_storage_params */
+	packstr(slurm_conf.accounting_storage_params, buffer);
 	/* accounting_storage_pass */
 	/* accounting_storage_port */
-	/* accounting_storage_type */
+	packstr(slurm_conf.accounting_storage_type, buffer);
 	/* accounting_storage_user */
 	/* acct_gather_conf */
 	packstr(slurm_conf.acct_gather_energy_type, buffer);
@@ -175,12 +180,9 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 	/* dependency_params */
 	/* eio_timeout */
 	/* enforce_part_limits */
-	/* epilog */
+	packstr_array(slurm_conf.epilog, slurm_conf.epilog_cnt, buffer);
 	/* epilog_msg_time */
 	/* epilog_slurmctld */
-	/* ext_sensors_type */
-	/* ext_sensors_freq */
-	/* ext_sensors_conf */
 	/* fed_params */
 	/* first_job_id */
 	/* fs_dampening_factor */
@@ -189,6 +191,7 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 	/* group_time */
 	/* group_force */
 	packstr(slurm_conf.gpu_freq_def, buffer);
+	packstr(slurm_conf.hash_plugin, buffer);
 	/* hash_val */
 	/* health_check_interval */
 	/* health_check_node_state */
@@ -228,8 +231,8 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 	/* max_job_id */
 	/* max_mem_per_cpu */
 	/* max_node_cnt */
-	/* max_step_cnt */
-	/* max_tasks_per_node */
+	pack32(slurm_conf.max_step_cnt, buffer);
+	pack16(slurm_conf.max_tasks_per_node, buffer);
 	/* mcs_plugin */
 	/* mcs_plugin_params */
 	/* min_job_age */
@@ -244,8 +247,6 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 	/* over_time_limit */
 	packstr(slurm_conf.plugindir, buffer);
 	packstr(slurm_conf.plugstack, buffer);
-	/* power_parameters */
-	/* power_plugin */
 	/* preempt_exempt_time */
 	/* preempt_mode */
 	packstr(slurm_conf.preempt_params, buffer);
@@ -269,11 +270,11 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 	/* priority_weight_tres */
 	/* private_data */
 	packstr(slurm_conf.proctrack_type, buffer);
-	/* prolog */
+	packstr_array(slurm_conf.prolog, slurm_conf.prolog_cnt, buffer);
 	/* prolog_epilog_timeout */
+	pack16(slurm_conf.prolog_flags, buffer);
 	/* prolog_slurmctld */
 	pack16(slurm_conf.propagate_prio_process, buffer);
-	/* prolog_flags */
 	packstr(slurm_conf.propagate_rlimits, buffer);
 	packstr(slurm_conf.propagate_rlimits_except, buffer);
 	/* reboot_program */
@@ -326,7 +327,13 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 	/* slurmd_syslog_debug */
 	/* slurmd_timeout */
 	/* srun_epilog */
-	/* srun_port_range */
+	if (slurm_conf.srun_port_range) {
+		pack16(slurm_conf.srun_port_range[0], buffer);
+		pack16(slurm_conf.srun_port_range[1], buffer);
+	} else {
+		pack16(0, buffer);
+		pack16(0, buffer);
+	}
 	/* srun_prolog */
 	/* state_save_location */
 	/* suspend_exc_nodes */
@@ -342,6 +349,7 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 	pack32(slurm_conf.task_plugin_param, buffer);
 	packstr(slurm_conf.task_prolog, buffer);
 	pack16(slurm_conf.tcp_timeout, buffer);
+	packstr(slurm_conf.tls_type, buffer);
 	packstr(slurm_conf.tmp_fs, buffer);
 	packstr(slurm_conf.topology_param, buffer);
 	packstr(slurm_conf.topology_plugin, buffer);
@@ -356,17 +364,19 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 
 extern int unpack_slurm_conf_lite_no_alloc(buf_t *buffer)
 {
+	uint16_t srun_port_min = 0, srun_port_max = 0;
+
 	init_slurm_conf(&slurm_conf);
 	/* last_update */
 	/* accounting_storage_tres */
-	/* accounting_storage_enforce */
+	safe_unpack16(&slurm_conf.accounting_storage_enforce, buffer);
 	/* accounting_storage_backup_host */
 	/* accounting_storage_ext_host */
 	/* accounting_storage_host */
-	/* accounting_storage_params */
+	safe_unpackstr(&slurm_conf.accounting_storage_params, buffer);
 	/* accounting_storage_pass */
 	/* accounting_storage_port */
-	/* accounting_storage_type */
+	safe_unpackstr(&slurm_conf.accounting_storage_type, buffer);
 	/* accounting_storage_user */
 	/* acct_gather_conf */
 	safe_unpackstr(&slurm_conf.acct_gather_energy_type, buffer);
@@ -402,12 +412,10 @@ extern int unpack_slurm_conf_lite_no_alloc(buf_t *buffer)
 	/* dependency_params */
 	/* eio_timeout */
 	/* enforce_part_limits */
-	/* epilog */
+	safe_unpackstr_array(&slurm_conf.epilog, &slurm_conf.epilog_cnt,
+			     buffer);
 	/* epilog_msg_time */
 	/* epilog_slurmctld */
-	/* ext_sensors_type */
-	/* ext_sensors_freq */
-	/* ext_sensors_conf */
 	/* fed_params */
 	/* first_job_id */
 	/* fs_dampening_factor */
@@ -416,6 +424,7 @@ extern int unpack_slurm_conf_lite_no_alloc(buf_t *buffer)
 	/* group_time */
 	/* group_force */
 	safe_unpackstr(&slurm_conf.gpu_freq_def, buffer);
+	safe_unpackstr(&slurm_conf.hash_plugin, buffer);
 	/* hash_val */
 	/* health_check_interval */
 	/* health_check_node_state */
@@ -455,8 +464,8 @@ extern int unpack_slurm_conf_lite_no_alloc(buf_t *buffer)
 	/* max_job_id */
 	/* max_mem_per_cpu */
 	/* max_node_cnt */
-	/* max_step_cnt */
-	/* max_tasks_per_node */
+	safe_unpack32(&slurm_conf.max_step_cnt, buffer);
+	safe_unpack16(&slurm_conf.max_tasks_per_node, buffer);
 	/* mcs_plugin */
 	/* mcs_plugin_params */
 	/* min_job_age */
@@ -471,8 +480,6 @@ extern int unpack_slurm_conf_lite_no_alloc(buf_t *buffer)
 	/* over_time_limit */
 	safe_unpackstr(&slurm_conf.plugindir, buffer);
 	safe_unpackstr(&slurm_conf.plugstack, buffer);
-	/* power_parameters */
-	/* power_plugin */
 	/* preempt_exempt_time */
 	/* preempt_mode */
 	safe_unpackstr(&slurm_conf.preempt_params, buffer);
@@ -496,11 +503,12 @@ extern int unpack_slurm_conf_lite_no_alloc(buf_t *buffer)
 	/* priority_weight_tres */
 	/* private_data */
 	safe_unpackstr(&slurm_conf.proctrack_type, buffer);
-	/* prolog */
+	safe_unpackstr_array(&slurm_conf.prolog, &slurm_conf.prolog_cnt,
+			     buffer);
 	/* prolog_epilog_timeout */
+	safe_unpack16(&slurm_conf.prolog_flags, buffer);
 	/* prolog_slurmctld */
 	safe_unpack16(&slurm_conf.propagate_prio_process, buffer);
-	/* prolog_flags */
 	safe_unpackstr(&slurm_conf.propagate_rlimits, buffer);
 	safe_unpackstr(&slurm_conf.propagate_rlimits_except, buffer);
 	/* reboot_program */
@@ -553,7 +561,13 @@ extern int unpack_slurm_conf_lite_no_alloc(buf_t *buffer)
 	/* slurmd_syslog_debug */
 	/* slurmd_timeout */
 	/* srun_epilog */
-	/* srun_port_range */
+	safe_unpack16(&srun_port_min, buffer);
+	safe_unpack16(&srun_port_max, buffer);
+	if (srun_port_max) {
+		slurm_conf.srun_port_range = xcalloc(2, sizeof(uint16_t));
+		slurm_conf.srun_port_range[0] = srun_port_min;
+		slurm_conf.srun_port_range[1] = srun_port_max;
+	}
 	/* srun_prolog */
 	/* state_save_location */
 	/* suspend_exc_nodes */
@@ -569,6 +583,7 @@ extern int unpack_slurm_conf_lite_no_alloc(buf_t *buffer)
 	safe_unpack32(&slurm_conf.task_plugin_param, buffer);
 	safe_unpackstr(&slurm_conf.task_prolog, buffer);
 	safe_unpack16(&slurm_conf.tcp_timeout, buffer);
+	safe_unpackstr(&slurm_conf.tls_type, buffer);
 	safe_unpackstr(&slurm_conf.tmp_fs, buffer);
 	safe_unpackstr(&slurm_conf.topology_param, buffer);
 	safe_unpackstr(&slurm_conf.topology_plugin, buffer);

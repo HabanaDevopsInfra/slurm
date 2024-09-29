@@ -53,7 +53,6 @@
 #include "src/interfaces/select.h"
 #include "src/interfaces/acct_gather_energy.h"
 #include "src/interfaces/auth.h"
-#include "src/interfaces/ext_sensors.h"
 #include "src/common/slurm_protocol_api.h"
 #include "src/common/slurm_resource_info.h"
 #include "src/common/uid.h"
@@ -66,7 +65,7 @@ typedef struct load_node_req_struct {
 	slurmdb_cluster_rec_t *cluster;
 	int cluster_inx;
 	slurm_msg_t *req_msg;
-	List resp_msg_list;
+	list_t *resp_msg_list;
 	uint16_t show_flags;
 } load_node_req_struct_t;
 
@@ -310,6 +309,13 @@ char *slurm_sprint_node_table(node_info_t *node_ptr, int one_liner)
 		xstrcat(out, line_end);
 	}
 
+	/* cores per gpu (optional) */
+	if (node_ptr->res_cores_per_gpu) {
+		xstrfmtcat(out, "RestrictedCoresPerGPU=%u(%s) ",
+			   node_ptr->res_cores_per_gpu, node_ptr->gpu_spec);
+		xstrcat(out, line_end);
+	}
+
 	/****** Line ******/
 	complete_state = node_state_string_complete(node_ptr->node_state);
 	xstrfmtcat(out, "State=%s ThreadsPerCore=%u TmpDisk=%u Weight=%u ",
@@ -387,14 +393,6 @@ char *slurm_sprint_node_table(node_info_t *node_ptr, int one_liner)
 	xfree(node_alloc_tres);
 	xstrcat(out, line_end);
 
-	/****** Power Management Line ******/
-	if (!node_ptr->power || (node_ptr->power->cap_watts == NO_VAL))
-		xstrcat(out, "CapWatts=n/a");
-	else
-		xstrfmtcat(out, "CapWatts=%u", node_ptr->power->cap_watts);
-
-	xstrcat(out, line_end);
-
 	/****** Power Consumption Line ******/
 	if (!node_ptr->energy || node_ptr->energy->current_watts == NO_VAL)
 		xstrcat(out, "CurrentWatts=n/a AveWatts=n/a");
@@ -404,28 +402,6 @@ char *slurm_sprint_node_table(node_info_t *node_ptr, int one_liner)
 				node_ptr->energy->ave_watts);
 
 	xstrcat(out, line_end);
-
-	/****** external sensors Line ******/
-	if (!node_ptr->ext_sensors
-	    || node_ptr->ext_sensors->consumed_energy == NO_VAL64)
-		xstrcat(out, "ExtSensorsJoules=n/a ");
-	else
-		xstrfmtcat(out, "ExtSensorsJoules=%"PRIu64" ",
-			   node_ptr->ext_sensors->consumed_energy);
-
-	if (!node_ptr->ext_sensors
-	    || node_ptr->ext_sensors->current_watts == NO_VAL)
-		xstrcat(out, "ExtSensorsWatts=n/a ");
-	else
-		xstrfmtcat(out, "ExtSensorsWatts=%u ",
-			   node_ptr->ext_sensors->current_watts);
-
-	if (!node_ptr->ext_sensors
-	    || node_ptr->ext_sensors->temperature == NO_VAL)
-		xstrcat(out, "ExtSensorsTemp=n/a");
-	else
-		xstrfmtcat(out, "ExtSensorsTemp=%u",
-			   node_ptr->ext_sensors->temperature);
 
 	/****** Line ******/
 	if (node_ptr->reason && node_ptr->reason[0])
@@ -631,7 +607,7 @@ static int _load_fed_nodes(slurm_msg_t *req_msg,
 	int pthread_count = 0;
 	pthread_t *load_thread = 0;
 	load_node_req_struct_t *load_args;
-	List resp_msg_list;
+	list_t *resp_msg_list;
 
 	*node_info_msg_pptr = NULL;
 

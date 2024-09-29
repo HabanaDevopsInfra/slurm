@@ -355,7 +355,8 @@ void _handle_response_msg(slurm_msg_type_t msg_type, void *msg,
 	}
 }
 
-void _handle_response_msg_list(List other_nodes_resp, bitstr_t *tasks_started)
+void _handle_response_msg_list(list_t *other_nodes_resp,
+			       bitstr_t *tasks_started)
 {
 	list_itr_t *itr;
 	ret_data_info_t *ret_data_info = NULL;
@@ -391,7 +392,7 @@ static int _attach_to_tasks(slurm_step_id_t stepid,
 			    bitstr_t *tasks_started)
 {
 	slurm_msg_t msg;
-	List nodes_resp = NULL;
+	list_t *nodes_resp = NULL;
 	int timeout = slurm_conf.msg_timeout * 1000; /* sec to msec */
 	reattach_tasks_request_msg_t reattach_msg;
 	char *hosts;
@@ -402,8 +403,8 @@ static int _attach_to_tasks(slurm_step_id_t stepid,
 	reattach_msg.num_resp_port = num_resp_ports;
 	reattach_msg.resp_port = resp_ports; /* array of response ports */
 	reattach_msg.num_io_port = num_io_ports;
+	reattach_msg.io_key = slurm_cred_get_signature(fake_cred);
 	reattach_msg.io_port = io_ports;
-	reattach_msg.cred = fake_cred;
 
 	slurm_msg_set_r_uid(&msg, SLURM_AUTH_UID_ANY);
 	msg.msg_type = REQUEST_REATTACH_TASKS;
@@ -423,6 +424,7 @@ static int _attach_to_tasks(slurm_step_id_t stepid,
 
 	_handle_response_msg_list(nodes_resp, tasks_started);
 	FREE_NULL_LIST(nodes_resp);
+	xfree(reattach_msg.io_key);
 
 	return SLURM_SUCCESS;
 }
@@ -451,8 +453,9 @@ static message_thread_state_t *_msg_thr_create(int num_nodes, int num_tasks)
 {
 	int sock = -1;
 	uint16_t port;
+	uint16_t *ports;
 	eio_obj_t *obj;
-	int i;
+	int i, rc;
 	message_thread_state_t *mts;
 
 	debug("Entering _msg_thr_create()");
@@ -465,7 +468,13 @@ static message_thread_state_t *_msg_thr_create(int num_nodes, int num_tasks)
 	mts->num_resp_port = _estimate_nports(num_nodes, 48);
 	mts->resp_port = xmalloc(sizeof(uint16_t) * mts->num_resp_port);
 	for (i = 0; i < mts->num_resp_port; i++) {
-		if (net_stream_listen(&sock, &port) < 0) {
+		ports = slurm_get_srun_port_range();
+		if (ports)
+			rc = net_stream_listen_ports(&sock, &port, ports,
+						     false);
+		else
+			rc = net_stream_listen(&sock, &port);
+		if (rc < 0) {
 			error("unable to initialize step launch"
 			      " listening socket: %m");
 			goto fail;

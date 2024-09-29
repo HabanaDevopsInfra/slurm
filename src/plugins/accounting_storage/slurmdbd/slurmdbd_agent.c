@@ -55,7 +55,7 @@ typedef struct {
 	list_t *my_list;
 } foreach_get_my_list_t;
 
-slurm_persist_conn_t *slurmdbd_conn = NULL;
+persist_conn_t *slurmdbd_conn = NULL;
 
 
 #define DBD_MAGIC		0xDEAD3219
@@ -65,7 +65,7 @@ slurm_persist_conn_t *slurmdbd_conn = NULL;
 static pthread_mutex_t agent_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  agent_cond = PTHREAD_COND_INITIALIZER;
 static pthread_cond_t shutdown_cond = PTHREAD_COND_INITIALIZER;
-static List      agent_list     = (List) NULL;
+static list_t *agent_list = NULL;
 static pthread_t agent_tid      = 0;
 
 static bool      halt_agent          = 0;
@@ -322,7 +322,6 @@ static void _load_dbd_state(void)
 			      dbd_fname);
 	} else {
 		char *ver_str = NULL;
-		uint32_t ver_str_len;
 
 		buffer = _load_dbd_rec(fd);
 		if (buffer == NULL)
@@ -330,7 +329,7 @@ static void _load_dbd_state(void)
 		/* This is set to the end of the buffer for send so we
 		   need to set it back to 0 */
 		set_buf_offset(buffer, 0);
-		safe_unpackstr_xmalloc(&ver_str, &ver_str_len, buffer);
+		safe_unpackstr(&ver_str, buffer);
 		debug3("Version string in dbd_state header is %s", ver_str);
 	unpack_error:
 		FREE_NULL_BUFFER(buffer);
@@ -658,10 +657,14 @@ static void *_agent(void *x)
 			slurm_mutex_unlock(&slurmdbd_lock);
 			_max_dbd_msg_action(&cnt);
 			END_TIMER2("slurmdbd agent: sleep");
-			log_flag(DBD_AGENT, "slurmdbd agent sleeping with agent_count=%d",
-				 list_count(agent_list));
 			abs_time.tv_sec  = time(NULL) + 10;
 			abs_time.tv_nsec = 0;
+			if (*slurmdbd_conn->shutdown != 0) {
+				slurm_mutex_unlock(&agent_lock);
+				break;
+			}
+			log_flag(AGENT, "slurmdbd agent sleeping with agent_count=%d",
+				 list_count(agent_list));
 			slurm_cond_timedwait(&agent_cond, &agent_lock,
 					     &abs_time);
 			slurm_mutex_unlock(&agent_lock);
@@ -804,38 +807,14 @@ static void _create_agent(void)
 
 static void _shutdown_agent(void)
 {
-	struct timespec ts = {0, 0};
-	int rc;
-
 	if (!agent_tid)
 		return;
 
 	slurmdbd_shutdown = time(NULL);
 	slurm_mutex_lock(&agent_lock);
-	if (!agent_running) {
-		slurm_mutex_unlock(&agent_lock);
-		goto fini;
-	}
-
-	slurm_cond_broadcast(&agent_cond);
-	ts.tv_sec = time(NULL) + 5;
-	rc = pthread_cond_timedwait(&shutdown_cond, &agent_lock, &ts);
+	if (agent_running)
+		slurm_cond_broadcast(&agent_cond);
 	slurm_mutex_unlock(&agent_lock);
-
-	if (rc == ETIMEDOUT) {
-		/*
-		 * On rare occasions agent thread may not end quickly,
-		 * perhaps due to communication problems with slurmdbd.
-		 * Cancel it and join before returning or we could remove
-		 * and leave the agent without valid data.
-		 */
-		error("agent failed to shutdown gracefully");
-		error("unable to save pending requests");
-		/* FIXME: this is not safe! */
-		pthread_cancel(agent_tid);
-	}
-
-fini:
 	slurm_thread_join(agent_tid);
 }
 
@@ -843,7 +822,7 @@ fini:
  * Socket open/close/read/write functions
  ****************************************************************************/
 
-extern void slurmdbd_agent_set_conn(slurm_persist_conn_t *pc)
+extern void slurmdbd_agent_set_conn(persist_conn_t *pc)
 {
 	if (!running_in_slurmctld())
 		return;

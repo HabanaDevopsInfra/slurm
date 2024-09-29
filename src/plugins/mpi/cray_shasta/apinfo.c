@@ -41,6 +41,7 @@
 #include <sys/mman.h>
 
 #include "src/common/xstring.h"
+#include "src/common/xmalloc.h"
 
 #include "apinfo.h"
 
@@ -210,6 +211,13 @@ static pals_pe_t *_setup_pals_pes(int ntasks, int nnodes, uint16_t *task_cnts,
 				pes[taskid].cmdidx = 0;
 			} else {
 				pes[taskid].cmdidx = tid_offsets[taskid];
+
+				// Make sure we don't set a negative cmdidx;
+				// this can happen for non-heterogeneous job
+				// steps in a heterogeneous job.
+				if (pes[taskid].cmdidx < 0) {
+					pes[taskid].cmdidx = 0;
+				}
 			}
 		}
 	}

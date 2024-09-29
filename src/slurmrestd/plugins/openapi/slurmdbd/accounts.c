@@ -68,7 +68,7 @@ typedef struct {
 /* based on sacctmgr_list_account() */
 static void _dump_accounts(ctxt_t *ctxt, slurmdb_account_cond_t *acct_cond)
 {
-	List acct_list = NULL;
+	list_t *acct_list = NULL;
 
 	(void) db_query_list(ctxt, &acct_list, slurmdb_accounts_get, acct_cond);
 	DUMP_OPENAPI_RESP_SINGLE(OPENAPI_ACCOUNTS_RESP, acct_list, ctxt);
@@ -177,11 +177,11 @@ static int _foreach_update_acct(void *x, void *arg)
 {
 	slurmdb_account_rec_t *acct = x;
 	ctxt_t *ctxt = arg;
-	List acct_list = NULL;
+	list_t *acct_list = NULL;
 	slurmdb_assoc_cond_t assoc_cond = {};
 	slurmdb_account_cond_t acct_cond = {
 		.assoc_cond = &assoc_cond,
-		.with_coords = true,
+		.flags = SLURMDB_ACCT_FLAG_WCOORD,
 	};
 	assoc_cond.acct_list = list_create(NULL);
 	list_append(assoc_cond.acct_list, acct->name);
@@ -357,9 +357,12 @@ extern int op_handler_account(ctxt_t *ctxt)
 			       ctxt->query, ctxt->parent_path))
 			goto cleanup;
 
-		acct_cond.with_assocs = query.with_assocs;
-		acct_cond.with_coords = query.with_coords;
-		acct_cond.with_deleted = query.with_deleted;
+		if (query.with_assocs)
+			acct_cond.flags |= SLURMDB_ACCT_FLAG_WASSOC;
+		if (query.with_coords)
+			acct_cond.flags |= SLURMDB_ACCT_FLAG_WCOORD;
+		if (query.with_deleted)
+			acct_cond.flags |= SLURMDB_ACCT_FLAG_DELETED;
 
 		assoc_cond.acct_list = list_create(NULL);
 		list_append(assoc_cond.acct_list, params.name);

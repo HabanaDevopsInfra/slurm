@@ -69,9 +69,9 @@
 #define OPT_LONG_HELPSTATE 0x111
 
 /* FUNCTIONS */
-static List  _build_state_list( char* str );
-static List  _build_all_states_list( void );
-static List  _build_part_list( char *parts );
+static list_t *_build_state_list(char *str);
+static list_t *_build_all_states_list(void);
+static list_t *_build_part_list(char *parts);
 static char *_get_prefix(char *token);
 static void  _help( void );
 static void _help_format(void);
@@ -465,10 +465,9 @@ _next_tok (char *sep, char **str)
  * IN str - comma separated list of job states
  * RET List of enum job_states values
  */
-static List
-_build_state_list (char *state_str)
+static list_t *_build_state_list(char *state_str)
 {
-	List state_ids;
+	list_t *state_ids;
 	char *orig, *str, *state;
 
 	if (state_str == NULL)
@@ -501,10 +500,9 @@ _build_state_list (char *state_str)
  * _build_all_states_list - build a list containing all possible node states
  * RET List of enum job_states values
  */
-static List
-_build_all_states_list( void )
+static list_t *_build_all_states_list(void)
 {
-	List my_list;
+	list_t *my_list;
 	int i;
 	uint16_t *state_id;
 
@@ -531,10 +529,9 @@ _build_all_states_list( void )
  * IN parts - comma separated list of partitions
  * RET List of partition names
  */
-static List
-_build_part_list(char *parts)
+static list_t *_build_part_list(char *parts)
 {
-	List part_list;
+	list_t *part_list;
 	char *orig, *str, *part;
 
 	orig = str = xstrdup(parts);
@@ -565,7 +562,7 @@ _node_state_list (void)
 	}
 
 	xstrcat(all_states,
-		",DRAIN,DRAINED,DRAINING,NO_RESPOND,RESERVED,PERFCTRS");
+		",DRAIN,DRAINED,DRAINING,NO_RESPOND,RESERVED,PLANNED,BLOCKED");
 	xstrcat(all_states, ",");
 	xstrcat(all_states, node_state_string(NODE_STATE_CLOUD));
 	xstrcat(all_states, ",");
@@ -586,8 +583,6 @@ _node_state_list (void)
 	xstrcat(all_states, node_state_string(NODE_STATE_REBOOT_REQUESTED));
 	xstrcat(all_states, ",");
 	xstrcat(all_states, node_state_string(NODE_STATE_REBOOT_ISSUED));
-	xstrcat(all_states, ",");
-	xstrcat(all_states, node_state_string(NODE_STATE_PLANNED));
 
 	for (i = 0; i < strlen (all_states); i++)
 		all_states[i] = tolower (all_states[i]);
@@ -638,6 +633,9 @@ _node_state_id (char *str)
 			return (i);
 	}
 
+	if ((xstrncasecmp("BLOCKED", str, len) == 0) ||
+	    (xstrncasecmp("BLOCK", str, len) == 0))
+		return NODE_STATE_BLOCKED;
 	if ((xstrncasecmp("PLANNED", str, len) == 0) ||
 	    (xstrncasecmp("PLND", str, len) == 0))
 		return NODE_STATE_PLANNED;
@@ -648,9 +646,6 @@ _node_state_id (char *str)
 	if ((xstrncasecmp("RESV", str, len) == 0) ||
 	    (xstrncasecmp("RESERVED", str, len) == 0))
 		return NODE_STATE_RES;
-	if ((xstrncasecmp("PERFCTRS", str, len) == 0) ||
-	    (xstrncasecmp("NPC", str, len) == 0))
-		return NODE_STATE_NET;
 	if ((xstrncasecmp("DRAINING", str, len) == 0) ||
 	    (xstrncasecmp("DRNG", str, len) == 0))
 		return NODE_STATE_DRAIN | NODE_STATE_ALLOCATED;

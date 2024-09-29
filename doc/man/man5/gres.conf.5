@@ -1,4 +1,4 @@
-.TH "gres.conf" "5" "Slurm Configuration File" "August 2023" "Slurm Configuration File"
+.TH "gres.conf" "5" "Slurm Configuration File" "May 2024" "Slurm Configuration File"
 
 .SH "NAME"
 gres.conf \- Slurm configuration file for Generic RESource (GRES) management.
@@ -216,6 +216,9 @@ Do not attempt to load a plugin of the GRES type as this GRES will only be
 used to track counts of
 GRES used. This avoids attempting to load non\-existent plugin which can
 affect filesystems with high latency metadata operations for non\-existent files.
+
+\fBNOTE\fR: If a gres has this flag configured it is global, so all other nodes
+with that gres will have this flag implied.
 .IP
 
 .TP
@@ -223,6 +226,9 @@ affect filesystems with high latency metadata operations for non\-existent files
 If the flag is set, GRES is not allocated to the job as part of whole node
 allocation (--exclusive or OverSubscribe=EXCLUSIVE set on partition) unless
 it was explicitly requested by the job.
+
+\fBNOTE\fR: If a gres has this flag configured it is global, so all other nodes
+with that gres will have this flag implied.
 .IP
 
 .TP
@@ -232,7 +238,7 @@ gres (gpu) only allow one of the sharing gres to be used by the shared gres.
 This is the default for MPS.
 
 \fBNOTE\fR: If a gres has this flag configured it is global, so all other nodes
-with that gres will have this flag implied.  This flag is not compatible with
+with that gres will have this flag implied. This flag is not compatible with
 all_sharing for a specific gres.
 .IP
 
@@ -242,7 +248,7 @@ To be used on a shared gres. This is the opposite of one_sharing and can be
 used to allow all sharing gres (gpu) on a node to be used for shared gres (mps).
 
 \fBNOTE\fR: If a gres has this flag configured it is global, so all other nodes
-with that gres will have this flag implied.  This flag is not compatible with
+with that gres will have this flag implied. This flag is not compatible with
 one_sharing for a specific gres.
 .IP
 
@@ -477,7 +483,7 @@ any later version.
 .LP
 Slurm is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
 details.
 
 .SH "SEE ALSO"

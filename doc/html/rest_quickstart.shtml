@@ -48,15 +48,24 @@ See also:
 <h2 id="prereq">Prerequisites
 <a class="slurm_link" href="#prereq"></a></h2>
 <p>The following development libraries are required at compile time
-in order for slurmrestd to be compiled:</p>
+in order for slurmrestd to be compiled (minimum versions are on the related
+software page linked below):</p>
 <ul>
-	<li><a href="download.html#httpparser">HTTP Parser</a> (&gt;= v2.6.0)
+	<li><a href="related_software.html#httpparser">HTTP Parser</a>
 	</li>
-	<li><a href="download.html#yaml">LibYAML</a> (optional, &gt;= v0.2.5)
+	<li><a href="related_software.html#yaml">LibYAML</a> (optional)
 	</li>
-	<li><a href="download.html#json">JSON-C</a> (&gt;= v1.12.0)</li>
-	<li><a href="download.html#jwt">JWT Authentication</a> (optional)</li>
+	<li><a href="related_software.html#json">JSON-C</a></li>
+	<li><a href="related_software.html#jwt">JWT Authentication</a>
+    (optional, used in this guide)</li>
 </ul>
+
+<p>Additionally, it is highly recommended that you have
+<a href="slurmdbd.html">SlurmDBD</a> set up for
+<a href="accounting.html">accounting</a>. Without slurmdbd, slurmrestd may fail
+when loading some plugins (use
+<a href="slurmrestd.html#OPT_-s-<OpenAPI-plugins-to-load>">-s</a> to specify
+which to load) or when attempting JWT authentication.</p>
 
 <h2 id="quick_start">Quick Start
 <a class="slurm_link" href="#quick_start"></a></h2>
@@ -89,40 +98,50 @@ Adjust SLURMRESTD_DEBUG to the desired level of output (as described on the
 <h3 id="systemd">Running with systemd
 <a class="slurm_link" href="#systemd"></a></h3>
 
-Slurm ships with a <b>slurmrestd</b> service for systemd,
+<p>Slurm ships with a <b>slurmrestd</b> service unit for systemd,
 however, it might require some additional setup to run properly.
 This section assumes you have either installed slurmrestd using DEB/RPM packages
 or built it manually such that the files are in the same places.
-
+<br><b>Note</b> the versions associated with certain steps in the instructions
+below; these steps should be ignored on other versions.</p>
 <ol>
-<li>Select a local user account to use to run the slurmrestd
-(<b>not</b> root or SlurmUser to prevent privilege escalation)</li>
+<li>Create a local service account to run slurmrestd. To prevent privilege
+  escalation, the user account should be:
+  <ul>
+    <li>Not root or SlurmUser</li>
+    <li>Not used by real users or for any other functions</li>
+    <li>Not granted any special permissions</li>
+  </ul>
+  <pre>sudo useradd -M -r -s /usr/sbin/nologin -U slurmrestd</pre></li>
 <li>Configure slurmrestd service to use this user and associated group.
 This can be accomplished in either of two ways:
 <ul>
 <li>Edit <code>/etc/default/slurmrestd</code>
 or <code>/etc/sysconfig/slurmrestd</code>
-<br>Add <code>-u USERNAME</code> and <code>-g GROUPNAME</code>
+<br>Add <code>-u slurmrestd</code> and <code>-g slurmrestd</code>
 to <code>SLURMRESTD_OPTIONS</code></li>
 <li>Run <code>systemctl edit slurmrestd</code> to edit overrides for the
 service.
 <br>Add content like this to the prescribed location in the overrides file:
 <pre>
 [Service]
-User=USERNAME
-Group=GROUPNAME
+User=slurmrestd
+Group=slurmrestd
 </pre></li>
 </ul>
 </li>
-<li>Configure the socket for slurmrestd. This may be accomplished by
-creating/changing permissions on the parent directory and/or changing the path
-to the socket in the service file.
+<li>(Slurm <b>24.05</b> and newer) Optional: Customize the socket for
+slurmrestd. By default it will listen only on TCP port 6820. You may change
+this behavior by changing <code>SLURMRESTD_LISTEN</code>
+(see <a href="#customization">Customizing slurmrestd.service</a>).</li>
+<li>(Slurm <b>23.11</b> and earlier) Configure the socket for slurmrestd. This
+may be accomplished by creating/changing permissions on the parent directory
+and/or changing the path to the socket in the service file.
 <ul>
 <li><b>Permissions</b>: The user running the service must have write+execute
-permissions on directory that will contain the socket</li>
-<li><b>Changing socket</b>: Currently the way to change or disable the socket
-is to modify the 'ExecStart' line of the service (this is known to be an
-inelegant procedure and will be changed in the next major release)
+permissions on the directory that will contain the UNIX socket</li>
+<li><b>Changing socket</b>: On Slurm 23.11, the way to change or disable the
+socket is to modify the 'ExecStart' line of the service
 <ol>
 <li>Run <code>systemctl edit slurmrestd</code></li>
 <li>Add the following contents to the <code>[Service]</code> section:
@@ -133,10 +152,9 @@ Environment=SLURMRESTD_LISTEN=:6820
 </pre></li>
 <li>Adjust the assignment of SLURMRESTD_LISTEN to contain the socket(s) you want
 the daemon to listen on.</li>
+<li>After a future upgrade to Slurm 24.05+, the 'ExecStart' overrides will be
+unnecessary but will not conflict with the newer version.</li>
 </ol>
-<p><b>NOTE</b>: Currently the way to change or disable the socket is to modify
-the 'ExecStart' line of the service. This is known to be an inelegant procedure
-and will be changed in the next major release (after 23.11).</p>
 </li>
 </ul>
 </li>
@@ -145,7 +163,7 @@ and will be changed in the next major release (after 23.11).</p>
 <h3 id="customization">Customizing slurmrestd.service
 <a class="slurm_link" href="#customization"></a></h3>
 
-<p>The next major release (after 23.11) changes the operation of
+<p>The Slurm 24.05 release changes the operation of
 the default service file and may break existing overrides. If you have
 overridden <code>ExecStart=</code> to contain any TCP/UNIX sockets directly, it
 will cause the service to fail if it duplicates any sockets contained in
@@ -162,12 +180,14 @@ You may set any environment variables recognized by
 <a href="slurmrestd.html#SECTION_ENVIRONMENT-VARIABLES">slurmrestd</a>,
 but the following are particularly relevant:
 <ul>
-<li>SLURMRESTD_OPTIONS: CLI options to add to the slurmrestd command (see
-<a href="slurmrestd.html">slurmrestd</a>)</li>
-<li>SLURMRESTD_LISTEN: Comma-delimited list of host:port pairs or unix sockets
-to listen on
-<br><b>NOTE</b>: if this duplicates what is already set in the
-'ExecStart' line in the service file, it will fail</li>
+<li><b>SLURMRESTD_OPTIONS</b>: CLI options to add to the slurmrestd command
+(see <a href="slurmrestd.html">slurmrestd</a>)</li>
+<li><b>SLURMRESTD_LISTEN</b>: Comma-delimited list of host:port pairs or
+unix:$SOCKET_PATH sockets to listen on
+<br><b>NOTE</b>: If this duplicates what is already set in the
+'ExecStart' line in the service file, it will fail. Starting in Slurm 24.05,
+the default service file contains no sockets in 'ExecStart' and fully relies on
+this variable to contain the desired sockets.</li>
 </ul>
 </li>
 <li><b>Service editing</b>: Systemd has a built in way to edit services
@@ -176,8 +196,10 @@ by running <code>systemctl edit slurmrestd</code>.
 <li>This will create an override file in '/etc/systemd/' containing directives
 that will add to or replace directives in the default unit in '/lib/systemd/'.
 </li>
-<li>Note that the override file must have the appropriate section declaration(s)
+<li>The override file must have the appropriate section declaration(s)
 for the directives you use (e.g., <code>[Service]</code>).</li>
+<li>Environment variables may be set with <code>Environment=NAME=value</code>
+(refer to systemd documentation for more details)</li>
 <li>Changes may be reverted by running <code>systemctl revert slurmrestd</code>
 </li>
 </ul>
@@ -317,6 +339,6 @@ place of the problematic character (e.g., <b>/</b> = <b>%2F</b>).
 authentication, causing failures. This can be fixed by clearing the variable:
 <pre>unset SLURM_JWT</pre></p>
 
-<p style="text-align:center;">Last modified 29 February 2024</p>
+<p style="text-align:center;">Last modified 17 July 2024</p>
 
 <!--#include virtual="footer.txt"-->

@@ -70,37 +70,14 @@ typedef struct {
  */
 typedef int (*openapi_ctxt_handler_t)(openapi_ctxt_t *ctxt);
 
-/*
- * Callback from openapi caller.
- * we are not passing any http information to make this generic.
- * RET SLURM_SUCCESS or error to kill the connection
- */
-typedef int (*openapi_handler_t)(
-	const char *context_id, /* context id of client */
-	http_request_method_t method, /* request method */
-	data_t *parameters, /* openapi parameters */
-	data_t *query, /* query sent by client */
-	int tag, /* tag associated with path */
-	data_t *resp, /* data to populate with response */
-	void *auth, /* authentication context */
-	data_parser_t *parser /* assigned data_parser or NULL */
-);
-
-typedef enum {
-	OAS_FLAG_NONE = 0,
-	OAS_FLAG_MANGLE_OPID = SLURM_BIT(0), /* mangle operationid */
-	OAS_FLAG_SET_OPID = SLURM_BIT(1), /* set every operationid */
-	/* Apply data_parser_g_specify() by all parsers and cleanup templates */
-	OAS_FLAG_SET_DATA_PARSER_SPEC = SLURM_BIT(2),
-	OAS_FLAG_MAX = SLURM_BIT(63) /* place holder */
-} openapi_spec_flags_t;
-
 typedef enum {
 	OP_BIND_INVALID = 0,
 	OP_BIND_NONE = SLURM_BIT(1),
-	OP_BIND_DATA_PARSER = SLURM_BIT(2),
+	OP_BIND_DATA_PARSER = SLURM_BIT(2), /* populate {data_parser} in URL */
 	OP_BIND_OPENAPI_RESP_FMT = SLURM_BIT(3), /* populate errors,warnings,meta */
 	OP_BIND_HIDDEN_OAS = SLURM_BIT(4), /* Hide from OpenAPI specification */
+	OP_BIND_NO_SLURMDBD = SLURM_BIT(5), /* Do not prepare slurmdbd connection */
+	OP_BIND_REQUIRE_SLURMDBD = SLURM_BIT(6), /* Require slurmdbd connection or don't call path */
 	OP_BIND_INVALID_MAX = INFINITE16
 } op_bind_flags_t;
 
@@ -130,16 +107,6 @@ typedef struct {
 } openapi_path_binding_t;
 
 /*
- * Register a given unique tag against a path.
- *
- * IN path - path to assign to given tag
- * RET -1 on error or >0 tag value for path.
- *
- * Can safely be called multiple times for same path.
- */
-extern int register_path_tag(const char *path);
-
-/*
  * Register a given unique tag against a path binding.
  *
  * IN in_path - string path to assign to given tag or
@@ -147,21 +114,17 @@ extern int register_path_tag(const char *path);
  * IN op_path - Operation binding for path
  * IN meta - Meta information from plugin (or NULL)
  * IN parser - Relavent data_parser (or NULL)
- * RET -1 on error or >0 tag value for path.
+ * IN/OUT tag_ptr - Sets tag on success
+ * RET SLURM_SUCCESS or
+ *	ESLURM_NOT_SUPPORTED: if data_parser doesnt support all types in method
+ *	or any other Slurm error
  *
  * Can safely be called multiple times for same path.
  */
 extern int register_path_binding(const char *in_path,
 				 const openapi_path_binding_t *op_path,
 				 const openapi_resp_meta_t *meta,
-				 data_parser_t *parser);
-
-/*
- * Unregister a given unique tag against a path.
- *
- * IN tag - path tag to remove
- */
-extern void unregister_path_tag(int tag);
+				 data_parser_t *parser, int *tag_ptr);
 
 /*
  * Find tag assigned to given path
@@ -188,10 +151,13 @@ extern void print_path_tag_methods(int tag);
  * 	pass NULL to load all found or "" to load none of them
  * IN listf - function to call if plugins="list" (may be NULL)
  * IN parsers_ptr - array of loaded data_parsers
+ * IN response_status_codes - HTTP_STATUS_NONE terminated array of HTTP status
+ *	codes to generate or NULL for default
  * RET SLURM_SUCCESS or error
  */
 extern int init_openapi(const char *plugin_list, plugrack_foreach_t listf,
-			data_parser_t **parsers_ptr);
+			data_parser_t **parsers_ptr,
+			const http_status_code_t *resp_status_codes);
 
 /*
  * Free openapi
@@ -245,39 +211,18 @@ extern void openapi_resp_warn(openapi_ctxt_t *ctxt, const char *source,
 	__attribute__((format(printf, 3, 4)));
 
 /*
- * Retrieve OpenAPI parameter
- * IN ctxt - connection context
- * IN required - error if parameter not found or valid
- * IN path - Path to parameter in query
- * IN caller - should be __func__
- * RET data_t ptr or NULL (on error or if not found)
+ * Generate OpenAPI specification
+ * IN/OUT dst - data_t to populate with specification
+ * RET SLURM_SUCCESS or error
  */
-extern data_t *openapi_get_param(openapi_ctxt_t *ctxt, bool required,
-				 const char *name, const char *caller);
+extern int generate_spec(data_t *dst);
 
 /*
- * Retrieve OpenAPI string parameter
- * IN ctxt - connection context
- * IN required - error if parameter not found or valid
- * IN path - Path to parameter in query
- * IN caller - should be __func__
- * RET string or NULL (on error or if not found)
+ * True if only generating an OAS
+ * IN set - Set to true
+ * RET true if only generating a spec file
+ * Warning: Do not call with set=true after multithreading started
  */
-extern char *openapi_get_str_param(openapi_ctxt_t *ctxt, bool required,
-				   const char *name, const char *caller);
-/*
- * Retrieve OpenAPI UNIX timestamp parameter
- * IN ctxt - connection context
- * IN required - error if parameter not found
- * IN name - Path to parameter in query
- * IN time_ptr - ptr to time_t to populate on successful parsing
- * 	A time=0 may be an error and return SLURM_SUCCESS due to
- * 	parse_time() being ambiguous.
- * IN caller - should be __func__
- * RET SLURM_SUCCESS or (ESLURM_REST_EMPTY_RESULT if not found) or error
- */
-extern int openapi_get_date_param(openapi_ctxt_t *ctxt, bool required,
-				  const char *name, time_t *time_ptr,
-				  const char *caller);
+extern bool is_spec_generation_only(bool set);
 
 #endif /* SLURMRESTD_OPENAPI_H */

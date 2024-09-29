@@ -45,22 +45,22 @@
  * (either global or per partition list)
  * Returns NO_VAL64 if configuration parameter not set
  */
-extern uint64_t cons_helpers_get_def_cpu_per_gpu(List job_defaults_list);
+extern uint64_t cons_helpers_get_def_cpu_per_gpu(list_t *job_defaults_list);
 
 /*
  * Get configured DefMemPerGPU information from a list
  * (either global or per partition list)
  * Returns NO_VAL64 if configuration parameter not set
  */
-extern uint64_t cons_helpers_get_def_mem_per_gpu(List job_defaults_list);
+extern uint64_t cons_helpers_get_def_mem_per_gpu(list_t *job_defaults_list);
 
 /*
  * Bit a core bitmap array of available cores
  * node_bitmap IN - Nodes available for use
- * core_spec IN - Specialized core specification, NO_VAL16 if none
+ * job_ptr IN - Various things set to restrict cores.
  * RET core bitmap array, one per node. Use free_core_array() to release memory
  */
 extern bitstr_t **cons_helpers_mark_avail_cores(
-	bitstr_t *node_bitmap, uint16_t core_spec);
+	bitstr_t *node_bitmap, job_record_t *job_ptr);
 
 #endif /* _CONS_HELPERS_H */

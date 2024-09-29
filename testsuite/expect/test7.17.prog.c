@@ -70,11 +70,11 @@ int main(int argc, char *argv[])
 	char *node_name, *reason_down = NULL;
 	char *orig_config, *new_config = NULL, *tres_per_node = NULL;
 	buf_t *buffer;
-	List job_gres_list = NULL, node_gres_list = NULL;
-	bitstr_t *cpu_bitmap;
+	list_t *job_gres_list = NULL, *node_gres_list = NULL;
 	char config_dir[1000], test[1000];
 	char slurm_conf[1000];
 	uint32_t num_tasks = 1;
+	uint32_t min_cpus = 1;
 	uint32_t min_nodes = 1;
 	uint32_t max_nodes = 1;
 	uint16_t ntasks_per_node = NO_VAL16;
@@ -83,6 +83,19 @@ int main(int argc, char *argv[])
 	uint16_t cpus_per_task = NO_VAL16;
 	uint16_t ntasks_per_tres = NO_VAL16;
 	int core_count, sock_count;
+	gres_job_state_validate_t gres_js_val = {
+		.cpus_per_task = &cpus_per_task,
+		.max_nodes = &max_nodes,
+		.min_cpus = &min_cpus,
+		.min_nodes = &min_nodes,
+		.ntasks_per_node = &ntasks_per_node,
+		.ntasks_per_socket = &ntasks_per_socket,
+		.ntasks_per_tres = &ntasks_per_tres,
+		.num_tasks = &num_tasks,
+		.sockets_per_node = &sockets_per_node,
+
+		.gres_list = &job_gres_list,
+	};
 
 	/* Setup slurm.conf and gres.conf test paths */
 	strlcpy(config_dir, argv[2], sizeof(config_dir));
@@ -111,6 +124,8 @@ int main(int argc, char *argv[])
 	orig_config = "gpu:8";
 	gres_init_node_config(orig_config, &node_gres_list);
 	cpu_count = strtol(argv[4], NULL, 10);
+	core_count = strtol(argv[5], NULL, 10);
+	sock_count = strtol(argv[6], NULL, 10);
 	node_name = "test_node";
 	rc = gres_g_node_config_load(cpu_count, node_name, node_gres_list,
 				     NULL, NULL);
@@ -131,8 +146,6 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	core_count = cpu_count;
-	sock_count = 1;
 	rc = gres_node_config_validate(node_name, orig_config,
 				       &new_config, &node_gres_list,
 				       cpu_count, core_count, sock_count,
@@ -142,24 +155,9 @@ int main(int argc, char *argv[])
 		      slurm_strerror(rc));
 
 	if (argc > 2)
-		tres_per_node = xstrdup(argv[1]);
+		gres_js_val.tres_per_node = xstrdup(argv[1]);
 
-	rc = gres_job_state_validate(NULL,	/* cpus_per_tres */
-				     NULL,	/* tres_freq */
-				     NULL,	/* tres_per_job */
-				     tres_per_node,
-				     NULL,	/* tres_per_socket */
-				     NULL,	/* tres_per_task */
-				     NULL,	/* mem_per_tres */
-				     &num_tasks,
-				     &min_nodes,
-				     &max_nodes,
-				     &ntasks_per_node,
-				     &ntasks_per_socket,
-				     &sockets_per_node,
-				     &cpus_per_task,
-				     &ntasks_per_tres,
-				     &job_gres_list);
+	rc = gres_job_state_validate(&gres_js_val);
 	if (rc)
 		fatal("failure: gres_job_state_validate: %s",
 		      slurm_strerror(rc));
@@ -167,11 +165,9 @@ int main(int argc, char *argv[])
 	gres_node_state_log(node_gres_list, node_name);
 	gres_job_state_log(job_gres_list, job_id);
 
-	cpu_bitmap = bit_alloc(cpu_count);
-	bit_set_all(cpu_bitmap);
 	cpu_alloc = gres_job_test(job_gres_list, node_gres_list, true,
-				  cpu_bitmap, 0, cpu_count - 1,
-				  job_id, node_name, false);
+				  0, cpu_count - 1,
+				  job_id, node_name);
 	if (cpu_alloc == NO_VAL)
 		printf("cpu_alloc=ALL\n");
 	else

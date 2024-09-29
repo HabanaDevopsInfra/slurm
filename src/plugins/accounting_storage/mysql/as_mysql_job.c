@@ -218,7 +218,7 @@ static uint32_t _get_wckeyid(mysql_conn_t *mysql_conn, char **name,
 		if (assoc_mgr_fill_in_wckey(mysql_conn, &wckey_rec,
 					    ACCOUNTING_ENFORCE_WCKEYS,
 					    NULL, false) != SLURM_SUCCESS) {
-			List wckey_list = NULL;
+			list_t *wckey_list = NULL;
 			slurmdb_wckey_rec_t *wckey_ptr = NULL;
 			/* we have already checked to make
 			   sure this was the slurm user before
@@ -335,8 +335,7 @@ extern int as_mysql_job_start(mysql_conn_t *mysql_conn, job_record_t *job_ptr)
 	int rc = SLURM_SUCCESS;
 	char *nodes = NULL, *jname = NULL;
 	char *partition = NULL;
-	char *query = NULL;
-	int reinit = 0;
+	char *query = NULL, *pos = NULL;
 	time_t begin_time, check_time, start_time, submit_time;
 	uint32_t wckeyid = 0;
 	uint32_t job_state;
@@ -527,7 +526,7 @@ no_rollup_change:
 				return SLURM_ERROR;
 		}
 
-		query = xstrdup_printf(
+		xstrfmtcatat(query, &pos,
 			"insert into \"%s_%s\" "
 			"(id_job, mod_time, id_array_job, id_array_task, "
 			"het_job_id, het_job_offset, "
@@ -540,39 +539,46 @@ no_rollup_change:
 			mysql_conn->cluster_name, job_table);
 
 		if (wckeyid)
-			xstrcat(query, ", id_wckey");
+			xstrcatat(query, &pos, ", id_wckey");
 		if (job_ptr->mcs_label)
-			xstrcat(query, ", mcs_label");
+			xstrcatat(query, &pos, ", mcs_label");
 		if (job_ptr->account)
-			xstrcat(query, ", account");
+			xstrcatat(query, &pos, ", account");
 		if (partition)
-			xstrcat(query, ", `partition`");
+			xstrcatat(query, &pos, ", `partition`");
 		if (job_ptr->wckey)
-			xstrcat(query, ", wckey");
+			xstrcatat(query, &pos, ", wckey");
 		if (job_ptr->network)
-			xstrcat(query, ", node_inx");
+			xstrcatat(query, &pos, ", node_inx");
 		if (array_recs && array_recs->task_id_str)
-			xstrcat(query, ", array_task_str, array_max_tasks, "
-				"array_task_pending");
+			xstrcatat(query, &pos, ", array_task_str, "
+				"array_max_tasks, array_task_pending");
 		else
-			xstrcat(query, ", array_task_str, array_task_pending");
+			xstrcatat(query, &pos,
+				", array_task_str, array_task_pending");
 
 		if (job_ptr->tres_alloc_str)
-			xstrcat(query, ", tres_alloc");
+			xstrcatat(query, &pos, ", tres_alloc");
 		if (job_ptr->tres_req_str)
-			xstrcat(query, ", tres_req");
+			xstrcatat(query, &pos, ", tres_req");
 		if (job_ptr->details->work_dir)
-			xstrcat(query, ", work_dir");
+			xstrcatat(query, &pos, ", work_dir");
 		if (job_ptr->details->features)
-			xstrcat(query, ", constraints");
+			xstrcatat(query, &pos, ", constraints");
+		if (job_ptr->details->std_err)
+			xstrcatat(query, &pos, ", std_err");
+		if (job_ptr->details->std_in)
+			xstrcatat(query, &pos, ", std_in");
+		if (job_ptr->details->std_out)
+			xstrcatat(query, &pos, ", std_out");
 		if (job_ptr->details->submit_line)
-			xstrcat(query, ", submit_line");
+			xstrcatat(query, &pos, ", submit_line");
 		if (job_ptr->container)
-			xstrcat(query, ", container");
+			xstrcatat(query, &pos, ", container");
 		if (job_ptr->licenses)
-			xstrcat(query, ", licenses");
+			xstrcatat(query, &pos, ", licenses");
 
-		xstrfmtcat(query,
+		xstrfmtcatat(query, &pos,
 			   ") values (%u, UNIX_TIMESTAMP(), "
 			   "%u, %u, %u, %u, %u, %u, %u, %u, "
 			   "'%s', %u, %u, %ld, %ld, %ld, "
@@ -594,46 +600,57 @@ no_rollup_change:
 			   env_hash_inx, script_hash_inx);
 
 		if (wckeyid)
-			xstrfmtcat(query, ", %u", wckeyid);
+			xstrfmtcatat(query, &pos, ", %u", wckeyid);
 		if (job_ptr->mcs_label)
-			xstrfmtcat(query, ", '%s'", job_ptr->mcs_label);
+			xstrfmtcatat(query, &pos, ", '%s'", job_ptr->mcs_label);
 		if (job_ptr->account)
-			xstrfmtcat(query, ", '%s'", job_ptr->account);
+			xstrfmtcatat(query, &pos, ", '%s'", job_ptr->account);
 		if (partition)
-			xstrfmtcat(query, ", '%s'", partition);
+			xstrfmtcatat(query, &pos, ", '%s'", partition);
 		if (job_ptr->wckey)
-			xstrfmtcat(query, ", '%s'", job_ptr->wckey);
+			xstrfmtcatat(query, &pos, ", '%s'", job_ptr->wckey);
 		if (job_ptr->network)
-			xstrfmtcat(query, ", '%s'", job_ptr->network);
+			xstrfmtcatat(query, &pos, ", '%s'", job_ptr->network);
 		if (array_recs && array_recs->task_id_str)
-			xstrfmtcat(query, ", '%s', %u, %u",
+			xstrfmtcatat(query, &pos, ", '%s', %u, %u",
 				   array_recs->task_id_str,
 				   array_recs->max_run_tasks,
 				   array_recs->task_cnt);
 		else
-			xstrcat(query, ", NULL, 0");
+			xstrcatat(query, &pos, ", NULL, 0");
 
 		if (job_ptr->tres_alloc_str)
-			xstrfmtcat(query, ", '%s'", job_ptr->tres_alloc_str);
+			xstrfmtcatat(query, &pos, ", '%s'",
+				     job_ptr->tres_alloc_str);
 		if (job_ptr->tres_req_str)
-			xstrfmtcat(query, ", '%s'", job_ptr->tres_req_str);
+			xstrfmtcatat(query, &pos, ", '%s'",
+				     job_ptr->tres_req_str);
 		if (job_ptr->details->work_dir)
-			xstrfmtcat(query, ", '%s'",
+			xstrfmtcatat(query, &pos, ", '%s'",
 				   job_ptr->details->work_dir);
 		if (job_ptr->details->features)
-			xstrfmtcat(query, ", '%s'",
+			xstrfmtcatat(query, &pos, ", '%s'",
 				   job_ptr->details->features);
+		if (job_ptr->details->std_err)
+			xstrfmtcatat(query, &pos, ", '%s'",
+				   job_ptr->details->std_err);
+		if (job_ptr->details->std_in)
+			xstrfmtcatat(query, &pos, ", '%s'",
+				   job_ptr->details->std_in);
+		if (job_ptr->details->std_out)
+			xstrfmtcatat(query, &pos, ", '%s'",
+				   job_ptr->details->std_out);
 		if (job_ptr->details->submit_line)
-			xstrfmtcat(query, ", '%s'",
+			xstrfmtcatat(query, &pos, ", '%s'",
 				   job_ptr->details->submit_line);
 		if (job_ptr->container)
-			xstrfmtcat(query, ", '%s'",
+			xstrfmtcatat(query, &pos, ", '%s'",
 				   job_ptr->container);
 		if (job_ptr->licenses)
-			xstrfmtcat(query, ", '%s'",
+			xstrfmtcatat(query, &pos, ", '%s'",
 				   job_ptr->licenses);
 
-		xstrfmtcat(query,
+		xstrfmtcatat(query, &pos,
 			   ") on duplicate key update "
 			   "job_db_inx=LAST_INSERT_ID(job_db_inx), "
 			   "id_assoc=%u, id_user=%u, id_group=%u, "
@@ -662,118 +679,139 @@ no_rollup_change:
 			   env_hash_inx, script_hash_inx);
 
 		if (wckeyid)
-			xstrfmtcat(query, ", id_wckey=%u", wckeyid);
+			xstrfmtcatat(query, &pos, ", id_wckey=%u", wckeyid);
 		if (job_ptr->mcs_label)
-			xstrfmtcat(query, ", mcs_label='%s'",
-				   job_ptr->mcs_label);
+			xstrfmtcatat(query, &pos, ", mcs_label='%s'",
+				     job_ptr->mcs_label);
 		if (job_ptr->account)
-			xstrfmtcat(query, ", account='%s'", job_ptr->account);
+			xstrfmtcatat(query, &pos, ", account='%s'",
+				     job_ptr->account);
 		if (partition)
-			xstrfmtcat(query, ", `partition`='%s'", partition);
+			xstrfmtcatat(query, &pos, ", `partition`='%s'",
+				     partition);
 		if (job_ptr->wckey)
-			xstrfmtcat(query, ", wckey='%s'", job_ptr->wckey);
+			xstrfmtcatat(query, &pos, ", wckey='%s'",
+				     job_ptr->wckey);
 		if (job_ptr->network)
-			xstrfmtcat(query, ", node_inx='%s'", job_ptr->network);
+			xstrfmtcatat(query, &pos, ", node_inx='%s'",
+				     job_ptr->network);
 		if (array_recs && array_recs->task_id_str)
-			xstrfmtcat(query, ", array_task_str='%s', "
+			xstrfmtcatat(query, &pos, ", array_task_str='%s', "
 				   "array_max_tasks=%u, array_task_pending=%u",
 				   array_recs->task_id_str,
 				   array_recs->max_run_tasks,
 				   array_recs->task_cnt);
 		else
-			xstrfmtcat(query, ", array_task_str=NULL, "
+			xstrfmtcatat(query, &pos, ", array_task_str=NULL, "
 				   "array_task_pending=0");
 
 		if (job_ptr->tres_alloc_str)
-			xstrfmtcat(query, ", tres_alloc='%s'",
+			xstrfmtcatat(query, &pos, ", tres_alloc='%s'",
 				   job_ptr->tres_alloc_str);
 		if (job_ptr->tres_req_str)
-			xstrfmtcat(query, ", tres_req='%s'",
+			xstrfmtcatat(query, &pos, ", tres_req='%s'",
 				   job_ptr->tres_req_str);
 		if (job_ptr->details->work_dir)
-			xstrfmtcat(query, ", work_dir='%s'",
+			xstrfmtcatat(query, &pos, ", work_dir='%s'",
 				   job_ptr->details->work_dir);
 		if (job_ptr->details->features)
-			xstrfmtcat(query, ", constraints='%s'",
+			xstrfmtcatat(query, &pos, ", constraints='%s'",
 				   job_ptr->details->features);
-
+		if (job_ptr->details->std_err)
+			xstrfmtcatat(query, &pos, ", std_err='%s'",
+				   job_ptr->details->std_err);
+		if (job_ptr->details->std_in)
+			xstrfmtcatat(query, &pos, ", std_in='%s'",
+				   job_ptr->details->std_in);
+		if (job_ptr->details->std_out)
+			xstrfmtcatat(query, &pos, ", std_out='%s'",
+				   job_ptr->details->std_out);
 		if (job_ptr->details->submit_line)
-			xstrfmtcat(query, ", submit_line='%s'",
+			xstrfmtcatat(query, &pos, ", submit_line='%s'",
 				   job_ptr->details->submit_line);
 		if (job_ptr->container)
-			xstrfmtcat(query, ", container='%s'",
+			xstrfmtcatat(query, &pos, ", container='%s'",
 				   job_ptr->container);
 		if (job_ptr->licenses)
-			xstrfmtcat(query, ", licenses='%s'",
+			xstrfmtcatat(query, &pos, ", licenses='%s'",
 				   job_ptr->licenses);
 
 		DB_DEBUG(DB_JOB, mysql_conn->conn, "query\n%s", query);
-	try_again:
+
 		if (!(job_ptr->db_index = mysql_db_insert_ret_id(
 			      mysql_conn, query))) {
-			if (!reinit) {
-				error("%s: It looks like the storage has gone away trying to reconnect",
-				      __func__);
-				/* reconnect */
-				check_connection(mysql_conn);
-				reinit = 1;
-				goto try_again;
-			} else
+			rc = errno;
+			if ((rc == CR_SERVER_GONE_ERROR) ||
+			    (rc == CR_SERVER_LOST))
+				rc = ESLURM_DB_CONNECTION;
+			else
 				rc = SLURM_ERROR;
 		}
 	} else {
-		query = xstrdup_printf("update \"%s_%s\" set nodelist='%s', ",
-				       mysql_conn->cluster_name,
-				       job_table, nodes);
+		xstrfmtcatat(query, &pos,
+			"update \"%s_%s\" set nodelist='%s', ",
+			 mysql_conn->cluster_name, job_table, nodes);
 
 		if (wckeyid)
-			xstrfmtcat(query, "id_wckey=%u, ", wckeyid);
+			xstrfmtcatat(query, &pos, "id_wckey=%u, ", wckeyid);
 		if (job_ptr->mcs_label)
-			xstrfmtcat(query, "mcs_label='%s', ",
+			xstrfmtcatat(query, &pos, "mcs_label='%s', ",
 				   job_ptr->mcs_label);
 		if (job_ptr->account)
-			xstrfmtcat(query, "account='%s', ", job_ptr->account);
+			xstrfmtcatat(query, &pos, "account='%s', ",
+				     job_ptr->account);
 		if (partition)
-			xstrfmtcat(query, "`partition`='%s', ", partition);
+			xstrfmtcatat(query, &pos, "`partition`='%s', ",
+				     partition);
 		if (job_ptr->wckey)
-			xstrfmtcat(query, "wckey='%s', ", job_ptr->wckey);
+			xstrfmtcatat(query, &pos, "wckey='%s', ",
+				     job_ptr->wckey);
 		if (job_ptr->network)
-			xstrfmtcat(query, "node_inx='%s', ", job_ptr->network);
+			xstrfmtcatat(query, &pos, "node_inx='%s', ",
+				     job_ptr->network);
 		if (array_recs && array_recs->task_id_str)
-			xstrfmtcat(query, "array_task_str='%s', "
+			xstrfmtcatat(query, &pos, "array_task_str='%s', "
 				   "array_max_tasks=%u, "
 				   "array_task_pending=%u, ",
 				   array_recs->task_id_str,
 				   array_recs->max_run_tasks,
 				   array_recs->task_cnt);
 		else
-			xstrfmtcat(query, "array_task_str=NULL, "
+			xstrfmtcatat(query, &pos, "array_task_str=NULL, "
 				   "array_task_pending=0, ");
 
 		if (job_ptr->tres_alloc_str)
-			xstrfmtcat(query, "tres_alloc='%s', ",
+			xstrfmtcatat(query, &pos, "tres_alloc='%s', ",
 				   job_ptr->tres_alloc_str);
 		if (job_ptr->tres_req_str)
-			xstrfmtcat(query, "tres_req='%s', ",
+			xstrfmtcatat(query, &pos, "tres_req='%s', ",
 				   job_ptr->tres_req_str);
 		if (job_ptr->details->work_dir)
-			xstrfmtcat(query, "work_dir='%s', ",
+			xstrfmtcatat(query, &pos, "work_dir='%s', ",
 				   job_ptr->details->work_dir);
 		if (job_ptr->details->features)
-			xstrfmtcat(query, "constraints='%s', ",
+			xstrfmtcatat(query, &pos, "constraints='%s', ",
 				   job_ptr->details->features);
-
+		if (job_ptr->details->std_err)
+			xstrfmtcatat(query, &pos, "std_err='%s', ",
+				   job_ptr->details->std_err);
+		if (job_ptr->details->std_in)
+			xstrfmtcatat(query, &pos, "std_in='%s', ",
+				   job_ptr->details->std_in);
+		if (job_ptr->details->std_out)
+			xstrfmtcatat(query, &pos, "std_out='%s', ",
+				   job_ptr->details->std_out);
 		if (job_ptr->details->submit_line)
-			xstrfmtcat(query, "submit_line='%s', ",
+			xstrfmtcatat(query, &pos, "submit_line='%s', ",
 				   job_ptr->details->submit_line);
 		if (job_ptr->container)
-			xstrfmtcat(query, "container='%s', ",
+			xstrfmtcatat(query, &pos, "container='%s', ",
 				   job_ptr->container);
 		if (job_ptr->licenses)
-			xstrfmtcat(query, "licenses='%s', ",
+			xstrfmtcatat(query, &pos, "licenses='%s', ",
 				   job_ptr->licenses);
 
-		xstrfmtcat(query, "time_start=%ld, job_name='%s', "
+		xstrfmtcatat(query, &pos, "time_start=%ld, job_name='%s', "
 			   "state=greatest(state, %u), "
 			   "nodes_alloc=%u, id_qos=%u, "
 			   "id_assoc=%u, id_resv=%u, "
@@ -808,8 +846,6 @@ no_rollup_change:
 		if (IS_JOB_SUSPENDED(job_ptr))
 			as_mysql_suspend(mysql_conn, job_db_inx, job_ptr);
 	}
-
-	xfree(query);
 
 	return rc;
 }
@@ -855,20 +891,20 @@ extern int as_mysql_job_heavy(mysql_conn_t *mysql_conn, job_record_t *job_ptr)
 	return rc;
 }
 
-extern List as_mysql_modify_job(mysql_conn_t *mysql_conn, uint32_t uid,
-				slurmdb_job_cond_t *job_cond,
-				slurmdb_job_rec_t *job)
+extern list_t *as_mysql_modify_job(mysql_conn_t *mysql_conn, uint32_t uid,
+				   slurmdb_job_cond_t *job_cond,
+				   slurmdb_job_rec_t *job)
 {
-	List ret_list = NULL;
+	list_t *ret_list = NULL;
 	int rc = SLURM_SUCCESS;
 	char *object = NULL;
 	char *vals = NULL, *cond_char = NULL;
 	time_t now = time(NULL);
 	char *user_name = NULL;
-	List job_list = NULL;
+	list_t *job_list = NULL;
 	slurmdb_job_rec_t *job_rec;
 	list_itr_t *itr;
-	List id_switch_list = NULL;
+	list_t *id_switch_list = NULL;
 	id_switch_t *id_switch;
 	bool is_admin;
 
@@ -1108,6 +1144,29 @@ endit:
 	return ret_list;
 }
 
+/*
+ * Get update format for setting derived_ec on the dbd side.
+ *
+ * stepmgr jobs don't update the controller job's derived_ec so we update as the
+ * step and job come into the dbd.
+ */
+static char *_get_derived_ec_update_str(uint32_t exit_code)
+{
+	char *derived_str = NULL;
+
+	/*
+	 * Sync with _internal_step_complete() for setting derived_ec on the
+	 * contoller.
+	 */
+	if (exit_code == SIG_OOM)
+		derived_str = xstrdup_printf("%u", exit_code);
+	else
+		derived_str = xstrdup_printf("GREATEST(%u, derived_ec)",
+					     exit_code);
+
+	return derived_str;
+}
+
 extern int as_mysql_job_complete(mysql_conn_t *mysql_conn,
 				 job_record_t *job_ptr)
 {
@@ -1180,15 +1239,13 @@ extern int as_mysql_job_complete(mysql_conn_t *mysql_conn,
 			*/
 			char *comment = job_ptr->comment;
 			job_ptr->comment = NULL;
-			/* If we get an error with this just fall
-			 * through to avoid an infinite loop
-			 */
-			if (as_mysql_job_start(
-				    mysql_conn, job_ptr) == SLURM_ERROR) {
+
+			if ((rc = as_mysql_job_start(
+				     mysql_conn, job_ptr)) != SLURM_SUCCESS) {
 				job_ptr->comment = comment;
 				error("couldn't add job %u at job completion",
 				      job_ptr->job_id);
-				return SLURM_SUCCESS;
+				return rc;
 			}
 			job_ptr->comment = comment;
 		}
@@ -1204,8 +1261,12 @@ extern int as_mysql_job_complete(mysql_conn_t *mysql_conn,
 			       mysql_conn->cluster_name, job_table,
 			       end_time, job_state);
 
-	if (job_ptr->derived_ec != NO_VAL)
-		xstrfmtcat(query, ", derived_ec=%u", job_ptr->derived_ec);
+	if (job_ptr->derived_ec != NO_VAL) {
+		char *derived_ec_str =
+			_get_derived_ec_update_str(job_ptr->derived_ec);
+		xstrfmtcat(query, ", derived_ec=%s", derived_ec_str);
+		xfree(derived_ec_str);
+	}
 
 	if (job_ptr->tres_alloc_str)
 		xstrfmtcat(query, ", tres_alloc='%s'", job_ptr->tres_alloc_str);
@@ -1346,14 +1407,13 @@ extern int as_mysql_step_start(mysql_conn_t *mysql_conn,
 		      _get_db_index(mysql_conn,
 				    submit_time,
 				    step_ptr->job_ptr->job_id))) {
-			/* If we get an error with this just fall
-			 * through to avoid an infinite loop
-			 */
-			if (as_mysql_job_start(mysql_conn, step_ptr->job_ptr)
-			    == SLURM_ERROR) {
+
+			if ((rc = as_mysql_job_start(
+				     mysql_conn,
+				     step_ptr->job_ptr)) != SLURM_SUCCESS) {
 				error("couldn't add job %u at step start",
 				      step_ptr->job_ptr->job_id);
-				return SLURM_SUCCESS;
+				return rc;
 			}
 		}
 	}
@@ -1495,15 +1555,13 @@ extern int as_mysql_step_complete(mysql_conn_t *mysql_conn,
 		      _get_db_index(mysql_conn,
 				    submit_time,
 				    step_ptr->job_ptr->job_id))) {
-			/* If we get an error with this just fall
-			 * through to avoid an infinite loop
-			 */
-			if (as_mysql_job_start(mysql_conn, step_ptr->job_ptr)
-			    == SLURM_ERROR) {
+			if ((rc = as_mysql_job_start(
+				     mysql_conn,
+				     step_ptr->job_ptr)) != SLURM_SUCCESS) {
 				error("couldn't add job %u "
 				      "at step completion",
 				      step_ptr->job_ptr->job_id);
-				return SLURM_SUCCESS;
+				return rc;
 			}
 		}
 	}
@@ -1665,15 +1723,30 @@ extern int as_mysql_step_complete(mysql_conn_t *mysql_conn,
 
 	/* set the energy for the entire job. */
 	if (step_ptr->job_ptr->tres_alloc_str) {
+		char *derived_ec_str = _get_derived_ec_update_str(exit_code);
 		query = xstrdup_printf(
-			"update \"%s_%s\" set tres_alloc='%s' where "
+			"update \"%s_%s\" set tres_alloc='%s', derived_ec=%s where "
 			"job_db_inx=%"PRIu64,
 			mysql_conn->cluster_name, job_table,
-			step_ptr->job_ptr->tres_alloc_str,
+			step_ptr->job_ptr->tres_alloc_str, derived_ec_str,
 			step_ptr->job_ptr->db_index);
 		DB_DEBUG(DB_STEP, mysql_conn->conn, "query\n%s", query);
 		rc = mysql_db_query(mysql_conn, query);
 		xfree(query);
+		xfree(derived_ec_str);
+	} else if (exit_code &&
+		   (step_ptr->step_id.step_id != SLURM_BATCH_SCRIPT) &&
+		   (step_ptr->step_id.step_id != SLURM_EXTERN_CONT)) {
+		char *derived_ec_str = _get_derived_ec_update_str(exit_code);
+		query = xstrdup_printf(
+			"update \"%s_%s\" set derived_ec=%s where "
+			"job_db_inx=%"PRIu64,
+			mysql_conn->cluster_name, job_table, derived_ec_str,
+			step_ptr->job_ptr->db_index);
+		DB_DEBUG(DB_STEP, mysql_conn->conn, "query\n%s", query);
+		rc = mysql_db_query(mysql_conn, query);
+		xfree(query);
+		xfree(derived_ec_str);
 	}
 
 	return rc;
@@ -1700,14 +1773,12 @@ extern int as_mysql_suspend(mysql_conn_t *mysql_conn, uint64_t old_db_inx,
 		      _get_db_index(mysql_conn,
 				    submit_time,
 				    job_ptr->job_id))) {
-			/* If we get an error with this just fall
-			 * through to avoid an infinite loop
-			 */
-			if (as_mysql_job_start(
-				    mysql_conn, job_ptr) == SLURM_ERROR) {
+			if ((rc = as_mysql_job_start(
+				     mysql_conn,
+				     job_ptr)) != SLURM_SUCCESS) {
 				error("couldn't suspend job %u",
 				      job_ptr->job_id);
-				return SLURM_SUCCESS;
+				return rc;
 			}
 		}
 	}
@@ -1793,7 +1864,7 @@ again:
 	 * the suspend table and the step table
 	 */
 	query = xstrdup_printf(
-		"select distinct t1.job_db_inx, t1.state from \"%s_%s\" "
+		"select distinct t1.job_db_inx, t1.state, t1.time_suspended from \"%s_%s\" "
 		"as t1 where t1.time_end=0 LIMIT %u;",
 		mysql_conn->cluster_name, job_table, MAX_FLUSH_JOBS);
 	DB_DEBUG(DB_JOB, mysql_conn->conn, "query\n%s", query);
@@ -1807,6 +1878,10 @@ again:
 	while ((row = mysql_fetch_row(result))) {
 		int state = slurm_atoul(row[1]);
 		if (state == JOB_SUSPENDED) {
+			time_t time_suspended = slurm_atoull(row[2]);
+			/* To avoid underflow, use the latest time_suspended. */
+			if (event_time < time_suspended)
+				event_time = time_suspended;
 			if (suspended_char)
 				xstrfmtcat(suspended_char,
 					   ", %s", row[0]);

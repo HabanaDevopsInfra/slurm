@@ -51,6 +51,8 @@
 
 extern int devnull;
 extern bool get_reg_resp;
+extern bool refresh_cached_features;
+extern pthread_mutex_t cached_features_mutex;
 
 typedef struct {
 	uint32_t derived_ec;
@@ -163,14 +165,15 @@ extern bool tres_packed;
 
 /* Send node registration message with status to controller
  * IN status - same values slurm error codes (for node shutdown)
+ * IN flags - registration message flags to set
  */
-int send_registration_msg(uint32_t status);
+int send_registration_msg(uint32_t status, uint16_t flags);
 
 /* Run the health check program if configured */
 int run_script_health_check(void);
 
-/* Handler for SIGTERM; can also be called to shutdown the slurmd. */
-void slurmd_shutdown(int signum);
+/* shutdown the slurmd daemon */
+extern void slurmd_shutdown(void);
 
 /* Handler for debug level update */
 extern void update_slurmd_logging(log_level_t log_lvl);

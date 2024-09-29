@@ -43,6 +43,7 @@
 #include "gres_sock_list.h"
 
 #include "src/slurmctld/licenses.h"
+#include "src/common/slurm_time.h"
 
 typedef struct {
 	int action;
@@ -54,14 +55,20 @@ typedef struct {
 } wrapper_rm_job_args_t;
 
 typedef struct {
-	List preemptee_candidates;
-	List cr_job_list;
+	list_t *preemptee_candidates;
+	list_t *cr_job_list;
 	node_use_record_t *future_usage;
 	part_res_record_t *future_part;
 	list_t *future_license_list;
 	bitstr_t *orig_map;
 	bool *qos_preemptor;
 } cr_job_list_args_t;
+
+typedef struct {
+	uint32_t min_nodes;
+	uint32_t num_tasks;
+	uint32_t *sum_cpus;
+} gres_cpus_foreach_args_t;
 
 uint64_t def_cpu_per_gpu = 0;
 uint64_t def_mem_per_gpu = 0;
@@ -143,6 +150,57 @@ static void _block_whole_nodes(bitstr_t *node_bitmap,
 	}
 }
 
+static void _block_by_topology(job_record_t *job_ptr,
+			       part_res_record_t *p_ptr,
+			       bitstr_t *node_bitmap)
+{
+	bitstr_t *tmp_bitmap = NULL;
+	static int enable_exclusive_topo = -1;
+
+	if (enable_exclusive_topo == -1) {
+		enable_exclusive_topo = 0;
+		(void) topology_g_get(TOPO_DATA_EXCLUSIVE_TOPO,
+				      &enable_exclusive_topo);
+	}
+
+	if (!enable_exclusive_topo)
+		return;
+
+	for (; p_ptr; p_ptr = p_ptr->next) {
+		if (!p_ptr->row)
+			continue;
+		for (int i = 0; i < p_ptr->num_rows; i++) {
+			for (int j = 0; j < p_ptr->row[i].num_jobs; j++) {
+				struct job_resources *job;
+				job = p_ptr->row[i].job_list[j];
+
+				if (!job->node_bitmap)
+					continue;
+				if (IS_JOB_WHOLE_TOPO(job_ptr) ||
+				    (job->whole_node & WHOLE_TOPO) ||
+				    (p_ptr->part_ptr->flags &
+				     PART_FLAG_EXCLUSIVE_TOPO)) {
+					if (tmp_bitmap)
+						bit_or(tmp_bitmap,
+						       job->node_bitmap);
+					else
+						tmp_bitmap = bit_copy(
+							job->node_bitmap);
+				}
+
+			}
+		}
+	}
+
+	if (tmp_bitmap) {
+		topology_g_whole_topo(tmp_bitmap);
+		bit_and_not(node_bitmap, tmp_bitmap);
+		FREE_NULL_BITMAP(tmp_bitmap);
+	}
+
+	return;
+}
+
 static uint16_t _valid_uint16(uint16_t arg)
 {
 	if ((arg == NO_VAL16) || (arg == INFINITE16))
@@ -209,13 +267,14 @@ static struct multi_core_data *_create_default_mc(void)
 	return mc_ptr;
 }
 
-/* List sort function: sort by the job's expected end time */
+/* list sort function: sort by the job's expected end time */
 static int _cr_job_list_sort(void *x, void *y)
 {
 	job_record_t *job1_ptr = *(job_record_t **) x;
 	job_record_t *job2_ptr = *(job_record_t **) y;
 
-	return (int) (job1_ptr->end_time - job2_ptr->end_time);
+	return slurm_sort_time_list_asc(&job1_ptr->end_time,
+					&job2_ptr->end_time);
 }
 
 static int _find_job (void *x, void *key)
@@ -223,6 +282,17 @@ static int _find_job (void *x, void *key)
 	job_record_t *job_ptr = (job_record_t *) x;
 	if (job_ptr == (job_record_t *) key)
 		return 1;
+	return 0;
+}
+
+static int _is_job_sharing(void *x, void *key)
+{
+	job_record_t *job_ptr = x;
+	if ((job_ptr->details->share_res == 1) ||
+	    (job_ptr->part_ptr->max_share & SHARED_FORCE)) {
+		debug3("%pJ is sharing resources.", job_ptr);
+		return 1;
+	}
 	return 0;
 }
 
@@ -310,6 +380,30 @@ static void _set_gpu_defaults(job_record_t *job_ptr)
 				      &job_ptr->details->cpus_per_task);
 }
 
+/* Calculated the minimum number of gres cpus based on cpus_per_gres */
+static int _sum_min_gres_cpus(void *gres_job_state, void *args)
+{
+	gres_job_state_t *gres_js = ((gres_state_t*)gres_job_state)->gres_data;
+	gres_cpus_foreach_args_t *gres_cpus_args = args;
+	uint32_t cpus = gres_js->cpus_per_gres;
+
+	if (!cpus)
+		return SLURM_SUCCESS;
+
+	if (gres_js->gres_per_node)
+		cpus *= gres_js->gres_per_node;
+	else if (gres_js->gres_per_task)
+		cpus *= gres_js->gres_per_task * gres_cpus_args->num_tasks;
+	else if (gres_js->gres_per_socket)
+		cpus *= gres_js->gres_per_socket;
+	else if (gres_js->gres_per_job)
+		cpus *= gres_js->gres_per_job / gres_cpus_args->min_nodes;
+
+	*gres_cpus_args->sum_cpus += cpus;
+
+	return SLURM_SUCCESS;
+}
+
 /* Determine how many sockets per node this job requires for GRES */
 static uint32_t _socks_per_node(job_record_t *job_ptr)
 {
@@ -317,6 +411,7 @@ static uint32_t _socks_per_node(job_record_t *job_ptr)
 	uint32_t s_p_n = NO_VAL;
 	uint32_t cpu_cnt, cpus_per_node, tasks_per_node;
 	uint32_t min_nodes;
+	uint32_t sum_cpus = 0;
 
 	if (!job_ptr->details)
 		return s_p_n;
@@ -325,7 +420,23 @@ static uint32_t _socks_per_node(job_record_t *job_ptr)
 	cpu_cnt = MAX(job_ptr->details->min_cpus, cpu_cnt);
 	min_nodes = MAX(job_ptr->details->min_nodes, 1);
 	cpus_per_node = cpu_cnt / min_nodes;
-	if (cpus_per_node <= 1)
+
+	/*
+	 * Here we need to sum up the cpus per gres so we can tell if we need
+	 * more sockets than 1 when enforcing binding.
+	 */
+	if (job_ptr->gres_list_req) {
+		gres_cpus_foreach_args_t gres_args = {
+			.min_nodes = min_nodes,
+			.num_tasks = job_ptr->details->num_tasks,
+			.sum_cpus = &sum_cpus,
+		};
+
+		(void) list_for_each(job_ptr->gres_list_req,
+				     _sum_min_gres_cpus, &gres_args);
+	}
+
+	if ((cpus_per_node <= 1) && (sum_cpus <= 1))
 		return (uint32_t) 1;
 
 	mc_ptr = job_ptr->details->mc_ptr;
@@ -384,10 +495,10 @@ static avail_res_t *_can_job_run_on_node(job_record_t *job_ptr,
 	uint64_t avail_mem = NO_VAL64, req_mem;
 	int cpu_alloc_size, i, rc;
 	node_record_t *node_ptr = node_record_table_ptr[node_i];
-	List node_gres_list;
+	list_t *node_gres_list;
 	bitstr_t *part_core_map_ptr = NULL, *req_sock_map = NULL;
 	avail_res_t *avail_res = NULL;
-	List sock_gres_list = NULL;
+	list_t *sock_gres_list = NULL;
 	bool enforce_binding = false;
 	uint16_t min_cpus_per_node, ntasks_per_node = 1;
 
@@ -409,6 +520,7 @@ static avail_res_t *_can_job_run_on_node(job_record_t *job_ptr,
 
 	if (job_ptr->gres_list_req) {
 		/* Identify available GRES and adjacent cores */
+
 		if (job_ptr->bit_flags & GRES_ENFORCE_BIND)
 			enforce_binding = true;
 		if (!core_map[node_i]) {
@@ -422,10 +534,13 @@ static avail_res_t *_can_job_run_on_node(job_record_t *job_ptr,
 					node_ptr->tot_sockets, node_ptr->cores,
 					job_ptr->job_id, node_ptr->name,
 					enforce_binding, s_p_n, &req_sock_map,
-					job_ptr->user_id, node_i);
+					job_ptr->user_id, node_i,
+					node_ptr->gpu_spec_bitmap,
+					node_ptr->res_cores_per_gpu,
+					cr_type);
 		if (!sock_gres_list) {	/* GRES requirement fail */
-			log_flag(SELECT_TYPE, "Test fail on node %d: gres_sched_create_sock_gres_list",
-			     node_i);
+			log_flag(SELECT_TYPE, "Test fail on node %s: gres_sock_list_create",
+			     node_ptr->name);
 			return NULL;
 		}
 	}
@@ -480,7 +595,7 @@ static avail_res_t *_can_job_run_on_node(job_record_t *job_ptr,
 			s_p_n,
 			job_ptr->details->ntasks_per_node,
 			job_ptr->details->cpus_per_task,
-			(job_ptr->details->whole_node == 1),
+			(job_ptr->details->whole_node & WHOLE_NODE_REQUIRED),
 			&avail_res->avail_gpus, &near_gpu_cnt);
 		if (rc != 0) {
 			log_flag(SELECT_TYPE, "Test fail on node %d: gres_select_filter_remove_unusable",
@@ -508,7 +623,8 @@ static avail_res_t *_can_job_run_on_node(job_record_t *job_ptr,
 			/* memory is per-CPU */
 			if (!(job_ptr->bit_flags & BF_WHOLE_NODE_TEST) &&
 			    ((req_mem * cpus) > avail_mem) &&
-			    (job_ptr->details->whole_node == 1)) {
+			    (job_ptr->details->whole_node &
+			     WHOLE_NODE_REQUIRED)) {
 				cpus = 0;
 			} else if (!(cr_type & CR_CPU) &&
 				   job_ptr->details->mc_ptr &&
@@ -658,12 +774,11 @@ static time_t _guess_job_end(job_record_t *job_ptr, time_t now)
  * allocated CPUs with multi-row partitions.
  */
 static int _is_node_busy(part_res_record_t *p_ptr, uint32_t node_i,
-			 int sharing_only, part_record_t *my_part_ptr,
-			 bool qos_preemptor)
+			 bool sharing_only, part_record_t *my_part_ptr,
+			 bool qos_preemptor, list_t *jobs)
 {
-	uint32_t r, c, core_begin, core_end;
+	uint32_t r;
 	uint16_t num_rows;
-	bitstr_t *use_row_bitmap = NULL;
 
 	for (; p_ptr; p_ptr = p_ptr->next) {
 		num_rows = p_ptr->num_rows;
@@ -675,25 +790,23 @@ static int _is_node_busy(part_res_record_t *p_ptr, uint32_t node_i,
 		if (!p_ptr->row)
 			continue;
 
+		xassert(!p_ptr->rebuild_rows);
 		for (r = 0; r < num_rows; r++) {
 			if (!p_ptr->row[r].row_bitmap)
 				continue;
 
 			if (!p_ptr->row[r].row_bitmap[node_i])
 				continue;
-			use_row_bitmap = p_ptr->row[r].row_bitmap[node_i];
-			core_begin = 0;
-			core_end = bit_size(p_ptr->row[r].row_bitmap[node_i]);
 
-			for (c = core_begin; c < core_end; c++)
-				if (bit_test(use_row_bitmap, c))
-					return 1;
+			if (jobs &&
+			    list_find_first(jobs, _is_job_sharing, NULL))
+				return 1;
 		}
 	}
 	return 0;
 }
 
-static bool _is_preemptable(job_record_t *job_ptr, List preemptee_candidates)
+static bool _is_preemptable(job_record_t *job_ptr, list_t *preemptee_candidates)
 {
 	if (!preemptee_candidates)
 		return false;
@@ -758,7 +871,7 @@ static avail_res_t **_select_nodes(job_record_t *job_ptr, uint32_t min_nodes,
 	if (bit_set_count(topo_eval.node_map) < topo_eval.min_nodes) {
 #if _DEBUG
 		info("AvailNodes < MinNodes (%u < %u)",
-		     bit_set_count(topo_eval.node_bitmap), topo_eval.min_nodes);
+		     bit_set_count(topo_eval.node_map), topo_eval.min_nodes);
 #endif
 		return NULL;
 	}
@@ -870,8 +983,7 @@ static int _verify_node_state(part_res_record_t *cr_part_ptr,
 	node_record_t *node_ptr;
 	uint32_t gres_cpus, gres_cores;
 	uint64_t free_mem, min_mem, avail_mem;
-	List gres_list;
-	bool disable_binding = false;
+	list_t *gres_list;
 
 	if (!(job_ptr->bit_flags & JOB_MEM_SET) &&
 	    (min_mem = gres_select_util_job_mem_max(job_ptr->gres_list_req))) {
@@ -918,7 +1030,7 @@ static int _verify_node_state(part_res_record_t *cr_part_ptr,
 		}
 
 		/* Exclude nodes with reserved cores */
-		if ((job_ptr->details->whole_node == 1) &&
+		if ((job_ptr->details->whole_node & WHOLE_NODE_REQUIRED) &&
 		    resv_exc_ptr->exc_cores) {
 			if (resv_exc_ptr->exc_cores[i] &&
 			    (bit_ffs(resv_exc_ptr->exc_cores[i]) != -1)) {
@@ -933,7 +1045,7 @@ static int _verify_node_state(part_res_record_t *cr_part_ptr,
 		else
 			gres_list = node_ptr->gres_list;
 
-		if ((job_ptr->details->whole_node == WHOLE_NODE_REQUIRED) &&
+		if ((job_ptr->details->whole_node & WHOLE_NODE_REQUIRED) &&
 		    gres_node_state_list_has_alloc_gres(gres_list)) {
 			debug3("node %s has GRES in use (whole node requested)",
 			       node_ptr->name);
@@ -942,9 +1054,8 @@ static int _verify_node_state(part_res_record_t *cr_part_ptr,
 
 		gres_cores = gres_job_test(job_ptr->gres_list_req,
 					   gres_list, true,
-					   NULL, 0, 0, job_ptr->job_id,
-					   node_ptr->name,
-					   disable_binding);
+					   0, 0, job_ptr->job_id,
+					   node_ptr->name);
 		gres_cpus = gres_cores;
 		if (gres_cpus != NO_VAL)
 			gres_cpus *= node_ptr->tpc;
@@ -964,29 +1075,31 @@ static int _verify_node_state(part_res_record_t *cr_part_ptr,
 		} else if (node_usage[i].node_state >= NODE_CR_ONE_ROW) {
 			if ((job_node_req == NODE_CR_RESERVED) ||
 			    (job_node_req == NODE_CR_AVAILABLE)) {
-				debug3("node %s non-sharing",
-				       node_ptr->name);
+				log_flag(SELECT_TYPE, "node %s is running --exclusive job",
+					 node_ptr->name);
 				goto clear_bit;
 			}
 			/*
 			 * cannot use this node if it is running jobs
 			 * in sharing partitions
 			 */
-			if (_is_node_busy(cr_part_ptr, i, 1,
-					  job_ptr->part_ptr, qos_preemptor)) {
-				debug3("node %s sharing?",
-				       node_ptr->name);
+			if (_is_node_busy(cr_part_ptr, i, true,
+					  job_ptr->part_ptr, qos_preemptor,
+					  node_usage[i].jobs)) {
+				log_flag(SELECT_TYPE, "node %s is running job that shares resouces in other partition",
+					 node_ptr->name);
 				goto clear_bit;
 			}
 
 			/* node is NODE_CR_AVAILABLE - check job request */
 		} else {
 			if (job_node_req == NODE_CR_RESERVED) {
-				if (_is_node_busy(cr_part_ptr, i, 0,
+				if (_is_node_busy(cr_part_ptr, i, false,
 						  job_ptr->part_ptr,
-						  qos_preemptor)) {
-					debug3("node %s busy",
-					       node_ptr->name);
+						  qos_preemptor,
+						  node_usage[i].jobs)) {
+					log_flag(SELECT_TYPE, "node %s is running other jobs, cannot run --exclusive job here",
+						 node_ptr->name);
 					goto clear_bit;
 				}
 			} else if (job_node_req == NODE_CR_ONE_ROW) {
@@ -994,11 +1107,12 @@ static int _verify_node_state(part_res_record_t *cr_part_ptr,
 				 * cannot use this node if it is running jobs
 				 * in sharing partitions
 				 */
-				if (_is_node_busy(cr_part_ptr, i, 1,
+				if (_is_node_busy(cr_part_ptr, i, true,
 						  job_ptr->part_ptr,
-						  qos_preemptor)) {
-					debug3("node %s vbusy",
-					       node_ptr->name);
+						  qos_preemptor,
+						  node_usage[i].jobs)) {
+					log_flag(SELECT_TYPE, "node %s is running job that shares resources in other partition",
+						 node_ptr->name);
 					goto clear_bit;
 				}
 			}
@@ -1059,7 +1173,7 @@ static int _job_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 	int i;
 	avail_res_t **avail_res_array, **avail_res_array_tmp;
 	gres_mc_data_t *tres_mc_ptr = NULL;
-	List *node_gres_list = NULL, *sock_gres_list = NULL;
+	list_t **node_gres_list = NULL, **sock_gres_list = NULL;
 	uint32_t *gres_task_limit = NULL;
 	char *nodename = NULL;
 	node_record_t *node_ptr;
@@ -1068,6 +1182,7 @@ static int _job_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 	uint32_t ntasks_per_node;
 
 	free_job_resources(&job_ptr->job_resrcs);
+	part_data_rebuild_rows(cr_part_ptr);
 
 	if (mode == SELECT_MODE_TEST_ONLY)
 		test_only = true;
@@ -1089,7 +1204,7 @@ static int _job_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 		if (max_nodes < n)
 			n = max_nodes;
 		start = bit_fls_from_bit(details_ptr->job_size_bitmap, n);
-		if (start < 0 || start < orig_min_nodes)
+		if (start < 1 || start < orig_min_nodes)
 			return SLURM_ERROR;
 		max_nodes = start;
 		min_nodes = max_nodes;
@@ -1153,8 +1268,7 @@ static int _job_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 	         job_ptr, bit_set_count(node_bitmap));
 
 	orig_node_map = bit_copy(node_bitmap);
-	avail_cores = cons_helpers_mark_avail_cores(
-		node_bitmap, job_ptr->details->core_spec);
+	avail_cores = cons_helpers_mark_avail_cores(node_bitmap, job_ptr);
 
 	/*
 	 * test to make sure that this job can succeed with all avail_cores
@@ -1293,8 +1407,10 @@ try_next_nodes_cnt:
 			}
 		}
 	}
-	if (job_ptr->details->whole_node == 1)
+	if (job_ptr->details->whole_node & WHOLE_NODE_REQUIRED)
 		_block_whole_nodes(node_bitmap, avail_cores, free_cores);
+
+	_block_by_topology(job_ptr, cr_part_ptr, node_bitmap);
 
 	avail_res_array = _select_nodes(job_ptr, min_nodes, max_nodes,
 					req_nodes, node_bitmap, free_cores,
@@ -1377,8 +1493,10 @@ try_next_nodes_cnt:
 		}
 	}
 
-	if (job_ptr->details->whole_node == 1)
+	if (job_ptr->details->whole_node & WHOLE_NODE_REQUIRED)
 		_block_whole_nodes(node_bitmap, avail_cores, free_cores);
+
+	_block_by_topology(job_ptr, cr_part_ptr, node_bitmap);
 
 	/* make these changes permanent */
 	avail_cores_tmp = avail_cores;
@@ -1425,8 +1543,10 @@ try_next_nodes_cnt:
 		}
 	}
 
-	if (job_ptr->details->whole_node == 1)
+	if (job_ptr->details->whole_node & WHOLE_NODE_REQUIRED)
 		_block_whole_nodes(node_bitmap, avail_cores, free_cores);
+
+	_block_by_topology(job_ptr, cr_part_ptr, node_bitmap);
 
 	free_cores_tmp  = copy_core_array(free_cores);
 	node_bitmap_tmp = bit_copy(node_bitmap);
@@ -1454,10 +1574,14 @@ try_next_nodes_cnt:
 				core_array_and_not(free_cores_tmp,
 						   p_ptr->row[i].row_bitmap);
 			}
-			if (job_ptr->details->whole_node == 1) {
+			if (job_ptr->details->whole_node &
+			    WHOLE_NODE_REQUIRED) {
 				_block_whole_nodes(node_bitmap_tmp, avail_cores,
 						   free_cores_tmp);
 			}
+
+			_block_by_topology(job_ptr, cr_part_ptr,
+					   node_bitmap_tmp);
 
 			free_cores_tmp2  = copy_core_array(free_cores_tmp);
 			node_bitmap_tmp2 = bit_copy(node_bitmap_tmp);
@@ -1536,8 +1660,11 @@ try_next_nodes_cnt:
 		free_cores = copy_core_array(avail_cores);
 		core_array_and_not(free_cores, jp_ptr->row[i].row_bitmap);
 		bit_copybits(node_bitmap, orig_node_map);
-		if (job_ptr->details->whole_node == 1)
+		if (job_ptr->details->whole_node & WHOLE_NODE_REQUIRED)
 			_block_whole_nodes(node_bitmap, avail_cores,free_cores);
+
+		_block_by_topology(job_ptr, cr_part_ptr, node_bitmap);
+
 		avail_res_array = _select_nodes(job_ptr, min_nodes, max_nodes,
 						req_nodes, node_bitmap,
 						free_cores, node_usage, cr_type,
@@ -1773,7 +1900,7 @@ alloc_job:
 	job_ptr->job_resrcs = job_res;
 	if (job_ptr->gres_list_req && (error_code == SLURM_SUCCESS)) {
 		bool have_gres_per_task, task_limit_set = false;
-
+		int task_cnt = 0;
 		/*
 		 * Determine if any job gres_per_task specification here
 		 * to avoid calling gres_get_task_limit unless needed
@@ -1784,8 +1911,8 @@ alloc_job:
 			gres_task_limit = xcalloc(job_res->nhosts,
 						  sizeof(uint32_t));
 		}
-		node_gres_list = xcalloc(job_res->nhosts, sizeof(List));
-		sock_gres_list = xcalloc(job_res->nhosts, sizeof(List));
+		node_gres_list = xcalloc(job_res->nhosts, sizeof(list_t *));
+		sock_gres_list = xcalloc(job_res->nhosts, sizeof(list_t *));
 		for (i = 0, j = 0;
 		     (node_ptr = next_node_bitmap(job_res->node_bitmap, &i));
 		     i++) {
@@ -1804,13 +1931,20 @@ alloc_job:
 			node_gres_list[j] = node_ptr->gres_list;
 			sock_gres_list[j] =
 				avail_res_array[i]->sock_gres_list;
-			if (task_limit_set)
+			if (task_limit_set) {
 				log_flag(SELECT_TYPE, "%pJ: Node=%s: gres_task_limit[%d]=%u",
 					 job_ptr,
 					 node_ptr->name,
 					 i, gres_task_limit[j]);
+				task_cnt += gres_task_limit[j];
+			}
 			j++;
 		}
+		/* Ensure gres_task_limit doesn't limit total cpu cnt */
+		job_ptr->details->cpus_per_task = MAX(
+			job_ptr->details->cpus_per_task,
+			job_res->ncpus / task_cnt);
+
 		if (!task_limit_set)
 			xfree(gres_task_limit);
 	}
@@ -1833,7 +1967,7 @@ alloc_job:
 
 	/* translate job_res->cpus array into format with repitition count */
 	build_cnt = build_job_resources_cpu_array(job_res);
-	if (job_ptr->details->whole_node == 1) {
+	if (job_ptr->details->whole_node & WHOLE_NODE_REQUIRED) {
 		job_ptr->total_cpus = 0;
 		for (i = 0;
 		     (node_ptr = next_node_bitmap(job_res->node_bitmap, &i));
@@ -2154,6 +2288,20 @@ static void _set_sched_weight(bitstr_t *node_bitmap)
 	}
 }
 
+static bitstr_t *_select_topo_bitmap(job_record_t *job_ptr,
+				     bitstr_t *node_bitmap,
+				     bitstr_t **efctv_bitmap)
+{
+	if (IS_JOB_WHOLE_TOPO(job_ptr)) {
+		if (!(*efctv_bitmap)) {
+			*efctv_bitmap = bit_copy(node_bitmap);
+			topology_g_whole_topo(*efctv_bitmap);
+		}
+		return *efctv_bitmap;
+	} else
+		return node_bitmap;
+}
+
 /*
  * Determine where and when the job at job_ptr can begin execution by updating
  * a scratch cr_record structure to reflect each job terminating at the
@@ -2163,15 +2311,15 @@ static void _set_sched_weight(bitstr_t *node_bitmap)
 static int _will_run_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 			  uint32_t min_nodes, uint32_t max_nodes,
 			  uint32_t req_nodes, uint16_t job_node_req,
-			  List preemptee_candidates,
-			  List *preemptee_job_list,
+			  list_t *preemptee_candidates,
+			  list_t **preemptee_job_list,
 			  resv_exc_t *resv_exc_ptr)
 {
 	part_res_record_t *future_part;
 	node_use_record_t *future_usage;
 	list_t *future_license_list;
 	job_record_t *tmp_job_ptr;
-	List cr_job_list;
+	list_t *cr_job_list;
 	list_itr_t *job_iterator, *preemptee_iterator;
 	bitstr_t *orig_map;
 	int rc = SLURM_ERROR;
@@ -2263,6 +2411,7 @@ static int _will_run_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 		int time_window = 30;
 		time_t end_time = 0;
 		bool more_jobs = true;
+		bitstr_t *efctv_bitmap_ptr, *efctv_bitmap = NULL;
 		DEF_TIMERS;
 		list_sort(cr_job_list, _cr_job_list_sort);
 		START_TIMER;
@@ -2279,17 +2428,22 @@ static int _will_run_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 					more_jobs = false;
 					break;
 				}
+				efctv_bitmap_ptr = _select_topo_bitmap(
+							tmp_job_ptr,
+							node_bitmap,
+							&efctv_bitmap);
 				if (slurm_conf.debug_flags &
 				    DEBUG_FLAG_SELECT_TYPE) {
-					overlap = bit_overlap(node_bitmap,
-					                      tmp_job_ptr->
-					                      node_bitmap);
+					overlap = bit_overlap(efctv_bitmap_ptr,
+							      tmp_job_ptr->
+							      node_bitmap);
 					info("%pJ: overlap=%d", tmp_job_ptr,
 					      overlap);
 				} else
-					overlap = bit_overlap_any(node_bitmap,
-					                          tmp_job_ptr->
-					                          node_bitmap);
+					overlap = bit_overlap_any(
+							efctv_bitmap_ptr,
+							tmp_job_ptr->
+							node_bitmap);
 				if (overlap == 0)  /* job has no usable nodes */
 					continue;  /* skip it */
 				if (!end_time) {
@@ -2326,13 +2480,7 @@ static int _will_run_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 			}
 			if (!last_job_ptr)	/* Should never happen */
 				break;
-			do {
-				if (bf_window_scale)
-					time_window += bf_window_scale;
-				else
-					time_window *= 2;
-			} while (next_job_ptr && next_job_ptr->end_time >
-				 (end_time + time_window));
+
 			rc = _job_test(job_ptr, node_bitmap, min_nodes,
 				       max_nodes, req_nodes,
 				       SELECT_MODE_WILL_RUN, tmp_cr_type,
@@ -2351,19 +2499,42 @@ static int _will_run_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 				}
 				break;
 			}
+
+			do {
+				if (bf_window_scale)
+					time_window += bf_window_scale;
+				else
+					time_window *= 2;
+			} while (next_job_ptr && next_job_ptr->end_time >
+				 (end_time + time_window));
 timer_check:
 			END_TIMER;
 			if (DELTA_TIMER >= 2000000)
 				break;	/* Quit after 2 seconds wall time */
 		}
+
+		if (slurm_conf.debug_flags & DEBUG_FLAG_SELECT_TYPE ||
+		    ((job_ptr->bit_flags & BACKFILL_TEST) &&
+		     slurm_conf.debug_flags & DEBUG_FLAG_BACKFILL)) {
+			/*
+			 * When time_window gets large it could result in
+			 * delaying jobs regardless of priority. Setting
+			 * bf_window_linear could help mitigate this.
+			 */
+			verbose("%pJ considered resources from running jobs ending within %d seconds of %s",
+				job_ptr, time_window, slurm_ctime2(&end_time));
+		}
+
 		list_iterator_destroy(job_iterator);
+		FREE_NULL_BITMAP(efctv_bitmap);
 	}
 
 	if ((rc == SLURM_SUCCESS) && preemptee_job_list &&
 	    preemptee_candidates) {
+		bitstr_t *efctv_bitmap_ptr, *efctv_bitmap = NULL;
 		/*
 		 * Build list of preemptee jobs whose resources are
-		 * actually used. List returned even if not killed
+		 * actually used. list returned even if not killed
 		 * in selected plugin, but by Moab or something else.
 		 */
 		if (*preemptee_job_list == NULL) {
@@ -2371,12 +2542,16 @@ timer_check:
 		}
 		preemptee_iterator = list_iterator_create(preemptee_candidates);
 		while ((tmp_job_ptr = list_next(preemptee_iterator))) {
-			if (!bit_overlap_any(node_bitmap,
+			efctv_bitmap_ptr = _select_topo_bitmap(tmp_job_ptr,
+							       node_bitmap,
+							       &efctv_bitmap);
+			if (!bit_overlap_any(efctv_bitmap_ptr,
 					     tmp_job_ptr->node_bitmap))
 				continue;
 			list_append(*preemptee_job_list, tmp_job_ptr);
 		}
 		list_iterator_destroy(preemptee_iterator);
+		FREE_NULL_BITMAP(efctv_bitmap);
 	}
 
 	FREE_NULL_LIST(cr_job_list);
@@ -2392,7 +2567,7 @@ timer_check:
 static int _run_now(job_record_t *job_ptr, bitstr_t *node_bitmap,
 		    uint32_t min_nodes, uint32_t max_nodes,
 		    uint32_t req_nodes, uint16_t job_node_req,
-		    List preemptee_candidates, List *preemptee_job_list,
+		    list_t *preemptee_candidates, list_t **preemptee_job_list,
 		    resv_exc_t *resv_exc_ptr)
 {
 	int rc;
@@ -2653,8 +2828,6 @@ static avail_res_t *_allocate_sc(job_record_t *job_ptr, bitstr_t *core_map,
 	uint16_t cps, avail_cpus = 0, num_tasks = 0;
 	uint16_t req_sock_cpus = 0;
 	uint32_t c;
-	uint32_t core_begin;
-	uint32_t core_end;
 	job_details_t *details_ptr = job_ptr->details;
 	uint16_t cpus_per_task = details_ptr->cpus_per_task;
 	uint16_t free_core_count = 0, spec_threads = 0;
@@ -2679,17 +2852,13 @@ static avail_res_t *_allocate_sc(job_record_t *job_ptr, bitstr_t *core_map,
 	uint32_t socket_begin;
 	uint32_t socket_end;
 
-
-	core_begin = 0;
-	core_end = node_ptr->tot_cores;
-
 	memset(free_cores, 0, sockets * sizeof(uint16_t));
 	memset(used_cores, 0, sockets * sizeof(uint16_t));
 	memset(used_cpu_array, 0, sockets * sizeof(uint32_t));
 	memset(cpu_cnt, 0, sockets * sizeof(uint16_t));
 
-	if (entire_sockets_only && details_ptr->whole_node &&
-	    (details_ptr->core_spec != NO_VAL16)) {
+	if ((details_ptr->whole_node & WHOLE_NODE_REQUIRED) &&
+	    entire_sockets_only && (details_ptr->core_spec != NO_VAL16)) {
 		/* Ignore specialized cores when allocating "entire" socket */
 		entire_sockets_only = false;
 	}
@@ -2785,8 +2954,8 @@ static avail_res_t *_allocate_sc(job_record_t *job_ptr, bitstr_t *core_map,
 		bit_and_not(tmp_core, core_map);
 	}
 
-	socket_begin = core_begin;
-	socket_end = core_begin + cores_per_socket;
+	socket_begin = 0;
+	socket_end = cores_per_socket;
 	for (i = 0; i < sockets; i++) {
 		free_cores[i] = bit_set_count_range(core_map, socket_begin,
 						    socket_end);
@@ -2830,7 +2999,7 @@ static avail_res_t *_allocate_sc(job_record_t *job_ptr, bitstr_t *core_map,
 	    (free_cpu_count + used_cpu_count >
 	     job_ptr->part_ptr->max_cpus_per_node)) {
 
-		if (job_ptr->details->whole_node) {
+		if (job_ptr->details->whole_node & WHOLE_NODE_REQUIRED) {
 			log_flag(SELECT_TYPE, "Total cpu count greater than max_cpus_per_node on exclusive job. (%d > %d)",
 				 free_cpu_count + used_cpu_count,
 				 job_ptr->part_ptr->max_cpus_per_node);
@@ -3035,13 +3204,13 @@ static avail_res_t *_allocate_sc(job_record_t *job_ptr, bitstr_t *core_map,
 			}
 		}
 	}
-	for (c = core_begin; c < core_end ; c++) {
+	for (c = 0; c < node_ptr->tot_cores; c++) {
 		if (!bit_test(core_map, c) || (tmp_core &&
 					       bit_test(tmp_core, c)))
 			continue;
 
 		/* Socket index */
-		i = (uint16_t) ((c - core_begin) / cores_per_socket);
+		i = (uint16_t) (c / cores_per_socket);
 		if (free_cores[i] > 0 && (avail_cpus > 0)) {
 			/*
 			 * this socket has free cores, but make sure we don't
@@ -3068,7 +3237,7 @@ static avail_res_t *_allocate_sc(job_record_t *job_ptr, bitstr_t *core_map,
 fini:
 	/* if num_tasks == 0 then clear all bits on this node */
 	if (num_tasks == 0) {
-		bit_nclear(core_map, core_begin, core_end-1);
+		bit_clear_all(core_map);
 		cpu_count = 0;
 	}
 
@@ -3095,8 +3264,8 @@ fini:
 
 	avail_res->min_cpus = *cpu_alloc_size;
 	avail_res->avail_cores_per_sock = xcalloc(sockets, sizeof(uint16_t));
-	socket_begin = core_begin;
-	socket_end = core_begin + cores_per_socket;
+	socket_begin = 0;
+	socket_end = cores_per_socket;
 	for (i = 0; i < sockets; i++) {
 		avail_res->avail_cores_per_sock[i] =
 			bit_set_count_range(core_map, socket_begin, socket_end);
@@ -3168,7 +3337,7 @@ static avail_res_t *_allocate(job_record_t *job_ptr,
  * IN mode - SELECT_MODE_RUN_NOW   (0): try to schedule job now
  *           SELECT_MODE_TEST_ONLY (1): test if job can ever run
  *           SELECT_MODE_WILL_RUN  (2): determine when and where job can run
- * IN preemptee_candidates - List of pointers to jobs which can be preempted.
+ * IN preemptee_candidates - list of pointers to jobs which can be preempted.
  * IN/OUT preemptee_job_list - Pointer to list of job pointers. These are the
  *		jobs to be preempted to initiate the pending job. Not set
  *		if mode=SELECT_MODE_TEST_ONLY or input pointer is NULL.
@@ -3187,21 +3356,21 @@ static avail_res_t *_allocate(job_record_t *job_ptr,
 extern int job_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 		    uint32_t min_nodes, uint32_t max_nodes,
 		    uint32_t req_nodes, uint16_t mode,
-		    List preemptee_candidates,
-		    List *preemptee_job_list,
+		    list_t *preemptee_candidates,
+		    list_t **preemptee_job_list,
 		    resv_exc_t *resv_exc_ptr)
 {
 	int rc = EINVAL;
 	uint16_t job_node_req;
 
-	if (!(slurm_conf.conf_flags & CTL_CONF_ASRU))
+	if (!(slurm_conf.conf_flags & CONF_FLAG_ASRU))
 		job_ptr->details->core_spec = NO_VAL16;
 	if ((job_ptr->details->core_spec != NO_VAL16) &&
-	    (job_ptr->details->whole_node != 1)) {
+	    !(job_ptr->details->whole_node & WHOLE_NODE_REQUIRED)) {
 		info("Setting Exclusive mode for %pJ with CoreSpec=%u",
 		     job_ptr,
 		     job_ptr->details->core_spec);
-		job_ptr->details->whole_node = 1;
+		job_ptr->details->whole_node |= WHOLE_NODE_REQUIRED;
 	}
 
 	if (!job_ptr->details->mc_ptr)

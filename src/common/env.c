@@ -50,6 +50,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -95,13 +96,11 @@ strong_alias(env_unset_environment,	slurm_env_unset_environment);
 #define ENV_BUFSIZE (256 * 1024)
 #define MAX_ENV_STRLEN (32 * 4096)	/* Needed for CPU_BIND and MEM_BIND on
 					 * SGI systems with huge CPU counts */
-
-#define STACK_SIZE (1024 * 1024) /* For clone() syscall. */
-
 typedef struct {
 	char *cmdstr;
 	int *fildes;
 	int mode;
+	bool perform_mount;
 	int rlimit;
 	char **tmp_env;
 	const char *username;
@@ -144,7 +143,7 @@ static char **
 _extend_env(char ***envp)
 {
 	char **ep;
-	size_t newcnt = (xsize (*envp) / sizeof (char *)) + 1;
+	size_t newcnt = PTR_ARRAY_SIZE(*envp) + 1;
 
 	*envp = xrealloc (*envp, newcnt * sizeof (char *));
 
@@ -426,8 +425,6 @@ int setup_env(env_t *env, bool preserve_env)
 
 		if (env->cpu_bind_type & CPU_BIND_NONE) {
 			str_bind2 = "none";
-		} else if (env->cpu_bind_type & CPU_BIND_RANK) {
-			str_bind2 = "rank";
 		} else if (env->cpu_bind_type & CPU_BIND_MAP) {
 			str_bind2 = "map_cpu:";
 		} else if (env->cpu_bind_type & CPU_BIND_MASK) {
@@ -1890,6 +1887,101 @@ static int _bracket_cnt(char *value)
 	return count;
 }
 
+/*
+ * Load user environment from a specified file or file descriptor.
+ *
+ * This will read in a user specified file or fd, that is invoked
+ * via the --export-file option in sbatch. The NAME=value entries must
+ * be NULL separated to support special characters in the environment
+ * definitions.
+ *
+ * (Note: This is being added to a minor release. For the
+ * next major release, it might be a consideration to merge
+ * this functionality with that of load_env_cache and update
+ * env_cache_builder to use the NULL character.)
+ */
+char **env_array_from_file(const char *fname)
+{
+	char *buf = NULL, *ptr = NULL, *eptr = NULL;
+	char *value, *p;
+	char **env = NULL;
+	char name[256];
+	int buf_size = BUFSIZ, buf_left;
+	int file_size = 0, tmp_size;
+	int separator = '\0';
+	int fd;
+
+	if (!fname)
+		return NULL;
+
+	/*
+	 * If file name is a numeric value, then it is assumed to be a
+	 * file descriptor.
+	 */
+	fd = (int)strtol(fname, &p, 10);
+	if ((*p != '\0') || (fd < 3) || (fd > sysconf(_SC_OPEN_MAX)) ||
+	    (fcntl(fd, F_GETFL) < 0)) {
+		fd = open(fname, O_RDONLY);
+		if (fd == -1) {
+			error("Could not open user environment file %s", fname);
+			return NULL;
+		}
+		verbose("Getting environment variables from %s", fname);
+	} else
+		verbose("Getting environment variables from fd %d", fd);
+
+	/*
+	 * Read in the user's environment data.
+	 */
+	buf = ptr = xmalloc(buf_size);
+	buf_left = buf_size;
+	while ((tmp_size = read(fd, ptr, buf_left))) {
+		if (tmp_size < 0) {
+			if (errno == EINTR)
+				continue;
+			error("read(environment_file): %m");
+			break;
+		}
+		buf_left  -= tmp_size;
+		file_size += tmp_size;
+		if (buf_left == 0) {
+			buf_size += BUFSIZ;
+			xrealloc(buf, buf_size);
+		}
+		ptr = buf + file_size;
+		buf_left = buf_size - file_size;
+	}
+	close(fd);
+
+	/*
+	 * Parse the buffer into individual environment variable names
+	 * and build the environment.
+	 */
+	env   = env_array_create();
+	value = xmalloc(ENV_BUFSIZE);
+	for (ptr = buf; ; ptr = eptr+1) {
+		eptr = strchr(ptr, separator);
+		if ((ptr == eptr) || (eptr == NULL))
+			break;
+		if (_env_array_entry_splitter(ptr, name, sizeof(name),
+					      value, ENV_BUFSIZE) &&
+		    (!_discard_env(name, value))) {
+			/*
+			 * Unset the SLURM_SUBMIT_DIR if it is defined so
+			 * that this new value does not get overwritten
+			 * in the subsequent call to env_array_merge().
+			 */
+			if (xstrcmp(name, "SLURM_SUBMIT_DIR") == 0)
+				unsetenv(name);
+			env_array_overwrite(&env, name, value);
+		}
+	}
+	xfree(buf);
+	xfree(value);
+
+	return env;
+}
+
 int env_array_to_file(const char *filename, const char **env_array,
 		      bool newline)
 {
@@ -2001,7 +2093,23 @@ static int _child_fn(void *arg)
 	cmdstr = child_args->cmdstr;
 	tmp_env = child_args->tmp_env;
 
-	if ((devnull = open("/dev/null", O_RDONLY)) != -1) {
+#if !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__NetBSD__)
+	/*
+	 * Setting propagation and mounting our own /proc for this namespace.
+	 * This is done to ensure that this cloned process and its children
+	 * have coherent /proc contents with their virtual PIDs.
+	 * Check _clone_env_child to see namespace flags used in clone.
+	 */
+	if (child_args->perform_mount) {
+		if (mount("none", "/proc", NULL, MS_PRIVATE|MS_REC, NULL))
+			_exit(1);
+		if (mount("proc", "/proc", "proc",
+			  MS_NOSUID|MS_NOEXEC|MS_NODEV, NULL))
+			_exit(1);
+	}
+#endif
+
+	if ((devnull = open("/dev/null", O_RDWR)) != -1) {
 		dup2(devnull, STDIN_FILENO);
 		dup2(devnull, STDERR_FILENO);
 	}
@@ -2032,6 +2140,7 @@ static int _child_fn(void *arg)
 static int _clone_env_child(child_args_t *child_args)
 {
 	char *child_stack;
+	int rc = 0;
 	child_stack = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE,
 			   MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
 	if (child_stack == MAP_FAILED) {
@@ -2047,8 +2156,70 @@ static int _clone_env_child(child_args_t *child_args)
 	 * Killing the 'child' pid will kill all the namespace, since in the
 	 * namespace, this 'child' is pid 1.
 	 */
-	return clone(_child_fn, child_stack + STACK_SIZE,
-		     (SIGCHLD|CLONE_NEWPID), child_args);
+	rc = clone(_child_fn, child_stack + STACK_SIZE,
+		   (SIGCHLD|CLONE_NEWPID|CLONE_NEWNS), child_args);
+	/* Memory deallocated only in parent address space, child unaffected */
+	if (munmap(child_stack, STACK_SIZE))
+		error("%s: failed to munmap child stack: %m", __func__);
+	return rc;
+}
+
+static bool _ns_path_disabled(const char *ns_path)
+{
+	FILE *fp = NULL;
+	size_t line_sz = 0;
+	ssize_t nbytes = 0;
+	int ns_value;
+	char *line = NULL;
+	bool ns_disabled = false;
+
+	/* We will assume not having these files as having no limits. */
+	fp = fopen(ns_path, "r");
+	if (!fp) {
+		debug2("%s: could not open %s, assuming no pid namespace limits. Reason: %m",
+		       __func__, ns_path);
+	} else {
+		nbytes = getline(&line, &line_sz, fp);
+		if (nbytes < 0) {
+			debug2("%s: could not read contents of %s. Assuming no namespace limits. Reason: %m",
+			       __func__, ns_path);
+		} else if (nbytes == 0) {
+			debug2("%s: read 0 bytes from %s. Assuming no namespace limits",
+			       __func__, ns_path);
+		} else {
+			ns_value = xstrntol(line, NULL, nbytes, 10);
+			if (ns_value == 0)
+				ns_disabled = true;
+		}
+		fclose(fp);
+		free(line);
+		line = NULL;
+	}
+
+	return ns_disabled;
+}
+
+/*
+ * Returns a boolean indicating if the required namespaces for the clone
+ * calls are disabled. This is performed by checking the contents of
+ * "/proc/sys/max_[mnt|pid]_namespaces" and ensuring they are not 0.
+ */
+static bool _ns_disabled()
+{
+	static int disabled = -1;
+	char *pid_ns_path = "/proc/sys/user/max_pid_namespaces";
+	char *mnt_ns_path = "/proc/sys/user/max_mnt_namespaces";
+
+	if (disabled != -1)
+		return disabled;
+
+	disabled = false;
+
+	if (_ns_path_disabled(pid_ns_path) ||
+	    _ns_path_disabled(mnt_ns_path))
+		disabled = true;
+
+	return disabled;
 }
 #endif
 
@@ -2125,6 +2296,7 @@ char **env_array_user_default(const char *username, int timeout, int mode,
 	child_args.username = username;
 	child_args.cmdstr = cmdstr;
 	child_args.tmp_env = env_array_create();
+	child_args.perform_mount = true;
 	env_array_overwrite(&child_args.tmp_env, "ENVIRONMENT", "BATCH");
 	if (getrlimit(RLIMIT_NOFILE, &rlim) < 0) {
 		error("getrlimit(RLIMIT_NOFILE): %m");
@@ -2141,9 +2313,27 @@ char **env_array_user_default(const char *username, int timeout, int mode,
 	if (child == 0)
 		_child_fn(&child_args);
 #else
-	if ((child = _clone_env_child(&child_args)) == -1) {
-		fatal("clone: %m");
-		return NULL;
+	/*
+	 * Since we will be using namespaces in the clone calls (CLONE_NEWPID,
+	 * CLONE_NEWNS), we need to know if they are disabled . If they are,
+	 * we must fall back to fork and warn the user about the risks.
+	 */
+	if (_ns_disabled()) {
+		warning("%s: pid or mnt namespaces are disabled, avoiding clone and falling back to fork. This can produce orphan/unconstrained processes!",
+			__func__);
+		child_args.perform_mount = false;
+		child = fork();
+		if (child == -1) {
+			fatal("fork: %m");
+			return NULL;
+		}
+		if (child == 0)
+			_child_fn(&child_args);
+	} else {
+		if ((child = _clone_env_child(&child_args)) == -1) {
+			fatal("clone: %m");
+			return NULL;
+		}
 	}
 #endif
 	close(fildes[1]);
@@ -2297,8 +2487,14 @@ char **env_array_user_default(const char *username, int timeout, int mode,
 static void _set_ext_launcher_hydra(char ***dest, char *b_env, char *extra)
 {
 	char *bootstrap = getenv(b_env);
+	bool disabled_slurm_hydra_bootstrap = false;
 
-	if (!bootstrap || !xstrcmp(bootstrap, "slurm")) {
+	if (slurm_conf.mpi_params &&
+	    xstrstr(slurm_conf.mpi_params,"disable_slurm_hydra_bootstrap"))
+		disabled_slurm_hydra_bootstrap = true;
+
+	if ((!bootstrap && !disabled_slurm_hydra_bootstrap) ||
+	    !xstrcmp(bootstrap, "slurm")) {
 		env_array_append(dest, b_env, "slurm");
 		env_array_append(dest, extra, "--external-launcher");
 	}
@@ -2460,13 +2656,7 @@ extern void env_merge_filter(slurm_opt_t *opt, job_desc_msg_t *desc)
 	}
 	xfree(tmp);
 
-	for (i = 0; environ[i]; i++) {
-		if (xstrncmp("SLURM_", environ[i], 6))
-			continue;
-		save_env[0] = environ[i];
-		env_array_merge(&desc->environment,
-				(const char **)save_env);
-	}
+	env_array_merge_slurm_spank(&desc->environment, (const char **)environ);
 }
 
 extern char **env_array_exclude(const char **env, const regex_t *regex)
@@ -2483,4 +2673,25 @@ extern char **env_array_exclude(const char **env, const regex_t *regex)
 	}
 
 	return purged;
+}
+
+extern void set_prio_process_env(void)
+{
+        int retval;
+
+        errno = 0; /* needed to detect a real failure since prio can be -1 */
+
+        if ((retval = getpriority(PRIO_PROCESS, 0)) == -1)  {
+                if (errno) {
+                        error("getpriority(PRIO_PROCESS): %m");
+                        return;
+                }
+        }
+
+        if (setenvf(NULL, "SLURM_PRIO_PROCESS", "%d", retval) < 0) {
+                error("unable to set SLURM_PRIO_PROCESS in environment");
+                return;
+        }
+
+        debug("propagating SLURM_PRIO_PROCESS=%d", retval);
 }

@@ -41,7 +41,7 @@
 
 /* Gres symbols provided by the plugin */
 typedef struct slurm_ops {
-	List	(*get_system_gpu_list) 	(node_config_load_t *node_conf);
+	list_t *(*get_system_gpu_list) 	(node_config_load_t *node_conf);
 	void	(*step_hardware_init)	(bitstr_t *usable_gpus,
 					 char *tres_freq);
 	void	(*step_hardware_fini)	(void);
@@ -130,6 +130,8 @@ static char *_get_gpu_type(void)
 #endif
 	} else if (autodetect_flags & GRES_AUTODETECT_GPU_NRT) {
 		return "gpu/nrt";
+	} else if (autodetect_flags & GRES_AUTODETECT_GPU_NVIDIA) {
+		return "gpu/nvidia";
 	}
 
 	return "gpu/generic";
@@ -208,7 +210,7 @@ extern void gpu_get_tres_pos(int *gpumem_pos, int *gpuutil_pos)
 		*gpuutil_pos = loc_gpuutil_pos;
 }
 
-extern List gpu_g_get_system_gpu_list(node_config_load_t *node_conf)
+extern list_t *gpu_g_get_system_gpu_list(node_config_load_t *node_conf)
 {
 	xassert(g_context);
 	return (*(ops.get_system_gpu_list))(node_conf);

@@ -241,13 +241,20 @@ extern slurm_step_ctx_t *step_ctx_create_no_alloc(
 	job_step_create_response_msg_t *step_resp = NULL;
 	int sock = -1;
 	uint16_t port = 0;
+	uint16_t *ports;
+	int rc;
 
 	xassert(step_req);
 	/* We will handle the messages in the step_launch.c mesage handler,
 	 * but we need to open the socket right now so we can tell the
 	 * controller which port to use.
 	 */
-	if (net_stream_listen(&sock, &port) < 0) {
+	ports = slurm_get_srun_port_range();
+	if (ports)
+		rc = net_stream_listen_ports(&sock, &port, ports, false);
+	else
+		rc = net_stream_listen(&sock, &port);
+	if (rc < 0) {
 		error("unable to initialize step context socket: %m");
 		return NULL;
 	}
@@ -263,15 +270,6 @@ extern slurm_step_ctx_t *step_ctx_create_no_alloc(
 		step_req->min_nodes,
 		step_req->num_tasks,
 		0);
-
-	if (switch_g_alloc_jobinfo(&step_resp->switch_job,
-				   step_req->step_id.job_id,
-				   step_resp->job_step_id) < 0)
-		fatal("switch_g_alloc_jobinfo: %m");
-	if (switch_g_build_jobinfo(step_resp->switch_job,
-				   step_resp->step_layout,
-				   NULL) < 0)
-		fatal("switch_g_build_jobinfo: %m");
 
 	step_resp->job_step_id = step_id;
 
@@ -305,7 +303,7 @@ extern slurm_step_ctx_t *step_ctx_create_no_alloc(
 extern int step_ctx_destroy(slurm_step_ctx_t *ctx)
 {
 	if ((ctx == NULL) || (ctx->magic != STEP_CTX_MAGIC)) {
-		slurm_seterrno(EINVAL);
+		errno = EINVAL;
 		return SLURM_ERROR;
 	}
 	slurm_free_job_step_create_request_msg(ctx->step_req);

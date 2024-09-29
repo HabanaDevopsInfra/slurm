@@ -1,4 +1,4 @@
-RELEASE NOTES FOR SLURM VERSION 24.08
+RELEASE NOTES FOR SLURM VERSION 24.11
 
 IMPORTANT NOTES:
 If using the slurmdbd (Slurm DataBase Daemon) you must update this first.
@@ -6,53 +6,50 @@ If using the slurmdbd (Slurm DataBase Daemon) you must update this first.
 NOTE: If using a backup DBD you must start the primary first to do any
 database conversion, the backup will not start until this has happened.
 
-The 24.08 slurmdbd will work with Slurm daemons of version 23.02 and above.
+The 24.05 slurmdbd will work with Slurm daemons of version 23.02 and above.
 You will not need to update all clusters at the same time, but it is very
 important to update slurmdbd first and having it running before updating
 any other clusters making use of it.
 
-Slurm can be upgraded from version 23.02 or 23.11 to version 24.08 without loss
-of jobs or other state information. Upgrading directly from an earlier version
-of Slurm will result in loss of state information.
+Slurm can be upgraded from version 23.02, 23.11 or 24.05 to version
+24.11 without loss of jobs or other state information. Upgrading directly from
+an earlier version of Slurm will result in loss of state information.
 
 All SPANK plugins must be recompiled when upgrading from any Slurm version
-prior to 24.08.
+prior to 24.11.
 
 HIGHLIGHTS
 ==========
- -- Remove support for Cray XC ("cray_aries") systems.
- -- Federation - allow client command operation when slurmdbd is unavailable.
- -- burst_buffer/lua - Added two new hooks: slurm_bb_test_data_in and
-    slurm_bb_test_data_out. The syntax and use of the new hooks are documented
-    in etc/burst_buffer.lua.example. These are required to exist. slurmctld now
-    checks on startup if the burst_buffer.lua script loads and contains all
-    required hooks; slurmctld will exit with a fatal error if this is not
-    successful. Added PollInterval to burst_buffer.conf. Removed the arbitrary
-    limit of 512 copies of the script running simultaneously.
+ -- Add report AccountUtilizationByQOS to sreport.
+ -- AccountUtilizationByUser is able to be filtered by QOS.
+ -- Add autodetected gpus to the output of slurmd -C
 
 CONFIGURATION FILE CHANGES (see appropriate man page for details)
 =====================================================================
- -- CoreSpecPlugin has been removed.
- -- Removed TopologyPlugin tree and dragonfly support from select/linear.
-    If those topology plugins are desired please switch to select/cons_tres.
- -- Changed the default value for UnkillableStepTimeout to 60 seconds or five
-    times the value of MessageTimeout, whichever is greater.
+ -- Add SchedulerParameters=bf_allow_magnetic_slot option. It allows jobs in
+    magnetic reservations to be planned by backfill scheduler.
+ -- Add TopologyParam=TopoMaxSizeUnroll=# to allow --nodes=<min>-<max> for
+    topology/block.
 
 COMMAND CHANGES (see man pages for details)
 ===========================================
- -- Add support for "elevenses" as an additional time specification.
- -- Add support for sbcast --preserve when job_container/tmpfs configured
-    (previously documented as unsupported).
+ -- Remove srun --cpu-bind=rank.
+ -- Add "%b" as a file name pattern for the array task id modulo 10.
+ -- sacct - Respect --noheader for --batch-script and --env-vars.
+ -- Add "sacctmgr ping" command to query status of slurmdbd.
 
 API CHANGES
 ===========
- -- Removed ListIterator type from <slurm/slurm.h>.
+ -- Remove burst_buffer/lua call slurm.job_info_to_string().
 
 SLURMRESTD CHANGES
 ==================
- -- openapi/dbv0.0.38 and openapi/v0.0.38 plugins have been removed.
- -- openapi/dbv0.0.39 and openapi/v0.0.39 plugins have been tagged as
-    deprecated to warn of their removal in the next release.
- -- Changed slurmrestd.service to only listen on TCP socket by default.
-    Environments with existing drop-in units for the service may need
-    further adjustments to work after upgrading.
+ -- Removed fields deprecated in the Slurm-23.11 release from v0.0.42 endpoints.
+ -- Removed v0.0.39 plugins.
+ -- Set data_parser/v0.0.42+prefer_refs flag to default.
+ -- Add data_parser/v0.0.42+minimize_refs flag to inline single referenced
+    schemas in the OpenAPI schema to get default behavior of
+    data_parser/v0.0.41.
+ -- Rename v0.0.42 JOB_INFO field "minimum_switches" to "required_switches"
+    to reflect the actual behavior.
+ -- Rename v0.0.42 ACCOUNT_CONDITION field "assocation" to "association" (typo).

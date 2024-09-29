@@ -99,8 +99,6 @@
 #define	bit_fmt_hexmask		slurm_bit_fmt_hexmask
 #define	bit_fmt_hexmask_trim	slurm_bit_fmt_hexmask_trim
 #define bit_unfmt_hexmask	slurm_bit_unfmt_hexmask
-#define	bit_fmt_binmask		slurm_bit_fmt_binmask
-#define bit_unfmt_binmask	slurm_bit_unfmt_binmask
 #define	bit_fls			slurm_bit_fls
 #define	bit_fls_from_bit	slurm_bit_fls_from_bit
 #define	bit_fill_gaps		slurm_bit_fill_gaps
@@ -121,8 +119,8 @@
 #define fd_set_blocking		slurm_fd_set_blocking
 #define fd_set_nonblocking	slurm_fd_set_nonblocking
 #define fd_get_socket_error	slurm_fd_get_socket_error
-#define send_fd_over_pipe	slurm_send_fd_over_pipe
-#define receive_fd_over_pipe	slurm_receive_fd_over_pipe
+#define send_fd_over_socket	slurm_send_fd_over_socket
+#define receive_fd_over_socket	slurm_receive_fd_over_socket
 #define rmdir_recursive		slurm_rmdir_recursive
 
 /* hostlist.[ch] functions */
@@ -304,6 +302,8 @@
 #define	unpackstr_xmalloc	slurm_unpackstr_xmalloc
 #define	unpackstr_xmalloc_escaped slurm_unpackstr_xmalloc_escaped
 #define	unpackstr_xmalloc_chooser slurm_unpackstr_xmalloc_chooser
+#define packstr_func slurm_packstr_func
+#define safe_unpackstr_func slurm_safe_unpackstr_func
 #define	packstr_array		slurm_packstr_array
 #define	unpackstr_array		slurm_unpackstr_array
 #define	packmem_array		slurm_packmem_array
@@ -338,6 +338,9 @@
 #define get_extra_conf_path	slurm_get_extra_conf_path
 #define sort_key_pairs		slurm_sort_key_pairs
 #define conf_get_opt_str	slurm_conf_get_opt_str
+#define add_key_pair		slurm_add_key_pair
+#define add_key_pair_bool	slurm_add_key_pair_bool
+#define add_key_pair_own	slurm_add_key_pair_own
 
 /* run_in_daemon.[ch] functions */
 #define run_in_daemon           slurm_run_in_daemon
@@ -407,6 +410,7 @@
 #define xstrncasecmp		slurm_xstrncasecmp
 #define	xstrstr			slurm_xstrstr
 #define xstrcasestr		slurm_xstrcasestr
+#define xbase64_from_base64url	slurm_xbase64_from_base64url
 
 /* slurm_protocol_api.[ch] functions */
 #define convert_num_unit2       slurm_convert_num_unit2
@@ -536,6 +540,12 @@
 #define job_state_reason_string	slurm_job_state_reason_string
 #define job_state_reason_num slurm_job_state_reason_num
 #define job_state_reason_check slurm_job_state_reason_check
+
+/* serializer.[ch] functions */
+#define serializer_g_init slurm_serializer_g_init
+#define serialize_g_data_to_string slurm_serialize_g_data_to_string
+#define serialize_g_string_to_data slurm_serialize_g_string_to_data
+#define serializer_g_fini slurm_serializer_g_fini
 
 #endif /* USE_ALIAS */
 

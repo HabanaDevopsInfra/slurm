@@ -58,7 +58,6 @@
 #include "src/common/fd.h"
 #include "src/common/forward.h"
 #include "src/common/hostlist.h"
-#include "src/common/io_hdr.h"
 #include "src/common/log.h"
 #include "src/common/macros.h"
 #include "src/common/proc_args.h"
@@ -141,13 +140,12 @@ static void _set_env_vars(resource_allocation_response_msg_t *resp,
 static void _set_env_vars2(resource_allocation_response_msg_t *resp,
 			   int het_job_offset);
 static void _set_ntasks(allocation_info_t *ai, slurm_opt_t *opt_local);
-static void _set_prio_process_env(void);
 static int  _set_rlimit_env(void);
 static void _set_submit_dir_env(void);
 static int  _set_umask_env(void);
 static void _shepherd_notify(int shepherd_fd);
-static int  _shepherd_spawn(srun_job_t *job, List srun_job_list,
-			     bool got_alloc);
+static int _shepherd_spawn(srun_job_t *job, list_t *srun_job_list,
+			   bool got_alloc);
 static void *_srun_signal_mgr(void *no_data);
 static void _srun_cli_filter_post_submit(uint32_t jobid, uint32_t stepid);
 static int  _validate_relative(resource_allocation_response_msg_t *resp,
@@ -200,6 +198,10 @@ job_create_noalloc(void)
 
 	if (job != NULL)
 		job_update_io_fnames(job, opt_local);
+	if (job && (job->ntasks == NO_VAL)) {
+		job->ntasks = ai->nnodes;
+		job->cpu_count = opt_local->cpus_per_task * job->ntasks;
+	}
 
 error:
 	xfree(ai);
@@ -480,6 +482,7 @@ extern srun_job_t *job_step_create_allocation(
 	 */
 	job = _job_create_structure(ai, opt_local);
 error:
+	xfree(ai->nodelist);
    	xfree(ai);
 	return (job);
 
@@ -527,7 +530,7 @@ extern srun_job_t *job_create_allocation(
 	return (job);
 }
 
-static void _copy_args(List missing_argc_list, slurm_opt_t *opt_master)
+static void _copy_args(list_t *missing_argc_list, slurm_opt_t *opt_master)
 {
 	list_itr_t *iter;
 	slurm_opt_t *opt_local;
@@ -550,12 +553,12 @@ static void _copy_args(List missing_argc_list, slurm_opt_t *opt_master)
  * rebuilt for multiple option structures ("--het-group=1,2" becomes two
  * opt structures). Clear "het_grp_bits".if determined to not be a hetjob.
  */
-static void _het_grp_test(List opt_list)
+static void _het_grp_test(list_t *opt_list)
 {
 	list_itr_t *iter;
 	int het_job_offset;
 	bitstr_t *master_map = NULL;
-	List missing_argv_list = NULL;
+	list_t *missing_argv_list = NULL;
 	bool multi_comp = false, multi_prog = false;
 
 	if (opt_list) {
@@ -617,7 +620,7 @@ static void _het_grp_test(List opt_list)
  * Copy job name from last component to all hetjob components unless
  * explicitly set.
  */
-static void _match_job_name(List opt_list)
+static void _match_job_name(list_t *opt_list)
 {
 	int cnt;
 	list_itr_t *iter;
@@ -658,7 +661,7 @@ static int _sort_by_offset(void *x, void *y)
 	return 0;
 }
 
-static void _post_opts(List opt_list)
+static void _post_opts(list_t *opt_list)
 {
 	_het_grp_test(opt_list);
 	_match_job_name(opt_list);
@@ -755,7 +758,7 @@ extern void init_srun(int argc, char **argv, log_options_t *logopt,
 	}
 
 	(void) _set_rlimit_env();
-	_set_prio_process_env();
+	set_prio_process_env();
 	(void) _set_umask_env();
 	_set_submit_dir_env();
 
@@ -844,7 +847,7 @@ end_it:
  * the job allocation request with its requested options.
  */
 static int _create_job_step(srun_job_t *job, bool use_all_cpus,
-			    List srun_job_list, uint32_t het_job_id,
+			    list_t *srun_job_list, uint32_t het_job_id,
 			    char *het_job_nodelist)
 {
 	list_itr_t *opt_iter = NULL, *job_iter;
@@ -853,6 +856,7 @@ static int _create_job_step(srun_job_t *job, bool use_all_cpus,
 	uint32_t het_job_ntasks = 0, task_offset = 0;
 	bool update_het_nnodes = false;
 	uint32_t updated_het_nnodes;
+	uint32_t updated_het_ntasks = 0;
 
 	job_step_create_response_msg_t *step_resp;
 	char *resv_ports = NULL;
@@ -883,7 +887,10 @@ static int _create_job_step(srun_job_t *job, bool use_all_cpus,
 				job->step_id.step_het_comp = NO_VAL;
 
 			het_job_nnodes += job->nhosts;
-			het_job_ntasks += job->ntasks;
+			if (job->ntasks == NO_VAL)
+				het_job_ntasks = NO_VAL;
+			else if (het_job_ntasks != NO_VAL)
+				het_job_ntasks += job->ntasks;
 		}
 
 		updated_het_nnodes = het_job_nnodes;
@@ -937,12 +944,21 @@ static int _create_job_step(srun_job_t *job, bool use_all_cpus,
 				update_het_nnodes = true;
 				updated_het_nnodes -= old_nhosts - job->nhosts;
 			}
+
+			if (het_job_ntasks == NO_VAL)
+				updated_het_ntasks += job->ntasks;
 		}
 
 		if (update_het_nnodes) {
 			list_iterator_reset(job_iter);
 			while ((job = list_next(job_iter))) {
 				job->het_job_nnodes = updated_het_nnodes;
+			}
+		}
+		if (updated_het_ntasks) {
+			list_iterator_reset(job_iter);
+			while ((job = list_next(job_iter))) {
+				job->het_job_ntasks = updated_het_ntasks;
 			}
 		}
 
@@ -993,7 +1009,7 @@ static int _create_job_step(srun_job_t *job, bool use_all_cpus,
 	}
 }
 
-static void _cancel_steps(List srun_job_list)
+static void _cancel_steps(list_t *srun_job_list)
 {
 	srun_job_t *job;
 	list_itr_t *job_iter;
@@ -1039,11 +1055,11 @@ static void _het_job_struct_del(void *x)
 	xfree(het_job_resp);
 }
 
-static char *_compress_het_job_nodelist(List used_resp_list)
+static char *_compress_het_job_nodelist(list_t *used_resp_list)
 {
 	resource_allocation_response_msg_t *resp;
 	het_job_resp_struct_t *het_job_resp;
-	List het_job_resp_list;
+	list_t *het_job_resp_list;
 	list_itr_t *resp_iter;
 	char *aliases = NULL, *save_ptr = NULL, *tok, *tmp;
 	char *het_job_nodelist = NULL, *node_name;
@@ -1166,7 +1182,7 @@ static char *_compress_het_job_nodelist(List used_resp_list)
  * that allocation. So here we will copy the resp_list to the number of
  * components we care about.
  */
-static void _copy_job_resp(List job_resp_list, int count)
+static void _copy_job_resp(list_t *job_resp_list, int count)
 {
 	resource_allocation_response_msg_t *new, *orig;
 	xassert(job_resp_list);
@@ -1199,8 +1215,8 @@ static void _check_gpus_per_socket(slurm_opt_t *opt_local)
 extern void create_srun_job(void **p_job, bool *got_alloc)
 {
 	resource_allocation_response_msg_t *resp;
-	List job_resp_list = NULL, srun_job_list = NULL;
-	List used_resp_list = NULL;
+	list_t *job_resp_list = NULL, *srun_job_list = NULL;
+	list_t *used_resp_list = NULL;
 	list_itr_t *opt_iter, *resp_iter;
 	srun_job_t *job = NULL;
 	int i, max_list_offset, max_het_job_offset, het_job_offset = -1,
@@ -1636,20 +1652,19 @@ static void _set_ntasks(allocation_info_t *ai, slurm_opt_t *opt_local)
 {
 	int cnt = 0;
 
-	if (opt_local->ntasks_set && (opt_local->ntasks_per_node == NO_VAL))
+	/* Distinction between explicit or implicit set of ntasks */
+	if (opt_local->ntasks_opt_set ||
+	    (opt_local->ntasks_set &&
+	     (opt_local->ntasks_per_node == NO_VAL)))
 		return;
 
 	if (opt_local->ntasks_per_node != NO_VAL) {
 		cnt = ai->nnodes * opt_local->ntasks_per_node;
 		opt_local->ntasks_set = true;	/* implicit */
 	} else if (opt_local->cpus_set) {
-		int i;
-
-		for (i = 0; i < ai->num_cpu_groups; i++)
-			cnt += (ai->cpu_count_reps[i] *
-				(ai->cpus_per_node[i] /
-				 opt_local->cpus_per_task));
+		opt_local->ntasks = NO_VAL;
 		opt_local->ntasks_set = true;	/* implicit */
+		return;
 	}
 
 	opt_local->ntasks = (cnt < ai->nnodes) ? ai->nnodes : cnt;
@@ -1715,9 +1730,13 @@ static srun_job_t *_job_create_structure(allocation_info_t *ainfo,
 	 * requested step (we might very well use less, especially if
 	 * --exclusive is used).  Else get the total for the allocation given.
 	 */
-	if (opt_local->cpus_set)
-		job->cpu_count = opt_local->ntasks * opt_local->cpus_per_task;
-	else {
+	if (opt_local->cpus_set) {
+		if (opt_local->ntasks == NO_VAL)
+			job->cpu_count = NO_VAL;
+		else
+			job->cpu_count = opt_local->ntasks *
+				opt_local->cpus_per_task;
+	} else {
 		for (i = 0; i < ainfo->num_cpu_groups; i++) {
 			job->cpu_count += ainfo->cpus_per_node[i] *
 				ainfo->cpu_count_reps[i];
@@ -2053,34 +2072,6 @@ static void _set_env_vars2(resource_allocation_response_msg_t *resp,
 	}
 }
 
-/*
- * _set_prio_process_env
- *
- * Set the internal SLURM_PRIO_PROCESS environment variable to support
- * the propagation of the users nice value and the "PropagatePrioProcess"
- * config keyword.
- */
-static void  _set_prio_process_env(void)
-{
-	int retval;
-
-	errno = 0; /* needed to detect a real failure since prio can be -1 */
-
-	if ((retval = getpriority (PRIO_PROCESS, 0)) == -1)  {
-		if (errno) {
-			error ("getpriority(PRIO_PROCESS): %m");
-			return;
-		}
-	}
-
-	if (setenvf (NULL, "SLURM_PRIO_PROCESS", "%d", retval) < 0) {
-		error ("unable to set SLURM_PRIO_PROCESS in environment");
-		return;
-	}
-
-	debug ("propagating SLURM_PRIO_PROCESS=%d", retval);
-}
-
 /* Set SLURM_RLIMIT_* environment variables with current resource
  * limit values, reset RLIMIT_NOFILE to maximum possible value */
 static int _set_rlimit_env(void)
@@ -2207,7 +2198,8 @@ static void _shepherd_notify(int shepherd_fd)
 	close(shepherd_fd);
 }
 
-static int _shepherd_spawn(srun_job_t *job, List srun_job_list, bool got_alloc)
+static int _shepherd_spawn(srun_job_t *job, list_t *srun_job_list,
+			   bool got_alloc)
 {
 	int shepherd_pipe[2], rc;
 	pid_t shepherd_pid;
