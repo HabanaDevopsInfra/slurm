@@ -177,7 +177,7 @@ test-single-card:
 
 test-8-cards:
 	. /etc/profile.d/slurm.sh; \
-	srun --gres=gpu:8 --nodes=1 --ntasks-per-node=1 bash -c 'docker run --init --rm --runtime=habana -e HABANA_VISIBLE_DEVICES -e SLURM_NODEID -e SLURM_LAUNCH_NODE_IPADDR --net=host $(TEST_CONTAINER_IMAGE) /bin/bash -c "git clone https://github.com/HabanaAI/hccl_demo.git; cd hccl_demo; HCCL_COMM_ID=$$SLURM_LAUNCH_NODE_IPADDR:5555 python3 run_hccl_demo.py --nranks 8 --node_id $$SLURM_NODEID --size 32m --test all_reduce --loop 1000 --ranks_per_node 8"'; \
+	srun --gres=gpu:8 --nodes=1 --ntasks-per-node=1 bash -c 'docker run --init --rm --runtime=habana -e HABANA_VISIBLE_DEVICES -e SLURM_NODEID -e SLURM_LAUNCH_NODE_IPADDR --net=host $(TEST_CONTAINER_IMAGE) /bin/bash -c "git clone --depth 1 https://github.com/HabanaAI/hccl_demo.git; cd hccl_demo; HCCL_COMM_ID=$$SLURM_LAUNCH_NODE_IPADDR:5555 python3 run_hccl_demo.py --nranks 8 --node_id $$SLURM_NODEID --size 32m --test all_reduce --loop 1000 --ranks_per_node 8"'; \
 	$(call prompt-status)
 
 test-16-cards:
@@ -227,7 +227,7 @@ test-16-cards:
 	#
 	# Test 16 cards
 	export NODE_0_IPADDRESS=$$(srun hostname -i); \
-	srun --gres=gpu:8 --nodes=2 --ntasks-per-node=1 --export ALL bash -c 'docker run --init --rm --runtime=habana -e HABANA_VISIBLE_DEVICES -e SLURM_NODEID -e SLURM_LAUNCH_NODE_IPADDR --net=host $(TEST_CONTAINER_IMAGE) /bin/bash -c "git clone https://github.com/HabanaAI/hccl_demo.git; cd hccl_demo; HCCL_COMM_ID=$$NODE_0_IPADDRESS:5555 python3 run_hccl_demo.py --nranks 16 --node_id $$SLURM_NODEID --size 32m --test all_reduce --loop 1000 --ranks_per_node 8"'; \
+	srun --gres=gpu:8 --nodes=2 --ntasks-per-node=1 --export ALL bash -c 'docker run --init --rm --runtime=habana -e HABANA_VISIBLE_DEVICES -e SLURM_NODEID -e SLURM_LAUNCH_NODE_IPADDR --net=host $(TEST_CONTAINER_IMAGE) /bin/bash -c "git clone --depth 1 https://github.com/HabanaAI/hccl_demo.git; cd hccl_demo; HCCL_COMM_ID=$$NODE_0_IPADDRESS:5555 python3 run_hccl_demo.py --nranks 16 --node_id $$SLURM_NODEID --size 32m --test all_reduce --loop 1000 --ranks_per_node 8"'; \
 	$(call prompt-status)
 
 define prompt-status
